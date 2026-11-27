@@ -427,6 +427,10 @@ def _seed_evidence(project):
                 "('m1',?,'actor','[\"fire\"]','sha',?,'digest','2026-01-01')",
                 (version, version),
             )
+    # The owner observes the tables created above (structure certification). The
+    # explicit entry is used because the process-level init cache intentionally
+    # makes a second construction a no-op.
+    MaterialRepository(project).reconcile_evidence_structure()
     # The confirmation table is created lazily by the owner; install its triggers
     # the same way a real write path does (rows above stay at generation 0).
     repository = AnnotationRepository(project)
@@ -728,6 +732,7 @@ def test_evidence_absent_and_empty_tables_are_distinct(pg, tmp_path):
     # (2) Table absent: the target keeps the retained history (explicit contract).
     with sqlite3.connect(project / "materials.sqlite3") as database:
         database.execute("DROP TABLE material_cleanup_deferred")
+    MaterialRepository(project).reconcile_evidence_structure()
     absent = export_project_snapshot(project, "p7")
     assert absent["table_state"]["materials.material_cleanup_deferred"]["present"] is False
     assert "materials.evidence.material_cleanup_deferred" not in absent["counts"]
@@ -970,6 +975,7 @@ def test_pending_import_keeps_retained_evidence_for_an_absent_source_table(pg, t
         _pending_marker(connection, "p12")
     with sqlite3.connect(project / "materials.sqlite3") as database:
         database.execute("DROP TABLE material_cleanup_deferred")
+    MaterialRepository(project).reconcile_evidence_structure()
     absent = export_project_snapshot(project, "p12")
     assert absent["table_state"]["materials.material_cleanup_deferred"]["present"] is False
     with psycopg.connect(pg.get_uri()) as connection:
@@ -1390,6 +1396,7 @@ def test_malformed_confirmation_evidence_fails_closed_and_rolls_back(pg, tmp_pat
         database.execute(
             "INSERT INTO task_negative_confirmations VALUES ('','ctx','{\"image_id\": \"m1\"}')"
         )
+    AnnotationRepository(project).reconcile_evidence_structure()
     snapshot = export_project_snapshot(project, "q9")
     with psycopg.connect(pg.get_uri()) as connection:
         with pytest.raises(U3MigrationError) as refused:
@@ -1509,7 +1516,9 @@ def test_stale_confirmation_snapshot_is_refused_without_touching_the_projection(
 
         with pytest.raises(U3MigrationError) as refused:
             import_project_snapshot(connection, first)
-        assert refused.value.code == "U3_SNAPSHOT_REVISION_REGRESSION"
+        # S1 predates the lazily created confirmation table: its certified
+        # structure version is lower, so the replay is refused on structure.
+        assert refused.value.code == "U3_SNAPSHOT_STRUCTURE_REGRESSION"
         assert "stream=negative_confirmation" in refused.value.detail
 
         assert _u3_rows(connection, "g2") == baseline
@@ -1605,7 +1614,15 @@ def test_material_evidence_generation_protects_no_revision_evidence(pg, tmp_path
         assert _u3_rows(connection, "g5") == baseline
 
 
-def test_full_import_requires_a_complete_snapshot_before_any_write(pg, tmp_path):
+def test_full_import_rejects_an_unproven_snapshot_before_any_write(pg, tmp_path):
+    """Two distinct cases are kept apart on purpose.
+
+    A physically absent evidence table (``table_state.present=false``) is a legal
+    owner structure and is accepted (see the structure-lifecycle tests). The
+    ``missing_evidence`` variant below removes the ``table_state`` METADATA while
+    the snapshot still carries no evidence for that table: that is a malformed
+    snapshot, not an absent table, and must be refused.
+    """
     project = _fixture(tmp_path, project_id="g6")
     _seed_evidence(project)
     snapshot = export_project_snapshot(project, "g6")
@@ -1623,23 +1640,42 @@ def test_full_import_requires_a_complete_snapshot_before_any_write(pg, tmp_path)
         missing_annotations["stores"]["annotations"].pop("annotations")
         _reseal(missing_annotations)
 
-        missing_evidence = copy.deepcopy(snapshot)
+        missing_metadata = copy.deepcopy(snapshot)
         table = "material_storage_audit"
-        missing_evidence["stores"]["materials"]["evidence"].pop(table)
-        missing_evidence["table_state"].pop(f"materials.{table}")
-        _reseal(missing_evidence)
+        missing_metadata["stores"]["materials"]["evidence"].pop(table)
+        missing_metadata["table_state"].pop(f"materials.{table}")
+        missing_metadata["counts"].pop(f"materials.evidence.{table}", None)
+        missing_metadata["digests"].pop(f"materials.evidence.{table}", None)
+        _reseal(missing_metadata)
 
         for name, candidate in (
             ("materials", missing_materials),
             ("annotations", missing_annotations),
-            ("evidence", missing_evidence),
+            ("evidence_metadata", missing_metadata),
         ):
             with pytest.raises(U3MigrationError) as refused:
                 import_project_snapshot(connection, candidate, mode="full")
             assert refused.value.code == "U3_SNAPSHOT_INCOMPLETE", name
             assert "reason=" in refused.value.detail, name
+            # Business rows / evidence / table_state / revisions / cursors / state.
             assert _u3_rows(connection, "g6") == baseline, name
+            # The audit ledger is a SEPARATE assertion: an incomplete snapshot is
+            # not a policy refusal, so it records nothing at all.
             assert _ledger(connection, "g6") == ledger_before, name
+
+        # A policy refusal (integrity) instead leaves the business state intact
+        # and appends exactly one REFUSED audit row.
+        tampered = copy.deepcopy(snapshot)
+        tampered["stores"]["materials"]["materials"][0]["filename"] = "tampered.jpg"
+        ledger_before = _ledger(connection, "g6")
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, tampered, mode="full")
+        assert refused.value.code == "U3_SNAPSHOT_INTEGRITY_FAILED"
+        assert _u3_rows(connection, "g6") == baseline
+        ledger_after = _ledger(connection, "g6")
+        assert ledger_after[:-1] == ledger_before
+        assert ledger_after[-1][0] == "REFUSED"
+        assert ledger_after[-1][1] == "U3_SNAPSHOT_INTEGRITY_FAILED"
 
 def test_resealed_evidence_without_a_new_generation_is_refused(pg, tmp_path):
     project = _fixture(tmp_path, project_id="g7")
@@ -1665,3 +1701,257 @@ def test_resealed_evidence_without_a_new_generation_is_refused(pg, tmp_path):
         assert refused.value.code == "U3_SNAPSHOT_REVISION_DIVERGED"
         assert "stream=negative_confirmation" in refused.value.detail
         assert _u3_rows(connection, "g7") == baseline
+
+# ---------------------------------------------------------------------------
+# Evidence-table lifecycle: a structure change must advance the persisted
+# structure version, and a pre-change snapshot must never be replayed.
+# ---------------------------------------------------------------------------
+def _evidence_rows(connection, project_id, table):
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT count(*) FROM {SCHEMA_NAME}.evidence_row "
+                "WHERE project_id=%s AND store='materials' AND table_name=%s",
+                (project_id, table),
+            )
+            return cursor.fetchone()[0]
+
+
+def test_structure_change_rejects_the_pre_change_snapshot(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="s1")
+    _seed_evidence(project)
+    first = export_project_snapshot(project, "s1")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, first)
+        before = _u3_rows(connection, "s1")
+        ledger_before = _ledger(connection, "s1")
+
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            database.execute("DROP TABLE material_cleanup_deferred")
+        # Uncertified raw DDL: the export fails closed instead of guessing safety.
+        with pytest.raises(U3MigrationError) as unverified:
+            export_project_snapshot(project, "s1")
+        assert unverified.value.code == "U3_OWNER_STRUCTURE_UNVERIFIED"
+        assert "material_cleanup_deferred" in unverified.value.detail
+
+        reconciled = MaterialRepository(project).reconcile_evidence_structure()
+        assert reconciled["changed"] is True
+        assert reconciled["generation"] > 0
+        second = export_project_snapshot(project, "s1")
+        assert (
+            second["evidence_streams"]["materials_evidence"]["structure_generation"]
+            > first["evidence_streams"]["materials_evidence"]["structure_generation"]
+        )
+        import_project_snapshot(connection, second)
+        baseline = _u3_rows(connection, "s1")
+        # absent keeps the historical evidence rows
+        assert _evidence_rows(connection, "s1", "material_cleanup_deferred") == 2
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT present FROM {SCHEMA_NAME}.table_state "
+                    "WHERE project_id='s1' AND store='materials' "
+                    "AND table_name='material_cleanup_deferred'"
+                )
+                assert cursor.fetchone()[0] is False
+
+        ledger_before_refusal = _ledger(connection, "s1")
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, first)
+        assert refused.value.code == "U3_SNAPSHOT_STRUCTURE_REGRESSION"
+        assert "stream=materials_evidence" in refused.value.detail
+        # Business rows, evidence, table_state, revisions, cursors and state are
+        # untouched by the refusal.
+        assert _u3_rows(connection, "s1") == baseline
+        # The audit ledger is asserted separately: it only gains one REFUSED row.
+        ledger_after = _ledger(connection, "s1")
+        assert ledger_after[:-1] == ledger_before_refusal
+        assert ledger_after[-1][0] == "REFUSED"
+        assert ledger_after[-1][1] == "U3_SNAPSHOT_STRUCTURE_REGRESSION"
+
+
+def test_recreated_table_newer_evidence_rejects_older_snapshots(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="s2")
+    _seed_evidence(project)
+    first = export_project_snapshot(project, "s2")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, first)
+
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            database.execute("DROP TABLE material_cleanup_deferred")
+        MaterialRepository(project).reconcile_evidence_structure()
+        second = export_project_snapshot(project, "s2")
+        import_project_snapshot(connection, second)
+
+        # Recreate the table through the owner DDL and write NEW evidence; the
+        # reconcile installs the triggers before the row exists.
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            database.execute(
+                "CREATE TABLE material_cleanup_deferred ("
+                "cleanup_id TEXT PRIMARY KEY, image_id TEXT NOT NULL, owner TEXT NOT NULL, "
+                "payload_json TEXT NOT NULL, last_error TEXT NOT NULL, recorded_at TEXT NOT NULL, "
+                "reclamation_state TEXT NOT NULL DEFAULT 'DEFERRED_SAFETY_UNVERIFIED')"
+            )
+        MaterialRepository(project).reconcile_evidence_structure()
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            database.execute(
+                "INSERT INTO material_cleanup_deferred"
+                "(cleanup_id,image_id,owner,payload_json,last_error,recorded_at) "
+                "VALUES ('c-new','m1','owner','{}','err','2026-01-01')"
+            )
+        third = export_project_snapshot(project, "s2")
+        assert (
+            third["evidence_streams"]["materials_evidence"]["structure_generation"]
+            > second["evidence_streams"]["materials_evidence"]["structure_generation"]
+        )
+        import_project_snapshot(connection, third)
+        baseline = _u3_rows(connection, "s2")
+        for stale in (first, second):
+            with pytest.raises(U3MigrationError) as refused:
+                import_project_snapshot(connection, stale)
+            assert refused.value.code == "U3_SNAPSHOT_STRUCTURE_REGRESSION"
+            assert _u3_rows(connection, "s2") == baseline
+
+
+def test_absent_retains_and_empty_clears_across_structure_changes(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="s3")
+    _seed_evidence(project)
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, export_project_snapshot(project, "s3"))
+        assert _evidence_rows(connection, "s3", "material_cleanup_deferred") == 2
+
+        # (1) Present but empty: authoritative emptiness clears the target rows.
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            database.execute("DELETE FROM material_cleanup_deferred")
+        emptied = export_project_snapshot(project, "s3")
+        import_project_snapshot(connection, emptied)
+        assert _evidence_rows(connection, "s3", "material_cleanup_deferred") == 0
+
+        # (2) Re-add rows, then drop the table: the absent source retains them.
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            for cleanup_id in ("c-1", "c-2"):
+                database.execute(
+                    "INSERT INTO material_cleanup_deferred"
+                    "(cleanup_id,image_id,owner,payload_json,last_error,recorded_at) "
+                    "VALUES (?,?, 'owner','{}','err','2026-01-01')",
+                    (cleanup_id, "m1"),
+                )
+        with_rows = export_project_snapshot(project, "s3")
+        import_project_snapshot(connection, with_rows)
+        assert _evidence_rows(connection, "s3", "material_cleanup_deferred") == 2
+
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            database.execute("DROP TABLE material_cleanup_deferred")
+        MaterialRepository(project).reconcile_evidence_structure()
+        absent = export_project_snapshot(project, "s3")
+        import_project_snapshot(connection, absent)
+        assert _evidence_rows(connection, "s3", "material_cleanup_deferred") == 2
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT present FROM {SCHEMA_NAME}.table_state "
+                    "WHERE project_id='s3' AND table_name='material_cleanup_deferred'"
+                )
+                assert cursor.fetchone()[0] is False
+
+        # (3) Recreate empty: present-and-empty clears again.
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            database.execute(
+                "CREATE TABLE material_cleanup_deferred ("
+                "cleanup_id TEXT PRIMARY KEY, image_id TEXT NOT NULL, owner TEXT NOT NULL, "
+                "payload_json TEXT NOT NULL, last_error TEXT NOT NULL, recorded_at TEXT NOT NULL, "
+                "reclamation_state TEXT NOT NULL DEFAULT 'DEFERRED_SAFETY_UNVERIFIED')"
+            )
+        MaterialRepository(project).reconcile_evidence_structure()
+        empty_again = export_project_snapshot(project, "s3")
+        import_project_snapshot(connection, empty_again)
+        assert _evidence_rows(connection, "s3", "material_cleanup_deferred") == 0
+
+
+def test_annotation_structure_change_keeps_confirmation_projection_consistent(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="s4")
+    repository = AnnotationRepository(project)
+    _confirm(repository, "r-1")
+    _confirm(repository, "r-2")
+    first = export_project_snapshot(project, "s4")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, first)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT count(*) FROM {SCHEMA_NAME}.evidence_row WHERE project_id='s4' "
+                    "AND table_name='task_negative_confirmations'"
+                )
+                assert cursor.fetchone()[0] == 2
+                cursor.execute(
+                    f"SELECT count(*) FROM {SCHEMA_NAME}.task_negative_confirmation "
+                    "WHERE project_id='s4'"
+                )
+                assert cursor.fetchone()[0] == 2
+
+        with sqlite3.connect(project / "annotations.sqlite3") as database:
+            database.execute("DROP TABLE task_negative_confirmations")
+        with pytest.raises(U3MigrationError) as unverified:
+            export_project_snapshot(project, "s4")
+        assert unverified.value.code == "U3_OWNER_STRUCTURE_UNVERIFIED"
+        AnnotationRepository(project).reconcile_evidence_structure()
+        second = export_project_snapshot(project, "s4")
+        import_project_snapshot(connection, second)
+
+        # P1: an absent source table retains BOTH the evidence rows and the
+        # derived projection -- one is never cleared while the other is retained.
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT count(*) FROM {SCHEMA_NAME}.evidence_row WHERE project_id='s4' "
+                    "AND table_name='task_negative_confirmations'"
+                )
+                assert cursor.fetchone()[0] == 2
+                cursor.execute(
+                    f"SELECT count(*) FROM {SCHEMA_NAME}.task_negative_confirmation "
+                    "WHERE project_id='s4'"
+                )
+                assert cursor.fetchone()[0] == 2
+                cursor.execute(
+                    f"SELECT negative_confirmation_revision, revision_vector "
+                    f"FROM {SCHEMA_NAME}.picker_snapshot_state WHERE project_id='s4'"
+                )
+                revision, vector = cursor.fetchone()
+                assert revision == 0  # owner COUNT(*) compatibility semantics
+                assert vector["negative_confirmation"]["tables"] == []
+                assert vector["negative_confirmation"]["structure_generation"] > 0
+        baseline = _u3_rows(connection, "s4")
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, first)
+        assert refused.value.code == "U3_SNAPSHOT_STRUCTURE_REGRESSION"
+        assert _u3_rows(connection, "s4") == baseline
+
+def test_import_refuses_an_uncertified_structure_change(pg, tmp_path):
+    """Defense in depth: a crafted snapshot cannot invent a structure change."""
+    project = _fixture(tmp_path, project_id="s5")
+    _seed_evidence(project)
+    snapshot = export_project_snapshot(project, "s5")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        baseline = _u3_rows(connection, "s5")
+        ledger_before = _ledger(connection, "s5")
+
+        crafted = copy.deepcopy(snapshot)
+        table = "material_cleanup_deferred"
+        crafted["stores"]["materials"]["evidence"].pop(table)
+        crafted["table_state"][f"materials.{table}"]["present"] = False
+        crafted["table_state"][f"materials.{table}"]["row_count"] = 0
+        crafted["counts"].pop(f"materials.evidence.{table}", None)
+        crafted["digests"].pop(f"materials.evidence.{table}", None)
+        crafted["evidence_streams"]["materials_evidence"]["structure_certified"] = False
+        _reseal(crafted)
+
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, crafted, mode="full")
+        assert refused.value.code == "U3_SNAPSHOT_STRUCTURE_UNVERIFIED"
+        assert "stream=materials_evidence" in refused.value.detail
+        assert _u3_rows(connection, "s5") == baseline
+        ledger_after = _ledger(connection, "s5")
+        assert ledger_after[:-1] == ledger_before
+        assert ledger_after[-1][0] == "REFUSED"
+        assert ledger_after[-1][1] == "U3_SNAPSHOT_STRUCTURE_UNVERIFIED"

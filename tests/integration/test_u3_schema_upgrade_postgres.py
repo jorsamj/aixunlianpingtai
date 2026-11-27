@@ -663,7 +663,7 @@ def _refused_by_structure(connection):
 
 def test_v4_primary_key_tampering_is_refused(pg):
     for table in ("picker_snapshot_state", "task_negative_confirmation",
-                  "u3_projection_cursor"):
+                  "u3_projection_cursor", "u3_shadow_import"):
         with psycopg.connect(pg.get_uri()) as connection:
             _fresh_v4(connection)
             with connection.transaction():
@@ -691,6 +691,26 @@ def test_v4_check_constraint_tampering_is_refused(pg):
                         cursor.execute(f"ALTER TABLE {SCHEMA_NAME}.{table} DROP CONSTRAINT {name}")
             failure = _refused_by_structure(connection)
             assert f"v4_check={table}.{column}" in failure.detail, table
+
+    # The allowed-value set must match exactly: a widened or narrowed CHECK is a
+    # different contract and is refused as well.
+    for table, column, values in (
+        ("u3_shadow_import", "outcome",
+         "('APPLIED','ALREADY_APPLIED','REFUSED','FAILED','EXTRA')"),
+        ("picker_snapshot_state", "status", "('READY','STALE')"),
+    ):
+        with psycopg.connect(pg.get_uri()) as connection:
+            _fresh_v4(connection)
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    for name in _constraints(cursor, table, "c"):
+                        cursor.execute(f"ALTER TABLE {SCHEMA_NAME}.{table} DROP CONSTRAINT {name}")
+                    cursor.execute(
+                        f"ALTER TABLE {SCHEMA_NAME}.{table} ADD CONSTRAINT "
+                        f"{table}_{column}_tampered CHECK ({column} IN {values})"
+                    )
+            failure = _refused_by_structure(connection)
+            assert f"v4_check={table}.{column}" in failure.detail, (table, values)
 
 
 def test_v4_not_null_and_type_tampering_is_refused(pg):

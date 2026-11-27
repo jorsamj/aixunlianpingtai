@@ -442,7 +442,9 @@ SELECT 1 FROM selection s JOIN material_index.materials m ON m.id=s.image_id
 > （历史证据表不参与单调比较）。证据表的可变性由 Owner 侧单调 generation 保护：
 > `task_negative_confirmations` → `annotation_meta.task_negative_confirmation_generation`，
 > 其余证据表 → `annotation_meta.evidence_generation` / `material_meta.evidence_generation`
-> （SQLite Trigger 同事务递增）。实现与验收见
+> （SQLite Trigger 同事务递增）。证据表的创建/删除/重建另由 Owner 侧结构版本
+> （`evidence_structure_generation`，持久化于同一 meta 表）保护：结构变化必须由 Owner 认证，
+> 否则导出失败关闭；导入必须看到更高的结构版本。实现与验收见
 > [U3 Picker P0 Schema V4](U3_PICKER_P0_SCHEMA_V4_20261127.md)。
 
 - 记录四个高水位：`material_revision`、`annotation_revision`、`negative_pool_revision`、`usage_revision`（若任务库不可读则记 `null` 并显式标注 `unavailable`，对齐 `training_material_usage.py:213-228` 的 `'unknown'` 语义）。

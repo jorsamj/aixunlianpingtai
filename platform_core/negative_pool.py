@@ -78,6 +78,9 @@ class NegativePool:
                     result.update({key: member_receipt[key] for key in ('operation_id', 'operation_kind', 'project_id', 'algorithm_id', 'action')})
                     result.update(previous_revision=revision, negative_pool_revision=str(int(revision)+1))
                     db.execute('CREATE TABLE IF NOT EXISTS negative_pool_operations(operation_id TEXT PRIMARY KEY,identity TEXT NOT NULL,result_json TEXT NOT NULL)')
+                    # The table now exists: install its triggers and record the
+                    # evidence-table lifecycle version in the same pool transaction.
+                    self.materials._ensure_evidence_generation(db)
                     db.execute('INSERT INTO negative_pool_operations VALUES (?,?,?)', (member_receipt['operation_id'], member_receipt['identity'], json.dumps(result)))
                 db.commit()
                 return result
@@ -128,6 +131,7 @@ class NegativePool:
                         db.executemany('INSERT INTO negative_pool_algorithm_members VALUES (?,?,?)',((a,str(image_id),t) for a,t in snapshot['algorithms']))
                 result={'restored':len(snapshots)}
                 db.execute('CREATE TABLE IF NOT EXISTS negative_pool_operations(operation_id TEXT PRIMARY KEY,identity TEXT NOT NULL,result_json TEXT NOT NULL)')
+                self.materials._ensure_evidence_generation(db)
                 db.execute('INSERT INTO negative_pool_operations VALUES (?,?,?)',(str(operation_id),identity,json.dumps(result)))
                 return result
             return self._mutate(write)

@@ -38,6 +38,11 @@ _INIT_LOCK_TIMEOUT = 30
 #: never replace newer evidence. ``negative_pool_operations`` is not listed: every
 #: write there is committed together with a ``negative_pool_meta.revision`` bump.
 EVIDENCE_GENERATION_KEY = "evidence_generation"
+#: Table lifecycle version: bumped by the owner whenever the set of historical
+#: evidence tables it can see changes (create/drop/rebuild). Persisted in
+#: ``material_meta`` so it survives the table that disappeared.
+EVIDENCE_STRUCTURE_KEY = "evidence_structure"
+EVIDENCE_STRUCTURE_GENERATION_KEY = "evidence_structure_generation"
 _EVIDENCE_GENERATION_TABLES = (
     "material_migrations",
     "material_storage_audit",
@@ -45,6 +50,9 @@ _EVIDENCE_GENERATION_TABLES = (
     "material_cleanup_deferred",
     "material_assignment_receipts",
 )
+#: Every historical evidence table of this owner store, including the pool
+#: receipts table that ``negative_pool.py`` creates lazily.
+_EVIDENCE_STRUCTURE_TABLES = _EVIDENCE_GENERATION_TABLES + ("negative_pool_operations",)
 _EVIDENCE_GENERATION_SENTINEL = "material_storage_audit_evidence_generation_after_insert"
 
 
@@ -476,11 +484,13 @@ class MaterialRepository:
         ).fetchall()
         return len(rows) == len(self._REQUIRED_OBJECTS)
 
-    def _ensure_evidence_generation(self, database: sqlite3.Connection) -> None:
+    def _ensure_evidence_generation(self, database: sqlite3.Connection) -> dict[str, object]:
         """Install the evidence generation contract additively (idempotent).
 
         Tables missing from an older database are skipped; whoever creates one
-        later must call this helper in the same transaction.
+        later must call this helper in the same transaction. It also records the
+        observed evidence-table set, bumping the persisted structure version when
+        a table was created, dropped or rebuilt since the last observation.
         """
         database.execute(
             "INSERT OR IGNORE INTO material_meta(key, value) VALUES (?, '0')",
@@ -497,6 +507,77 @@ class MaterialRepository:
                 continue
             for statement in _generation_trigger_statements(table):
                 database.execute(statement)
+        return self._sync_evidence_structure(database, present)
+
+    def _sync_evidence_structure(
+        self, database: sqlite3.Connection, present: set[str],
+    ) -> dict[str, object]:
+        """Record the observed evidence-table set, bumping its lifecycle version.
+
+        The first observation is the baseline (generation 0, no bump). Every later
+        change of the set increments the persisted version, so a snapshot taken
+        before the change can never be replayed as if it were newer.
+        """
+        actual = sorted(
+            table for table in _EVIDENCE_STRUCTURE_TABLES if table in present
+        )
+        recorded_row = database.execute(
+            "SELECT value FROM material_meta WHERE key=?", (EVIDENCE_STRUCTURE_KEY,)
+        ).fetchone()
+        recorded: list[str] | None
+        if recorded_row is None:
+            recorded = None
+        else:
+            try:
+                recorded = sorted(json.loads(recorded_row[0]))
+            except (TypeError, ValueError):
+                recorded = None
+        generation_row = database.execute(
+            "SELECT value FROM material_meta WHERE key=?",
+            (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+        ).fetchone()
+        generation = int(generation_row[0]) if generation_row is not None else 0
+        changed = False
+        database.execute(
+            "INSERT OR IGNORE INTO material_meta(key, value) VALUES (?, '0')",
+            (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+        )
+        if recorded is None:
+            database.execute(
+                "INSERT INTO material_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (EVIDENCE_STRUCTURE_KEY, json.dumps(actual)),
+            )
+        elif recorded != actual:
+            generation += 1
+            changed = True
+            database.execute(
+                "UPDATE material_meta SET value=? WHERE key=?",
+                (str(generation), EVIDENCE_STRUCTURE_GENERATION_KEY),
+            )
+            database.execute(
+                "UPDATE material_meta SET value=? WHERE key=?",
+                (json.dumps(actual), EVIDENCE_STRUCTURE_KEY),
+            )
+        return {"generation": generation, "tables": actual, "changed": changed}
+
+    def reconcile_evidence_structure(self) -> dict[str, object]:
+        """Owner-certified structure reconciliation (explicit operator entry).
+
+        A table created or dropped outside the owner write paths (raw SQL or an
+        external migration) must be certified here before a U3 export may be
+        taken; otherwise the export fails closed with
+        ``U3_OWNER_STRUCTURE_UNVERIFIED``.
+        """
+        with closing(self._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                result = self._ensure_evidence_generation(database)
+                database.execute("COMMIT")
+                return result
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
 
     def _read_schema_version_fast(self) -> int | None:
         if not self.path.is_file():
@@ -509,9 +590,35 @@ class MaterialRepository:
                 version = int(database.execute("PRAGMA user_version").fetchone()[0])
                 if version == _SCHEMA_VERSION and not self._required_objects_present(database):
                     return None
+                if version == _SCHEMA_VERSION and not self._evidence_structure_matches(database):
+                    # Drift (a table created/dropped/rebuilt outside the owner) must
+                    # enter _initialize once so the lifecycle version is recorded.
+                    return None
                 return version
         except sqlite3.Error:
             return None
+
+    @staticmethod
+    def _evidence_structure_matches(database: sqlite3.Connection) -> bool:
+        recorded_row = database.execute(
+            "SELECT value FROM material_meta WHERE key=?", (EVIDENCE_STRUCTURE_KEY,)
+        ).fetchone()
+        if recorded_row is None:
+            return False
+        try:
+            recorded = sorted(json.loads(recorded_row[0]))
+        except (TypeError, ValueError):
+            return False
+        present = {
+            str(row[0])
+            for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        actual = sorted(
+            table for table in _EVIDENCE_STRUCTURE_TABLES if table in present
+        )
+        return recorded == actual
 
     @controlled_material_write_fence
     def _initialize(self) -> None:
@@ -525,6 +632,10 @@ class MaterialRepository:
             with closing(self._connect()) as database, database:
                 version = int(database.execute("PRAGMA user_version").fetchone()[0])
                 if version == _SCHEMA_VERSION and self._required_objects_present(database):
+                    # Narrow reconcile only: never re-run the DDL here, so a table
+                    # dropped on purpose stays dropped and is recorded as absent.
+                    self._ensure_evidence_generation(database)
+                    database.commit()
                     return
                 if version > _SCHEMA_VERSION:
                     raise RuntimeError(

@@ -169,7 +169,19 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
     # key is created with value 0 (no historical business row is rewritten).
     expected["databases"][material_path]["material_meta"] = sorted(
         expected["databases"][material_path]["material_meta"]
-        + [json.dumps(("evidence_generation", "0"))]
+        + [
+            json.dumps(("evidence_generation", "0")),
+            # Table lifecycle version + the observed evidence-table set (the
+            # upgrade adds material_assignment_receipts, which schema 5 lacked).
+            json.dumps(("evidence_structure_generation", "0")),
+            json.dumps(("evidence_structure", json.dumps([
+                "material_assignment_receipts",
+                "material_cleanup_deferred",
+                "material_migrations",
+                "material_retirements",
+                "material_storage_audit",
+            ]))),
+        ]
     )
     assert business_state(target) == expected
     with closing(repository._connect()) as db:

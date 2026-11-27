@@ -30,12 +30,19 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 #: row change commit or roll back together.
 EVIDENCE_GENERATION_KEY = "evidence_generation"
 CONFIRMATION_GENERATION_KEY = "task_negative_confirmation_generation"
+#: Table lifecycle version: bumped by the owner whenever the set of historical
+#: evidence tables it can see changes (create/drop/rebuild). It is persisted in
+#: ``annotation_meta`` so it survives the table that disappeared, and it is what
+#: the U3 projection compares to refuse a stale snapshot after a structural change.
+EVIDENCE_STRUCTURE_KEY = "evidence_structure"
+EVIDENCE_STRUCTURE_GENERATION_KEY = "evidence_structure_generation"
 _EVIDENCE_GENERATION_TABLES = (
     "annotation_delete_backup",
     "annotation_candidate_commits",
     "annotation_negative_reviews",
     "task_negative_confirmations",
 )
+_EVIDENCE_STRUCTURE_TABLES = _EVIDENCE_GENERATION_TABLES
 
 
 def _generation_trigger_statements(table: str, key: str) -> tuple[str, ...]:
@@ -209,7 +216,9 @@ class AnnotationRepository:
 
     def _generation_ready_fast(self) -> bool:
         """Cheap probe: an older database must enter ``_initialize`` once to
-        install the additive generation keys/triggers."""
+        install the additive generation keys/triggers, and a database whose
+        evidence-table set drifted must enter it once to record the new structure.
+        """
         if not self.path.is_file():
             return False
         try:
@@ -218,17 +227,100 @@ class AnnotationRepository:
             ) as db:
                 db.execute("PRAGMA busy_timeout=250")
                 keys = int(db.execute(
-                    "SELECT COUNT(*) FROM annotation_meta WHERE key IN (?,?)",
-                    (EVIDENCE_GENERATION_KEY, CONFIRMATION_GENERATION_KEY),
+                    "SELECT COUNT(*) FROM annotation_meta WHERE key IN (?,?,?,?)",
+                    (
+                        EVIDENCE_GENERATION_KEY, CONFIRMATION_GENERATION_KEY,
+                        EVIDENCE_STRUCTURE_KEY, EVIDENCE_STRUCTURE_GENERATION_KEY,
+                    ),
                 ).fetchone()[0])
-                if keys < 2:
+                if keys < 4:
                     return False
-                return db.execute(
+                trigger = db.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='trigger' "
                     "AND name='annotation_delete_backup_evidence_generation_after_insert'"
-                ).fetchone() is not None
+                ).fetchone()
+                if trigger is None:
+                    return False
+                recorded = db.execute(
+                    "SELECT value FROM annotation_meta WHERE key=?",
+                    (EVIDENCE_STRUCTURE_KEY,),
+                ).fetchone()
+                if recorded is None:
+                    return False
+                try:
+                    recorded_tables = sorted(json.loads(recorded[0]))
+                except (TypeError, ValueError):
+                    return False
+                tables = {
+                    str(row[0])
+                    for row in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ).fetchall()
+                }
+                actual = sorted(
+                    table for table in _EVIDENCE_STRUCTURE_TABLES if table in tables
+                )
+                return recorded_tables == actual
         except sqlite3.Error:
             return False
+
+    def _sync_evidence_structure(self, db) -> dict[str, Any]:
+        """Record the observed evidence-table set, bumping its lifecycle version.
+
+        The first observation is the baseline (generation 0, no bump). Every later
+        change of the set -- a table created, dropped or rebuilt -- increments the
+        persisted version, so a snapshot taken before the change can never be
+        replayed as if it were newer.
+        """
+        present = {
+            str(row[0])
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        actual = sorted(
+            table for table in _EVIDENCE_STRUCTURE_TABLES if table in present
+        )
+        recorded_row = db.execute(
+            "SELECT value FROM annotation_meta WHERE key=?",
+            (EVIDENCE_STRUCTURE_KEY,),
+        ).fetchone()
+        recorded: list[str] | None
+        if recorded_row is None:
+            recorded = None
+        else:
+            try:
+                recorded = sorted(json.loads(recorded_row[0]))
+            except (TypeError, ValueError):
+                recorded = None
+        generation_row = db.execute(
+            "SELECT value FROM annotation_meta WHERE key=?",
+            (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+        ).fetchone()
+        generation = int(generation_row[0]) if generation_row is not None else 0
+        changed = False
+        db.execute(
+            "INSERT OR IGNORE INTO annotation_meta(key, value) VALUES (?, '0')",
+            (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+        )
+        if recorded is None:
+            db.execute(
+                "INSERT INTO annotation_meta(key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (EVIDENCE_STRUCTURE_KEY, json.dumps(actual)),
+            )
+        elif recorded != actual:
+            generation += 1
+            changed = True
+            db.execute(
+                "UPDATE annotation_meta SET value=? WHERE key=?",
+                (str(generation), EVIDENCE_STRUCTURE_GENERATION_KEY),
+            )
+            db.execute(
+                "UPDATE annotation_meta SET value=? WHERE key=?",
+                (json.dumps(actual), EVIDENCE_STRUCTURE_KEY),
+            )
+        return {"generation": generation, "tables": actual, "changed": changed}
 
     def _ensure_table_generation(self, db, table: str) -> None:
         """Install the generation keys/triggers for one evidence table."""
@@ -243,7 +335,7 @@ class AnnotationRepository:
             for statement in _generation_trigger_statements(table, key):
                 db.execute(statement)
 
-    def _ensure_generation_objects(self, db) -> None:
+    def _ensure_generation_objects(self, db) -> dict[str, Any]:
         """Install the generation contract additively (idempotent).
 
         Called by ``_initialize`` (so an existing database upgrades in place
@@ -259,6 +351,25 @@ class AnnotationRepository:
         for table in _EVIDENCE_GENERATION_TABLES:
             if table in present:
                 self._ensure_table_generation(db, table)
+        return self._sync_evidence_structure(db)
+
+    def reconcile_evidence_structure(self) -> dict[str, Any]:
+        """Owner-certified structure reconciliation (explicit operator entry).
+
+        A table created or dropped outside the owner write paths (raw SQL or an
+        external migration) must be certified here before a U3 export may be
+        taken; otherwise the export fails closed with
+        ``U3_OWNER_STRUCTURE_UNVERIFIED``.
+        """
+        with closing(self._connect()) as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                result = self._ensure_generation_objects(db)
+                db.execute("COMMIT")
+                return result
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
 
     def _initialize(self) -> None:
         if (
@@ -1439,7 +1550,7 @@ class AnnotationRepository:
                             db.execute("""CREATE TABLE IF NOT EXISTS annotation_candidate_commits (
                                 task_id TEXT NOT NULL, operation_id TEXT NOT NULL, image_id TEXT NOT NULL,
                                 receipt_json TEXT NOT NULL, PRIMARY KEY(task_id, image_id))""")
-                            self._ensure_table_generation(db, "annotation_candidate_commits")
+                            self._ensure_generation_objects(db)
                         for row, image_id, prepared in prepared_rows:
                             force_version_advance = bool(row.get("force_version_advance"))
                             if force_version_advance:
@@ -1542,7 +1653,7 @@ class AnnotationRepository:
                                     source_content_sha256 TEXT NOT NULL, annotation_version INTEGER NOT NULL,
                                     annotation_digest TEXT NOT NULL, reviewed_at TEXT NOT NULL,
                                     PRIMARY KEY(image_id,source_version,actor_id,reviewed_scope_json,source_content_sha256))""")
-                                self._ensure_table_generation(db, "annotation_negative_reviews")
+                                self._ensure_generation_objects(db)
                                 has_review_audit = True
                                 db.execute('INSERT OR IGNORE INTO annotation_negative_reviews VALUES(?,?,?,?,?,?,?,?)',
                                     (image_id, expected_version, actor, json.dumps(labels),
@@ -1602,6 +1713,28 @@ class AnnotationRepository:
         """Owner-side monotonic version of every historical evidence table."""
         return self._generation(EVIDENCE_GENERATION_KEY)
 
+    def evidence_structure(self) -> dict[str, object]:
+        """Persisted evidence-table lifecycle version and the recorded table set."""
+        with closing(self._connect()) as db:
+            generation = db.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+            ).fetchone()
+            recorded = db.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (EVIDENCE_STRUCTURE_KEY,),
+            ).fetchone()
+        tables = None
+        if recorded is not None:
+            try:
+                tables = sorted(json.loads(recorded[0]))
+            except (TypeError, ValueError):
+                tables = None
+        return {
+            "generation": int(generation[0]) if generation is not None else 0,
+            "tables": tables,
+        }
+
     def task_negative_receipts(self, context_key, image_ids=None):
         """Read additive task evidence without migrating or changing formal GT."""
         with closing(self._connect()) as db:
@@ -1634,7 +1767,7 @@ class AnnotationRepository:
                     db.execute("CREATE INDEX IF NOT EXISTS task_negative_context_idx ON task_negative_confirmations(context_key)")
                     # Created together with the table: the trigger exists before the
                     # first receipt and bumps atomically with every row change.
-                    self._ensure_table_generation(db, "task_negative_confirmations")
+                    self._ensure_generation_objects(db)
                     current_by_id = {}
                     ids = [self._id(e['image_id']) for e in evidences]
                     for offset in range(0, len(ids), 500):

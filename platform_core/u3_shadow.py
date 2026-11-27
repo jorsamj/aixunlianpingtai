@@ -445,6 +445,18 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
             # An owner database from before the counter existed observed every
             # historical evidence row at generation 0.
             material_evidence_generation = int(generation_row[0]) if generation_row else 0
+            materials_structure_row = database.execute(
+                "SELECT value FROM material_meta WHERE key=?",
+                (MATERIAL_EVIDENCE_STRUCTURE_KEY,),
+            ).fetchone()
+            materials_structure_generation_row = database.execute(
+                "SELECT value FROM material_meta WHERE key=?",
+                (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+            ).fetchone()
+            materials_structure_generation = (
+                int(materials_structure_generation_row[0])
+                if materials_structure_generation_row else 0
+            )
             pool_row = database.execute(
                 "SELECT revision FROM negative_pool_meta WHERE id=1"
             ).fetchone()
@@ -524,7 +536,52 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
             confirmation_generation = (
                 int(confirmation_generation_row[0]) if confirmation_generation_row else 0
             )
+            annotations_structure_row = database.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (ANNOTATION_EVIDENCE_STRUCTURE_KEY,),
+            ).fetchone()
+            annotations_structure_generation_row = database.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+            ).fetchone()
+            annotations_structure_generation = (
+                int(annotations_structure_generation_row[0])
+                if annotations_structure_generation_row else 0
+            )
             annotations_schema = annotations_schema_version
+        # The owner must be able to prove its evidence-table set. A table created or
+        # dropped outside the owner (raw SQL, external migration) is not inferred to
+        # be safe: the export fails closed until the owner certifies it.
+        materials_observed = sorted(
+            table for table in EVIDENCE_TABLES["materials"]
+            if bool(table_state[f"materials.{table}"]["present"])
+        )
+        annotations_observed = sorted(
+            table for table in EVIDENCE_TABLES["annotations"]
+            if bool(table_state[f"annotations.{table}"]["present"])
+        )
+        materials_recorded = recorded_structure(materials_structure_row)
+        if materials_recorded is not None and materials_recorded != materials_observed:
+            raise U3MigrationError(
+                "U3_OWNER_STRUCTURE_UNVERIFIED",
+                "the material evidence-table set changed without owner certification",
+                detail=(
+                    f"recorded={materials_recorded} observed={materials_observed}; "
+                    "run MaterialRepository.reconcile_evidence_structure() first"
+                ),
+            )
+        annotations_recorded = recorded_structure(annotations_structure_row)
+        if annotations_recorded is not None and annotations_recorded != annotations_observed:
+            raise U3MigrationError(
+                "U3_OWNER_STRUCTURE_UNVERIFIED",
+                "the annotation evidence-table set changed without owner certification",
+                detail=(
+                    f"recorded={annotations_recorded} observed={annotations_observed}; "
+                    "run AnnotationRepository.reconcile_evidence_structure() first"
+                ),
+            )
+        materials_structure_certified = materials_recorded is not None
+        annotations_structure_certified = annotations_recorded is not None
         # Revision re-check: a store that moved during the export invalidates it.
         with closing(_open_read_only(materials_db)) as database:
             after_row = database.execute(
@@ -537,6 +594,24 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 "SELECT value FROM material_meta WHERE key=?",
                 (MATERIAL_EVIDENCE_GENERATION_KEY,),
             ).fetchone()
+            after_structure = database.execute(
+                "SELECT value FROM material_meta WHERE key=?",
+                (MATERIAL_EVIDENCE_STRUCTURE_KEY,),
+            ).fetchone()
+            after_structure_generation = database.execute(
+                "SELECT value FROM material_meta WHERE key=?",
+                (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+            ).fetchone()
+            after_materials_tables = {
+                str(row[0])
+                for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            after_materials_observed = sorted(
+                table for table in EVIDENCE_TABLES["materials"]
+                if table in after_materials_tables
+            )
             after_materials_revision = int(after_row[0]) if after_row else None
             after_pool_revision = int(after_pool[0]) if after_pool else None
             after_material_evidence_generation = (
@@ -555,11 +630,33 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 "SELECT value FROM annotation_meta WHERE key=?",
                 (CONFIRMATION_GENERATION_KEY,),
             ).fetchone()
+            after_annotation_structure = database.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (ANNOTATION_EVIDENCE_STRUCTURE_KEY,),
+            ).fetchone()
+            after_annotation_structure_generation = database.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (EVIDENCE_STRUCTURE_GENERATION_KEY,),
+            ).fetchone()
+            after_annotations_tables = {
+                str(row[0])
+                for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            after_annotations_observed = sorted(
+                table for table in EVIDENCE_TABLES["annotations"]
+                if table in after_annotations_tables
+            )
             after_annotation_evidence_generation = (
                 int(after_annotation_generation[0]) if after_annotation_generation else 0
             )
             after_confirmation_generation_value = (
                 int(after_confirmation_generation[0]) if after_confirmation_generation else 0
+            )
+            after_annotations_structure_generation = (
+                int(after_annotation_structure_generation[0])
+                if after_annotation_structure_generation else 0
             )
     if (after_materials_revision, after_pool_revision, after_annotation_revision) != (
         material_revision, pool_revision, annotation_revision
@@ -571,6 +668,15 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         material_evidence_generation,
         annotation_evidence_generation,
         confirmation_generation,
+    ) or (
+        after_materials_observed, after_annotations_observed,
+        after_annotations_structure_generation,
+        recorded_structure(after_structure),
+        recorded_structure(after_annotation_structure),
+    ) != (
+        materials_observed, annotations_observed,
+        annotations_structure_generation,
+        materials_recorded, annotations_recorded,
     ):
         raise U3MigrationError(
             "U3_SNAPSHOT_SOURCE_CHANGED",
@@ -585,6 +691,10 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 f"({after_material_evidence_generation},"
                 f"{after_annotation_evidence_generation},"
                 f"{after_confirmation_generation_value})"
+                f" structures=({materials_observed},{annotations_observed},"
+                f"{annotations_structure_generation})->"
+                f"({after_materials_observed},{after_annotations_observed},"
+                f"{after_annotations_structure_generation})"
             ),
         )
     counts = {f"{store}.{table}": len(rows) for store, tables in stores.items()
@@ -606,9 +716,21 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
     # One shape for both the exporter and the importer: the generations come from
     # the owner counters, everything else is recomputed from the exported rows.
     evidence_streams = snapshot_evidence_streams({"stores": stores})
-    evidence_streams["materials_evidence"]["generation"] = material_evidence_generation
-    evidence_streams["annotations_evidence"]["generation"] = annotation_evidence_generation
-    evidence_streams["negative_confirmation"]["generation"] = confirmation_generation
+    evidence_streams["materials_evidence"].update({
+        "generation": material_evidence_generation,
+        "structure_generation": materials_structure_generation,
+        "structure_certified": materials_structure_certified,
+    })
+    evidence_streams["annotations_evidence"].update({
+        "generation": annotation_evidence_generation,
+        "structure_generation": annotations_structure_generation,
+        "structure_certified": annotations_structure_certified,
+    })
+    evidence_streams["negative_confirmation"].update({
+        "generation": confirmation_generation,
+        "structure_generation": annotations_structure_generation,
+        "structure_certified": annotations_structure_certified,
+    })
     return {
         "contract_version": CONTRACT_VERSION,
         "project_id": str(project_id),
@@ -1127,6 +1249,11 @@ V4_INDEXES = {
 }
 
 
+def _check_literal_values(definition: str) -> set[str]:
+    """Quoted literals of a CHECK constraint, for an exact allowed-value match."""
+    return set(re.findall(r"'([^']*)'", definition))
+
+
 def _primary_key_columns(cursor, table: str) -> tuple[str, ...]:
     cursor.execute(
         """
@@ -1187,10 +1314,11 @@ def _v4_structure_findings(cursor) -> list[str]:
     for row in cursor.fetchall():
         checks.setdefault(str(row["table_name"]), []).append(str(row["definition"]))
     for table, (column, values) in V4_CHECKS.items():
+        expected = set(values)
         matching = [
             definition for definition in checks.get(table, [])
             if column in definition
-            and all(f"'{value}'" in definition for value in values)
+            and _check_literal_values(definition) == expected
         ]
         if not matching:
             findings.append(f"v4_check={table}.{column}")
@@ -1652,6 +1780,8 @@ REFUSAL_LEDGER_CODES = frozenset({
     "U3_SNAPSHOT_INTEGRITY_FAILED",
     "U3_SNAPSHOT_REVISION_REGRESSION",
     "U3_SNAPSHOT_REVISION_DIVERGED",
+    "U3_SNAPSHOT_STRUCTURE_REGRESSION",
+    "U3_SNAPSHOT_STRUCTURE_UNVERIFIED",
 })
 
 _STATE_COLUMNS = (
@@ -1666,6 +1796,9 @@ _STATE_COLUMNS = (
 MATERIAL_EVIDENCE_GENERATION_KEY = "evidence_generation"
 ANNOTATION_EVIDENCE_GENERATION_KEY = "evidence_generation"
 CONFIRMATION_GENERATION_KEY = "task_negative_confirmation_generation"
+MATERIAL_EVIDENCE_STRUCTURE_KEY = "evidence_structure"
+ANNOTATION_EVIDENCE_STRUCTURE_KEY = "evidence_structure"
+EVIDENCE_STRUCTURE_GENERATION_KEY = "evidence_structure_generation"
 
 #: Evidence streams that have no monotonic Owner revision of their own and are
 #: therefore protected by their Owner generation plus a content digest. The
@@ -1723,6 +1856,19 @@ def evidence_stream_tables(stores: Mapping[str, Any], store: str) -> list[str]:
     return sorted(str(name) for name in evidence)
 
 
+def recorded_structure(row) -> list[str] | None:
+    """Parse an owner's persisted evidence-table set (``None`` = never recorded)."""
+    if row is None:
+        return None
+    try:
+        value = json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return None
+    return sorted(value)
+
+
 def _confirmation_evidence(stores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return (
         (((stores.get("annotations") or {}).get("evidence") or {})
@@ -1737,31 +1883,53 @@ def snapshot_evidence_streams(
 
     Generations are Owner-side counters (0 for a snapshot exported before the
     counter existed); digests are always recomputed from the rows, so a stale or
-    tampered snapshot cannot claim a generation it did not observe.
+    tampered snapshot cannot claim a generation it did not observe. The structure
+    version and its certified flag travel with the stream, so a table lifecycle
+    change is provable instead of being inferred from the table set.
     """
     stores = snapshot.get("stores") or {}
     declared = snapshot.get("evidence_streams") or {}
 
+    def declared_value(name: str, key: str) -> Any:
+        return (declared.get(name) or {}).get(key)
+
     def generation(name: str) -> int:
-        value = (declared.get(name) or {}).get("generation")
+        value = declared_value(name, "generation")
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
             return value
         return 0
 
+    def structure_generation(name: str) -> int:
+        value = declared_value(name, "structure_generation")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return 0
+
+    def structure_certified(name: str) -> bool:
+        return bool(declared_value(name, "structure_certified"))
+
     confirmations = _confirmation_evidence(stores)
+    annotation_structure_generation = structure_generation("annotations_evidence")
+    annotation_structure_certified = structure_certified("annotations_evidence")
     return {
         "materials_evidence": {
             "generation": generation("materials_evidence"),
+            "structure_generation": structure_generation("materials_evidence"),
+            "structure_certified": structure_certified("materials_evidence"),
             "digest": evidence_stream_digest(stores, "materials"),
             "tables": evidence_stream_tables(stores, "materials"),
         },
         "annotations_evidence": {
             "generation": generation("annotations_evidence"),
+            "structure_generation": annotation_structure_generation,
+            "structure_certified": annotation_structure_certified,
             "digest": evidence_stream_digest(stores, "annotations"),
             "tables": evidence_stream_tables(stores, "annotations"),
         },
         "negative_confirmation": {
             "generation": generation("negative_confirmation"),
+            "structure_generation": annotation_structure_generation,
+            "structure_certified": annotation_structure_certified,
             "revision": len(confirmations),
             "digest": _digest(confirmations),
             "tables": (
@@ -2115,14 +2283,59 @@ def _apply_project_snapshot(
                     "negative_pool": prior_state["negative_pool_digest"],
                 }
             # Evidence streams (mutable historical evidence without an owner
-            # revision) are protected by their own monotonic owner generation.
-            # A presence change (a source table created or dropped) is a structural
-            # owner change, not a content conflict: the retention contract keeps
-            # the target rows of an absent table, so only content within the same
-            # structure is compared.
+            # revision) are protected by two Owner-side versions:
+            #   * the table lifecycle version, which must advance before a
+            #     different evidence-table set may be applied at all;
+            #   * the row generation, which must advance before different content
+            #     within the same structure may be applied.
+            # A structure change is never "assumed safe": if the Owner cannot prove
+            # it (an older snapshot, or a legacy target without a structure
+            # version), the import is refused.
             for name in EVIDENCE_STREAMS:
                 source = streams[name]
                 target = prior_vector.get(name) or {}
+                source_structure = source.get("structure_generation", 0)
+                target_structure = target.get("structure_generation")
+                same_structure = sorted(target.get("tables") or []) == sorted(
+                    source.get("tables") or []
+                )
+                if (
+                    isinstance(target_structure, int)
+                    and not isinstance(target_structure, bool)
+                ):
+                    if source_structure < target_structure:
+                        raise U3MigrationError(
+                            "U3_SNAPSHOT_STRUCTURE_REGRESSION",
+                            f"the {name} evidence structure may not regress",
+                            detail=(
+                                f"stream={name} target={target_structure} "
+                                f"source={source_structure}"
+                            ),
+                        )
+                    if source_structure == target_structure and not same_structure:
+                        raise U3MigrationError(
+                            "U3_SNAPSHOT_STRUCTURE_UNVERIFIED",
+                            f"the {name} evidence structure changed without a new "
+                            "structure version",
+                            detail=(
+                                f"stream={name} structure={source_structure} "
+                                f"target={sorted(target.get('tables') or [])} "
+                                f"source={sorted(source.get('tables') or [])}"
+                            ),
+                        )
+                elif (
+                    prior_state is not None
+                    and not same_structure
+                    and not (source.get("structure_certified") and source_structure > 0)
+                ):
+                    # Legacy target without a structure version: only a certified
+                    # structure transition may change the table set.
+                    raise U3MigrationError(
+                        "U3_SNAPSHOT_STRUCTURE_UNVERIFIED",
+                        f"the {name} evidence structure cannot be proven against "
+                        "the published state",
+                        detail=f"stream={name}",
+                    )
                 target_generation = target.get("generation")
                 if (
                     isinstance(target_generation, int)
@@ -2137,12 +2350,9 @@ def _apply_project_snapshot(
                             f"source={source['generation']}"
                         ),
                     )
-                same_structure = sorted(target.get("tables") or []) == sorted(
-                    source.get("tables") or []
-                )
                 if (
-                    source["generation"] == target_generation
-                    and same_structure
+                    same_structure
+                    and source["generation"] == target_generation
                     and isinstance(target.get("digest"), str)
                     and target["digest"] != source["digest"]
                 ):
@@ -2199,6 +2409,10 @@ def _apply_project_snapshot(
                 and all(
                     (prior_vector.get(name) or {}).get("generation") == streams[name]["generation"]
                     and (prior_vector.get(name) or {}).get("digest") == streams[name]["digest"]
+                    and (prior_vector.get(name) or {}).get("structure_generation", 0)
+                    == streams[name].get("structure_generation", 0)
+                    and sorted((prior_vector.get(name) or {}).get("tables") or [])
+                    == sorted(streams[name].get("tables") or [])
                     for name in EVIDENCE_STREAMS
                 )
                 and str(prior_state["content_digest"]) == str(snapshot.get("content_digest") or "")
@@ -2420,7 +2634,12 @@ def _apply_project_snapshot(
             # Derived confirmation projection: queryable rows only, the verbatim
             # owner evidence stays in evidence_row and is never rewritten here.
             confirmation_rows = _confirmation_projection(snapshot)
-            if mode == "full":
+            # A present-but-empty source table is authoritative emptiness and clears
+            # the projection (same semantics as evidence_row). An ABSENT source table
+            # retains both the historical evidence rows and their projection, so the
+            # two never disagree: one is never cleared while the other is retained.
+            confirmation_present = bool(streams["negative_confirmation"]["tables"])
+            if mode == "full" and confirmation_present:
                 cursor.execute(
                     f"DELETE FROM {SCHEMA_NAME}.task_negative_confirmation "
                     "WHERE project_id=%s",
