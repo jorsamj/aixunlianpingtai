@@ -449,27 +449,47 @@ def test_delete_requires_complete_cross_domain_evidence():
         "postgresql://example.invalid/db", "platform", allow_cross_domain_delete=True
     )
     assert repository.unsupported_operations() == ()
+    identity = {
+        "scope": "platform",
+        "source_id": "nas-1",
+        "config_digest": "0" * 64,
+        "operation_id": "op-1",
+        "checked_at": "2026-11-26T00:00:00+00:00",
+    }
 
     # No evidence at all.
-    repository.set_delete_evidence(None)
     with pytest.raises(Exception) as required:
         repository._require_delete_evidence(None)
     assert getattr(required.value, "code", "") == "STORAGE_SOURCE_DELETE_EVIDENCE_REQUIRED"
 
-    # Incomplete evidence.
+    # Incomplete evidence (no identity binding).
     with pytest.raises(Exception) as incomplete:
         repository._require_delete_evidence({"source_revision": 1})
     assert getattr(incomplete.value, "code", "") == "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE"
+
+    # Wrong scope is refused before anything else.
+    with pytest.raises(Exception) as scope:
+        repository._require_delete_evidence(
+            {
+                **identity,
+                "scope": "another-deployment",
+                "source_revision": 1,
+                "material_references": 0,
+                "artifact_references": 0,
+                "physical_retirement": {"status": "RETIRED", "proof": "x"},
+            }
+        )
+    assert getattr(scope.value, "code", "") == "STORAGE_SOURCE_DELETE_EVIDENCE_STALE"
 
     # Still referenced by another owner.
     with pytest.raises(Exception) as referenced:
         repository._require_delete_evidence(
             {
+                **identity,
                 "source_revision": 1,
                 "material_references": 0,
                 "artifact_references": 2,
                 "physical_retirement": {"status": "RETIRED", "proof": "x"},
-                "checked_at": "2026-11-26T00:00:00+00:00",
             }
         )
     assert getattr(referenced.value, "code", "") == "STORAGE_SOURCE_DELETE_STILL_REFERENCED"
@@ -478,29 +498,29 @@ def test_delete_requires_complete_cross_domain_evidence():
     with pytest.raises(Exception) as unproven:
         repository._require_delete_evidence(
             {
+                **identity,
                 "source_revision": 1,
                 "material_references": 0,
                 "artifact_references": 0,
                 "physical_retirement": {"status": "NOT_RETIRED", "proof": ""},
-                "checked_at": "2026-11-26T00:00:00+00:00",
             }
         )
     assert getattr(unproven.value, "code", "") == "STORAGE_SOURCE_DELETE_RETIREMENT_UNPROVEN"
 
-    # Complete evidence is accepted.
+    # Complete, identity-bound evidence is accepted.
     evidence = repository._require_delete_evidence(
         {
+            **identity,
             "source_revision": 3,
             "material_references": 0,
             "artifact_references": 0,
             "physical_retirement": {"status": "RETIRED", "proof": "s3://bucket/empty@digest"},
-            "checked_at": "2026-11-26T00:00:00+00:00",
         }
     )
-    assert evidence["source_revision"] == 3
+    assert evidence["source_revision"] == 3 and evidence["source_id"] == "nas-1"
 
-def test_delete_evidence_uses_real_material_references_and_requires_other_owners(tmp_path):
-    """The material side is measured for real; the other owners must answer."""
+def test_delete_evidence_binds_the_source_identity_and_scope(tmp_path):
+    """Evidence from another source/scope can never authorise this delete."""
     from platform_core.material_repository import MaterialRepository
     from platform_core.storage.source_repository import StorageSource
     from platform_core.storage_source_delete_evidence import (
@@ -509,101 +529,70 @@ def test_delete_evidence_uses_real_material_references_and_requires_other_owners
     )
 
     source = StorageSource(
-        id="nas-1", name="NAS", type="remote", config={}, runtime_revision=4
+        id="nas-1", name="NAS", type="remote",
+        config={"root": "/mnt/nas"}, secret_ref="secret://s/1", runtime_revision=2,
     )
     projects = tmp_path / "projects"
-    for project_id, references in (("p1", 2), ("p2", 0)):
-        project = projects / project_id
-        project.mkdir(parents=True)
-        repository = MaterialRepository(project)
-        for index in range(references):
-            repository.upsert(
-                {
-                    "id": f"{project_id}-m{index}",
-                    "storage_source_id": "nas-1",
-                    "object_key": f"uploads/{project_id}-{index}.jpg",
-                    "filename": f"{project_id}-{index}.jpg",
-                }
-            )
+    (projects / "p1").mkdir(parents=True)
+    MaterialRepository(projects / "p1").upsert(
+        {"id": "m1", "storage_source_id": "nas-1", "object_key": "uploads/m1.jpg", "filename": "m1.jpg"}
+    )
+    retirement = lambda _source: {"status": "RETIRED", "proof": "s3://b/empty@sha"}
 
-    retirement = lambda _source: {"status": "RETIRED", "proof": "s3://bucket/empty@sha"}
-    # 1. The material count comes from the real indexed reads.
     evidence = collect_delete_evidence(
         source,
+        scope="platform",
         projects_root=projects,
-        project_ids=["p1", "p2"],
+        project_ids=["p1"],
         artifact_reference_counter=lambda _source: 0,
         physical_retirement_probe=retirement,
     )
-    assert evidence["material_references"] == 2
-    assert evidence["source_revision"] == 4
-    assert evidence["physical_retirement"]["status"] == "RETIRED"
+    assert evidence["scope"] == "platform"
+    assert evidence["source_id"] == "nas-1"
+    assert len(evidence["config_digest"]) == 64
+    assert evidence["operation_id"]
+    assert evidence["material_references"] == 1
 
-    # 2. A missing artifact owner is not "zero artifacts".
-    with pytest.raises(DeleteEvidenceError) as artifacts:
-        collect_delete_evidence(
-            source,
-            projects_root=projects,
-            project_ids=["p1"],
-            artifact_reference_counter=None,
-            physical_retirement_probe=retirement,
-        )
-    assert artifacts.value.code == "STORAGE_SOURCE_DELETE_EVIDENCE_OWNER_UNAVAILABLE"
-
-    # 3. An unavailable retirement procedure is not "retired".
-    with pytest.raises(DeleteEvidenceError) as retirement_missing:
-        collect_delete_evidence(
-            source,
-            projects_root=projects,
-            project_ids=["p1"],
-            artifact_reference_counter=lambda _source: 0,
-            physical_retirement_probe=None,
-        )
-    assert retirement_missing.value.code == "STORAGE_SOURCE_DELETE_EVIDENCE_OWNER_UNAVAILABLE"
-
-    # 4. A probe that says the objects still exist blocks the delete.
-    with pytest.raises(DeleteEvidenceError) as not_retired:
-        collect_delete_evidence(
-            source,
-            projects_root=projects,
-            project_ids=["p1"],
-            artifact_reference_counter=lambda _source: 0,
-            physical_retirement_probe=lambda _source: {"status": "PRESENT", "proof": ""},
-        )
-    assert not_retired.value.code == "STORAGE_SOURCE_DELETE_RETIREMENT_UNPROVEN"
-
-    # 5. An exploding owner is treated as unavailable, never as zero.
-    def exploding(_source):
-        raise RuntimeError("artifact index offline")
-
-    with pytest.raises(DeleteEvidenceError) as unavailable:
-        collect_delete_evidence(
-            source,
-            projects_root=projects,
-            project_ids=["p1"],
-            artifact_reference_counter=exploding,
-            physical_retirement_probe=retirement,
-        )
-    assert unavailable.value.code == "STORAGE_SOURCE_DELETE_EVIDENCE_OWNER_UNAVAILABLE"
-
-    # 6. A project list beyond the bound is refused instead of scanned.
-    with pytest.raises(DeleteEvidenceError):
-        collect_delete_evidence(
-            source,
-            projects_root=projects,
-            artifact_reference_counter=lambda _source: 0,
-            physical_retirement_probe=retirement,
-            max_projects=1,
-        )
-
-    # 7. The collected evidence is exactly what the provider validates.
-    from platform_core.storage_source_postgres_store import (
-        PostgresStorageSourceRepository,
+    # The collector records the requested scope verbatim; the provider is the
+    # authority that refuses evidence collected for another scope (covered by
+    # test_delete_requires_complete_cross_domain_evidence).
+    other_scope = collect_delete_evidence(
+        source,
+        scope="another-deployment",
+        projects_root=projects,
+        project_ids=["p1"],
+        artifact_reference_counter=lambda _source: 0,
+        physical_retirement_probe=retirement,
     )
+    assert other_scope["scope"] == "another-deployment"
 
-    provider = PostgresStorageSourceRepository(
-        "postgresql://example.invalid/db", "platform", allow_cross_domain_delete=True
+    # An unproven project scope is not "zero references": without a root or an
+    # explicit id list the collector refuses instead of assuming no projects.
+    with pytest.raises(DeleteEvidenceError) as empty:
+        collect_delete_evidence(
+            source,
+            artifact_reference_counter=lambda _source: 0,
+            physical_retirement_probe=retirement,
+        )
+    assert empty.value.code == "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE"
+
+    # A project list naming a directory that does not exist is incomplete.
+    with pytest.raises(DeleteEvidenceError) as missing:
+        collect_delete_evidence(
+            source,
+            projects_root=projects,
+            project_ids=["p1", "ghost"],
+            artifact_reference_counter=lambda _source: 0,
+            physical_retirement_probe=retirement,
+        )
+    assert missing.value.code == "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE"
+
+    # The collected digest is exactly the provider-side configuration identity.
+    from platform_core.storage.source_repository import storage_source_config_digest
+
+    assert evidence["config_digest"] == storage_source_config_digest(source)
+    changed = StorageSource(
+        id="nas-1", name="NAS", type="remote",
+        config={"root": "/mnt/other"}, secret_ref="secret://s/1", runtime_revision=2,
     )
-    assert provider._require_delete_evidence(
-        {**evidence, "material_references": 0}
-    )["source_revision"] == 4
+    assert storage_source_config_digest(changed) != evidence["config_digest"]

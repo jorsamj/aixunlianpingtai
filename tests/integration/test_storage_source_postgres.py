@@ -820,9 +820,15 @@ def test_sigkill_after_record_before_marker_is_finished(pg, tmp_path):
 # ---------------------------------------------------------------------------
 # A2: reverse cutover (PostgreSQL -> SQLite) with post-cutover writes
 # ---------------------------------------------------------------------------
-def _delete_evidence(revision, *, materials=0, artifacts=0, retired=True, proof="s3://bucket/verified-empty"):
+def _delete_evidence(source, *, materials=0, artifacts=0, retired=True, proof="s3://bucket/verified-empty"):
+    from platform_core.storage.source_repository import storage_source_config_digest
+
     return {
-        "source_revision": revision,
+        "scope": SCOPE,
+        "source_id": source.id,
+        "config_digest": storage_source_config_digest(source),
+        "operation_id": "delete-op-1",
+        "source_revision": int(source.runtime_revision),
         "material_references": materials,
         "artifact_references": artifacts,
         "physical_retirement": {
@@ -847,7 +853,7 @@ def test_reverse_cutover_imports_post_cutover_create_update_delete(pg, tmp_path)
     repository = _provider(pg, tmp_path, allow_delete=True)
     repository.create({"id": "nas-2", "name": "NAS 2", "type": "remote"})
     repository.update("nas-1", {"name": "NAS renamed in postgres"})
-    repository.set_delete_evidence(_delete_evidence(1))
+    repository.set_delete_evidence(_delete_evidence(repository.get("nas-pre")))
     assert repository.delete("nas-pre") is True
 
     with psycopg.connect(pg.get_uri()) as connection:
@@ -1043,3 +1049,221 @@ def test_abort_of_a_frozen_rollback_needs_the_connection(pg, tmp_path):
     assert not marker_path.exists()
     assert cutover_status(owner.path)["state"] == STATE_POSTGRES
     assert _provider(pg, tmp_path).update("nas-1", {"name": "postgres restored"}).name == "postgres restored"
+
+# ---------------------------------------------------------------------------
+# A1: operation-identity chain for finish/abort
+# ---------------------------------------------------------------------------
+def test_finish_refuses_a_marker_from_another_operation(pg, tmp_path):
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+    _assert_killed(_run_crash_probe(pg, owner, "after_record_before_marker"))
+    record_path = admission_record_path(owner.path)
+    marker_path = admission_transition_path(record_path)
+    original = json.loads(marker_path.read_text(encoding="utf-8"))
+
+    # A stale/foreign marker must never release the published transition.
+    marker_path.write_text(
+        json.dumps({**original, "operation_id": "another-operation"}), encoding="utf-8"
+    )
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as foreign:
+            finish_cutover(connection, owner.path)
+    assert getattr(foreign.value, "code", "") == "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN"
+    # A wrong scope is refused too.
+    marker_path.write_text(json.dumps({**original, "scope": "other"}), encoding="utf-8")
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as wrong_scope:
+            finish_cutover(connection, owner.path)
+    assert getattr(wrong_scope.value, "code", "") == "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN"
+
+    marker_path.write_text(json.dumps(original), encoding="utf-8")
+    with psycopg.connect(pg.get_uri()) as connection:
+        assert finish_cutover(connection, owner.path)["finished"] is True
+    # Duplicate finish is a no-op, not a second publication.
+    with psycopg.connect(pg.get_uri()) as connection:
+        assert finish_cutover(connection, owner.path)["finished"] is False
+
+
+def test_finish_rollback_requires_the_rollback_identity_chain(pg, tmp_path, monkeypatch):
+    from platform_core import storage_source_cutover as cutover_module
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+    with psycopg.connect(pg.get_uri()) as connection:
+        admit_cutover(connection, owner.path, operator="ops", reason="forward")
+
+    record_path = admission_record_path(owner.path)
+    marker_path = admission_transition_path(record_path)
+    real_write = cutover_module._write_json_atomic
+
+    def interrupt_record(path, payload):
+        if path.name == "cutover_admission.json":
+            raise RuntimeError("interrupted after the durable rollback commit")
+        return real_write(path, payload)
+
+    monkeypatch.setattr(cutover_module, "_write_json_atomic", interrupt_record)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(RuntimeError):
+            rollback_cutover(connection, owner.path, operator="ops", reason="reverse")
+    monkeypatch.undo()
+
+    original = json.loads(marker_path.read_text(encoding="utf-8"))
+    assert original["direction"] == "ROLLBACK"
+    durable = _durable_row(pg.get_uri())
+    assert durable is not None and str(durable[2]) == "ROLLBACK_APPLIED"
+
+    # Wrong predecessor: the marker does not describe this record's history.
+    marker_path.write_text(
+        json.dumps({**original, "previous_admission_id": "someone-else"}),
+        encoding="utf-8",
+    )
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as predecessor:
+            finish_cutover(connection, owner.path)
+    assert getattr(predecessor.value, "code", "") == "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN"
+
+    # Wrong generation.
+    marker_path.write_text(
+        json.dumps({**original, "writer_generation": int(original["writer_generation"]) + 9}),
+        encoding="utf-8",
+    )
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as generation:
+            finish_cutover(connection, owner.path)
+    assert getattr(generation.value, "code", "") == "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN"
+
+    # A forward marker cannot release a rollback state.
+    marker_path.write_text(
+        json.dumps({k: v for k, v in original.items() if k != "direction"}),
+        encoding="utf-8",
+    )
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as direction:
+            finish_cutover(connection, owner.path)
+    assert getattr(direction.value, "code", "") == "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN"
+
+    marker_path.write_text(json.dumps(original), encoding="utf-8")
+    with psycopg.connect(pg.get_uri()) as connection:
+        finished = finish_cutover(connection, owner.path)
+    assert finished["direction"] == "ROLLBACK" and finished["recovered_local_record"] is True
+
+
+def test_abort_phase_and_duplicate_rules(pg, tmp_path, monkeypatch):
+    from platform_core import storage_source_cutover as cutover_module
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+    with psycopg.connect(pg.get_uri()) as connection:
+        admit_cutover(connection, owner.path, operator="ops", reason="forward")
+    # A published admission is never abortable.
+    marker_path = admission_transition_path(admission_record_path(owner.path))
+    record = json.loads(admission_record_path(owner.path).read_text(encoding="utf-8"))
+    marker_path.write_text(
+        json.dumps(
+            {
+                "contract_version": "storage-source-cutover-transition-v1",
+                "operation_id": record["operation_id"],
+                "scope": SCOPE,
+                "phase": "POSTGRES_ACTIVE",
+                "writer_generation": record["writer_generation"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as admitted:
+            abort_cutover(owner.path, connection)
+    assert getattr(admitted.value, "code", "") == "STORAGE_SOURCE_CUTOVER_ALREADY_ADMITTED"
+    marker_path.unlink()
+
+    # Interrupted rollback: the published rollback must be finished, not aborted.
+    real_write = cutover_module._write_json_atomic
+
+    def interrupt_record(path, payload):
+        if path.name == "cutover_admission.json":
+            raise RuntimeError("interrupted")
+        return real_write(path, payload)
+
+    monkeypatch.setattr(cutover_module, "_write_json_atomic", interrupt_record)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(RuntimeError):
+            rollback_cutover(connection, owner.path, operator="ops", reason="reverse")
+    monkeypatch.undo()
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as rollback_published:
+            abort_cutover(owner.path, connection)
+    assert getattr(rollback_published.value, "code", "") == "STORAGE_SOURCE_CUTOVER_ROLLBACK_PUBLISHED"
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        assert finish_cutover(connection, owner.path)["finished"] is True
+    # Duplicate abort is a no-op.
+    assert abort_cutover(owner.path)["aborted"] is False
+
+
+def test_full_cycle_second_forward_interruption_is_recoverable(pg, tmp_path, monkeypatch):
+    """SQLite -> PostgreSQL -> SQLite -> PostgreSQL with an interrupted re-switch."""
+    from platform_core import storage_source_cutover as cutover_module
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection, allow_upgrade=True)
+        _clear(connection)
+
+    owner = _switch_owner(tmp_path)
+    with psycopg.connect(pg.get_uri()) as connection:
+        first = admit_cutover(connection, owner.path, operator="ops", reason="forward")
+    repository = _provider(pg, tmp_path)
+    repository.create({"id": "nas-cycle", "name": "NAS cycle", "type": "remote"})
+    with psycopg.connect(pg.get_uri()) as connection:
+        rolled = rollback_cutover(connection, owner.path, operator="ops", reason="reverse")
+    assert rolled["writer_generation"] == first["writer_generation"] + 1
+    assert owner.get("nas-cycle") is not None
+
+    # Second forward switch interrupted after its PostgreSQL commit.
+    record_path = admission_record_path(owner.path)
+    marker_path = admission_transition_path(record_path)
+    real_write = cutover_module._write_json_atomic
+
+    def interrupt_record(path, payload):
+        if path.name == "cutover_admission.json":
+            raise RuntimeError("interrupted after the second commit")
+        return real_write(path, payload)
+
+    monkeypatch.setattr(cutover_module, "_write_json_atomic", interrupt_record)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(RuntimeError):
+            admit_cutover(connection, owner.path, operator="ops", reason="forward again")
+    monkeypatch.undo()
+
+    # The previous SQLite authority is still published, the new attempt is not:
+    # finish must refuse (the marker is not that record's operation), and abort
+    # releases the unpublished attempt.
+    status = cutover_status(owner.path)
+    assert status["state"] == STATE_INCONSISTENT
+    assert status["sqlite_writable"] is False and status["postgres_writable"] is False
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(Exception) as chain:
+            finish_cutover(connection, owner.path)
+    assert getattr(chain.value, "code", "") == "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN"
+    with psycopg.connect(pg.get_uri()) as connection:
+        aborted = abort_cutover(owner.path, connection)
+    assert aborted["aborted"] is True and aborted["restored_phase"] == ""
+    assert cutover_status(owner.path)["state"] == STATE_SQLITE
+    assert owner.update("nas-cycle", {"name": "still sqlite"}).name == "still sqlite"
+
+    # A later forward switch works and uses a strictly greater generation.
+    durable = _durable_row(pg.get_uri())
+    with psycopg.connect(pg.get_uri()) as connection:
+        third = admit_cutover(connection, owner.path, operator="ops", reason="forward third")
+    assert third["writer_generation"] == int(durable[1]) + 1
+    with psycopg.connect(pg.get_uri()) as connection:
+        target = export_target_snapshot(connection, SCOPE)
+    assert reconcile(export_snapshot(owner.path, SCOPE), target)["same"] is True

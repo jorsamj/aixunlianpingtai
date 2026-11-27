@@ -97,6 +97,35 @@ class StorageSourceOperationBlocked(StorageSourceRepositoryError):
     """A cross-domain operation is withheld until its evidence is admitted."""
 
 
+def storage_source_config_digest(source: "StorageSource | Mapping[str, Any]") -> str:
+    """Deterministic identity digest of one source's configuration.
+
+    Binds the delete/rollback evidence to *this* source's configuration (id, type,
+    config and the SecretStore reference). The plaintext credential is never part
+    of it - only the reference - and the bytes are canonicalised so two owners that
+    store the same map with different key order produce the same digest.
+    """
+    import hashlib
+
+    def value(key: str) -> Any:
+        if isinstance(source, Mapping):
+            return source.get(key)
+        return getattr(source, key, None)
+
+    body = json.dumps(
+        {
+            "id": str(value("id") or ""),
+            "type": str(value("type") or ""),
+            "config": dict(value("config") or {}),
+            "secret_ref": str(value("secret_ref") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
 def scope_for_path(path: str | Path, *, default: str = DEFAULT_SCOPE) -> str:
     """The business scope of one storage-source database path."""
     Path(path)

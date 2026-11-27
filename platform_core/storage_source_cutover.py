@@ -514,11 +514,26 @@ def rollback_cutover(
                             "the durable cutover state does not match the admission record",
                         )
                     with connection.cursor() as cursor:
+                        # Identity-conditioned: only the exact published forward
+                        # operation may be frozen. A different operation's row is
+                        # never silently taken over.
                         cursor.execute(
                             f"UPDATE {SCHEMA_NAME}.cutover_state SET phase=%s, "
-                            "updated_at=now() WHERE scope=%s",
-                            (PHASE_SWITCHING, scope),
+                            "updated_at=now() WHERE scope=%s AND admission_id=%s "
+                            "AND writer_generation=%s AND phase=%s",
+                            (
+                                PHASE_SWITCHING,
+                                scope,
+                                str(record.get("admission_id") or ""),
+                                int(record.get("writer_generation") or 0),
+                                PHASE_POSTGRES_ACTIVE,
+                            ),
                         )
+                        if cursor.rowcount != 1:
+                            raise StorageSourceCutoverError(
+                                "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                                "the durable cutover state was replaced during the rollback",
+                            )
                 durable_frozen = True
                 # A read inside its own transaction: an implicit transaction here
                 # would turn the later cutover_state update into a SAVEPOINT.
@@ -548,6 +563,8 @@ def rollback_cutover(
                     )
                 generation = int(record.get("writer_generation") or 0) + 1
                 admission_id = uuid.uuid4().hex
+                marker["writer_generation"] = generation
+                _write_json_atomic(admission_transition_path(record_path), marker)
                 with connection.transaction():
                     _lock_cutover_scope(connection, scope)
                     with connection.cursor() as cursor:
@@ -555,7 +572,8 @@ def rollback_cutover(
                             f"UPDATE {SCHEMA_NAME}.cutover_state SET "
                             "admission_id=%s, writer_generation=%s, phase=%s, "
                             "source_digest=%s, target_digest=%s, operation_id=%s, "
-                            "updated_at=now() WHERE scope=%s",
+                            "updated_at=now() WHERE scope=%s AND admission_id=%s "
+                            "AND writer_generation=%s AND phase=%s",
                             (
                                 admission_id,
                                 generation,
@@ -564,8 +582,16 @@ def rollback_cutover(
                                 str(current["content_digest"]),
                                 operation_id,
                                 scope,
+                                str(record.get("admission_id") or ""),
+                                int(record.get("writer_generation") or 0),
+                                PHASE_SWITCHING,
                             ),
                         )
+                        if cursor.rowcount != 1:
+                            raise StorageSourceCutoverError(
+                                "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                                "the frozen cutover state changed before the rollback could publish",
+                            )
                 durable_rollback = True
                 require_idle_connection(connection, purpose="storage-source rollback")
                 admission = {
@@ -594,16 +620,30 @@ def rollback_cutover(
                     raise
                 if durable_frozen:
                     # Restore PostgreSQL authority: the rollback never completed,
-                    # so the forward switch is still the truth.
+                    # so the forward switch is still the truth. Conditioned on the
+                    # same forward identity we froze.
                     try:
                         with connection.transaction():
                             _lock_cutover_scope(connection, scope)
                             with connection.cursor() as cursor:
                                 cursor.execute(
                                     f"UPDATE {SCHEMA_NAME}.cutover_state SET "
-                                    "phase=%s, updated_at=now() WHERE scope=%s",
-                                    (PHASE_POSTGRES_ACTIVE, scope),
+                                    "phase=%s, updated_at=now() WHERE scope=%s "
+                                    "AND admission_id=%s AND writer_generation=%s "
+                                    "AND phase=%s",
+                                    (
+                                        PHASE_POSTGRES_ACTIVE,
+                                        scope,
+                                        str(record.get("admission_id") or ""),
+                                        int(record.get("writer_generation") or 0),
+                                        PHASE_SWITCHING,
+                                    ),
                                 )
+                                if cursor.rowcount != 1:
+                                    raise StorageSourceCutoverError(
+                                        "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                                        "the frozen cutover state changed; keep the marker",
+                                    )
                     except Exception:
                         # Unprovable: keep the marker (both sides blocked).
                         raise
@@ -644,7 +684,67 @@ def _durable_row_for_update(connection, scope: str):
 def _finish_rollback(
     connection, owner: Path, record_path: Path, record: Mapping[str, Any], durable: Mapping[str, Any], scope: str
 ) -> dict[str, Any]:
-    """Complete a rollback whose durable state is published but local isn't."""
+    """Complete a rollback whose durable state is published but local isn't.
+
+    The whole recovery is an *identity chain*, not a digest comparison: the marker
+    must be the rollback operation that wrote this durable row, the local record
+    must be either that operation's predecessor (still the forward admission) or
+    the operation's own published result, and the SQLite copy must be the exact
+    target the durable row froze. A matching target digest alone is never enough to
+    publish a new authority record.
+    """
+    marker = read_transition(record_path)
+    if marker is None:
+        raise StorageSourceCutoverError(
+            "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+            "the transition marker disappeared before the rollback could be finished",
+        )
+    if str(marker.get("direction") or "") != "ROLLBACK":
+        raise StorageSourceCutoverError(
+            "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+            "the marker is not the rollback that produced this durable state",
+            detail=f"direction={marker.get('direction')!r}",
+        )
+    if str(marker.get("scope") or "") != scope or str(durable["operation_id"]) != str(
+        marker.get("operation_id") or ""
+    ):
+        raise StorageSourceCutoverError(
+            "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+            "the marker does not own this durable rollback",
+            detail=(
+                f"marker={marker.get('operation_id')!r} "
+                f"durable={durable.get('operation_id')!r}"
+            ),
+        )
+    if marker.get("writer_generation") is not None and int(
+        marker["writer_generation"]
+    ) != int(durable["writer_generation"]):
+        raise StorageSourceCutoverError(
+            "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+            "the marker generation does not match the durable rollback generation",
+        )
+    previous_admission_id = str(marker.get("previous_admission_id") or "")
+    record_admission_id = str(record.get("admission_id") or "")
+    published = (
+        str(record.get("authoritative_provider") or "") == "sqlite"
+        and record_admission_id == str(durable["admission_id"])
+        and str(record.get("operation_id") or "") == str(durable["operation_id"])
+        and int(record.get("writer_generation") or 0) == int(durable["writer_generation"])
+    )
+    predecessor = (
+        str(record.get("authoritative_provider") or "") == PROVIDER_POSTGRESQL
+        and record_admission_id == previous_admission_id
+        and str(record.get("operation_id") or "") != str(durable["operation_id"])
+    )
+    if not (published or predecessor):
+        raise StorageSourceCutoverError(
+            "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+            "the local admission record is neither this rollback nor its predecessor",
+            detail=(
+                f"record={record_admission_id!r} provider={record.get('authoritative_provider')!r} "
+                f"previous={previous_admission_id!r} durable={durable['admission_id']!r}"
+            ),
+        )
     current = export_snapshot(owner, scope)
     if str(current["content_digest"]) != str(durable["target_digest"]):
         raise StorageSourceCutoverError(
@@ -655,14 +755,11 @@ def _finish_rollback(
                 f"current={current['content_digest']}"
             ),
         )
-    recovered = not (
-        str(record.get("authoritative_provider") or "") == "sqlite"
-        and str(record.get("admission_id") or "") == str(durable["admission_id"])
-        and int(record.get("writer_generation") or 0) == int(durable["writer_generation"])
-    )
+    recovered = not published
     if recovered:
         # The rollback committed but the local record was never published. The
-        # durable row is the authority: rewrite the local record from it.
+        # durable row plus the marker prove the operation; rewrite the record from
+        # that identity (never from a bare digest match).
         admission = {
             "contract_version": CONTRACT_VERSION,
             "admission_id": str(durable["admission_id"]),
@@ -673,11 +770,11 @@ def _finish_rollback(
             "target_digest": str(durable["target_digest"]),
             "writer_generation": int(durable["writer_generation"]),
             "operation_id": str(durable["operation_id"]),
-            "previous_admission_id": str(record.get("admission_id") or ""),
+            "previous_admission_id": previous_admission_id,
             "admitted_at": _now(),
             "revoked_at": None,
             "operator": "finish_cutover",
-            "reason": "completed an interrupted rollback from the durable state",
+            "reason": "completed an interrupted rollback from its verified identity chain",
         }
         _write_json_atomic(record_path, admission)
     admission_transition_path(record_path).unlink(missing_ok=True)
@@ -719,9 +816,30 @@ def finish_cutover(connection, sqlite_path: str | Path) -> dict[str, Any]:
                     "the durable cutover state is missing",
                 )
             require_idle_connection(connection, purpose="storage-source cutover finish")
+            direction = str(marker.get("direction") or "FORWARD")
             if str(durable["phase"]) == PHASE_ROLLBACK_APPLIED:
+                if direction != "ROLLBACK":
+                    raise StorageSourceCutoverError(
+                        "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                        "a rollback state is recorded but the marker is not a rollback",
+                        detail=f"direction={direction!r}",
+                    )
                 return _finish_rollback(connection, owner, record_path, record, durable, scope)
+            if direction == "ROLLBACK":
+                raise StorageSourceCutoverError(
+                    "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                    "a rollback marker exists but the durable state is not a rollback",
+                )
+            if str(marker.get("scope") or "") != scope or str(
+                record.get("scope") or ""
+            ) != scope:
+                raise StorageSourceCutoverError(
+                    "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                    "the marker or admission record belongs to another scope",
+                )
             if str(marker.get("operation_id") or "") != str(
+                record.get("operation_id") or ""
+            ) or str(durable.get("operation_id") or "") != str(
                 record.get("operation_id") or ""
             ):
                 raise StorageSourceCutoverError(
@@ -729,8 +847,23 @@ def finish_cutover(connection, sqlite_path: str | Path) -> dict[str, Any]:
                     "the transition marker belongs to another operation",
                     detail=(
                         f"marker={marker.get('operation_id')!r} "
-                        f"record={record.get('operation_id')!r}"
+                        f"record={record.get('operation_id')!r} "
+                        f"durable={durable.get('operation_id')!r}"
                     ),
+                )
+            if str(marker.get("previous_admission_id") or "") != str(
+                record.get("previous_admission_id") or ""
+            ):
+                raise StorageSourceCutoverError(
+                    "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                    "the marker and the admission record disagree on their predecessor",
+                )
+            if marker.get("writer_generation") is not None and int(
+                marker["writer_generation"]
+            ) != int(durable["writer_generation"]):
+                raise StorageSourceCutoverError(
+                    "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                    "the marker generation does not match the durable generation",
                 )
             if (
                 str(durable["admission_id"]) != str(record.get("admission_id") or "")
@@ -783,13 +916,20 @@ def abort_cutover(
 ) -> dict[str, Any]:
     """Abort a switch (or an unfinished rollback) that published no admission.
 
-    This only releases the local marker: it is **not** a PostgreSQL rollback. When
-    an interrupted *reverse* switch already froze PostgreSQL the durable phase must
-    be restored, so a connection is required in that case; without it the tool
-    refuses instead of leaving a published admission or a frozen provider behind.
-    Rows an interrupted switch already committed stay in the target database (inert
-    while no admission record exists), which is why the result reports
-    ``target_may_hold_unadmitted_rows``.
+    This only releases the local marker: it is **not** a PostgreSQL rollback. The
+    decision is phase- and identity-based:
+
+    * durable ``ROLLBACK_APPLIED`` -> the rollback is published, use ``finish``;
+    * durable ``SWITCHING`` -> an interrupted reverse switch: the marker must be
+      that rollback and the frozen row is restored to ``POSTGRES_ACTIVE``;
+    * durable ``POSTGRES_ACTIVE`` that belongs to the local record -> the
+      admission is published, use the verified rollback;
+    * durable ``POSTGRES_ACTIVE`` that does **not** belong to the local record ->
+      an unpublished forward attempt; releasing the marker is safe because the
+      provider refuses writes without the matching admission record.
+
+    A connection is required whenever a local admission record exists, because
+    only the durable row can distinguish those states.
     """
     record_path = admission_record_path(sqlite_path)
     owner = Path(sqlite_path)
@@ -811,43 +951,65 @@ def abort_cutover(
                         "STORAGE_SOURCE_CUTOVER_ROLLBACK_PUBLISHED",
                         "the rollback is published; use finish to complete it",
                     )
-            if record is not None and not record.get("revoked_at") and str(
-                record.get("authoritative_provider") or ""
-            ) == PROVIDER_POSTGRESQL:
-                # A steady published admission cannot be aborted; only an
-                # interrupted switch (durable SWITCHING) may be resolved here.
-                # Without the connection the durable phase is unknown, so the
-                # tool refuses instead of guessing between the two.
-                if durable is None:
+            if connection is None and record is not None:
+                raise StorageSourceCutoverError(
+                    "STORAGE_SOURCE_ABORT_REQUIRES_CONNECTION",
+                    "resolving this interrupted switch needs the PostgreSQL connection",
+                    detail="pass the connection so the durable phase can be proven",
+                )
+            if durable is not None and str(durable["phase"]) == PHASE_SWITCHING:
+                if str(marker.get("direction") or "") != "ROLLBACK":
                     raise StorageSourceCutoverError(
-                        "STORAGE_SOURCE_ABORT_REQUIRES_CONNECTION",
-                        "resolving this interrupted switch needs the PostgreSQL connection",
-                        detail="pass the connection so the durable phase can be restored",
+                        "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                        "the marker does not describe the frozen operation",
+                        detail=f"direction={marker.get('direction')!r}",
                     )
-                if str(durable["phase"]) == PHASE_POSTGRES_ACTIVE:
+                if record is None or str(record.get("admission_id") or "") != str(
+                    durable["admission_id"]
+                ) or int(record.get("writer_generation") or 0) != int(
+                    durable["writer_generation"]
+                ):
                     raise StorageSourceCutoverError(
-                        "STORAGE_SOURCE_CUTOVER_ALREADY_ADMITTED",
-                        "an admission is published; a verified rollback is required",
-                        detail=f"admission_id={record.get('admission_id')!r}",
+                        "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                        "the frozen durable state does not belong to the local admission",
                     )
-            if connection is not None and durable is not None and str(
-                durable["phase"]
-            ) == PHASE_SWITCHING:
                 with connection.transaction():
                     _lock_cutover_scope(connection, scope)
                     with connection.cursor() as cursor:
                         cursor.execute(
                             f"UPDATE {SCHEMA_NAME}.cutover_state SET phase=%s, "
-                            "updated_at=now() WHERE scope=%s",
-                            (PHASE_POSTGRES_ACTIVE, scope),
+                            "updated_at=now() WHERE scope=%s AND admission_id=%s "
+                            "AND writer_generation=%s AND phase=%s",
+                            (
+                                PHASE_POSTGRES_ACTIVE,
+                                scope,
+                                str(durable["admission_id"]),
+                                int(durable["writer_generation"]),
+                                PHASE_SWITCHING,
+                            ),
                         )
+                        if cursor.rowcount != 1:
+                            raise StorageSourceCutoverError(
+                                "STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN",
+                                "the frozen cutover state was replaced; refusing to restore",
+                            )
                 restored = PHASE_POSTGRES_ACTIVE
-            elif record is not None:
-                raise StorageSourceCutoverError(
-                    "STORAGE_SOURCE_ABORT_REQUIRES_CONNECTION",
-                    "resolving this interrupted switch needs the PostgreSQL connection",
-                    detail="pass the connection so the durable phase can be restored",
+            elif durable is not None and str(durable["phase"]) == PHASE_POSTGRES_ACTIVE:
+                owns = (
+                    record is not None
+                    and str(record.get("authoritative_provider") or "")
+                    == PROVIDER_POSTGRESQL
+                    and str(record.get("admission_id") or "")
+                    == str(durable["admission_id"])
+                    and int(record.get("writer_generation") or 0)
+                    == int(durable["writer_generation"])
                 )
+                if owns:
+                    raise StorageSourceCutoverError(
+                        "STORAGE_SOURCE_CUTOVER_ALREADY_ADMITTED",
+                        "an admission is published; a verified rollback is required",
+                        detail=f"admission_id={record.get('admission_id')!r}",
+                    )
             admission_transition_path(record_path).unlink(missing_ok=True)
     except FileLockTimeout as error:
         raise StorageSourceCutoverError(

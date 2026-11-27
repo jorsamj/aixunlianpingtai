@@ -544,6 +544,10 @@ class PostgresStorageSourceRepository:
 
     #: Evidence keys a delete must present, produced by the owning domains.
     DELETE_EVIDENCE_KEYS = (
+        "scope",
+        "source_id",
+        "config_digest",
+        "operation_id",
         "source_revision",
         "material_references",
         "artifact_references",
@@ -587,6 +591,26 @@ class PostgresStorageSourceRepository:
                     f"materials={evidence['material_references']} "
                     f"artifacts={evidence['artifact_references']}"
                 ),
+            )
+        if str(evidence.get("scope") or "") != self.scope:
+            raise StorageSourceOperationBlocked(
+                "STORAGE_SOURCE_DELETE_EVIDENCE_STALE",
+                "the delete evidence was collected in another scope",
+                detail=f"evidence={evidence.get('scope')!r} scope={self.scope!r}",
+            )
+        if not str(evidence.get("source_id") or "").strip() or not str(
+            evidence.get("operation_id") or ""
+        ).strip():
+            raise StorageSourceOperationBlocked(
+                "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE",
+                "the delete evidence is not bound to a source and an operation",
+            )
+        if not isinstance(evidence.get("config_digest"), str) or not (
+            str(evidence["config_digest"]).strip()
+        ):
+            raise StorageSourceOperationBlocked(
+                "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE",
+                "the delete evidence carries no configuration digest",
             )
         retirement = evidence.get("physical_retirement")
         if not isinstance(retirement, Mapping) or str(
@@ -642,6 +666,22 @@ class PostgresStorageSourceRepository:
             if current.is_default:
                 raise ValueError("default storage source cannot be deleted")
             evidence = self._require_delete_evidence(self._delete_evidence)
+            from .storage.source_repository import storage_source_config_digest
+
+            if str(evidence["source_id"]) != current.id:
+                raise StorageSourceOperationBlocked(
+                    "STORAGE_SOURCE_DELETE_EVIDENCE_STALE",
+                    "the delete evidence belongs to another storage source",
+                    detail=(
+                        f"evidence={evidence['source_id']!r} source={current.id!r}"
+                    ),
+                )
+            if str(evidence["config_digest"]) != storage_source_config_digest(current):
+                raise StorageSourceOperationBlocked(
+                    "STORAGE_SOURCE_DELETE_EVIDENCE_STALE",
+                    "the delete evidence describes another configuration",
+                    detail="config digest mismatch",
+                )
             if int(evidence["source_revision"]) != current.runtime_revision:
                 raise StorageSourceOperationBlocked(
                     "STORAGE_SOURCE_DELETE_EVIDENCE_STALE",

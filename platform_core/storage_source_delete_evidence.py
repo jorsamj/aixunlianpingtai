@@ -21,12 +21,17 @@ no end-to-end evidence path - that limitation is reported, not hidden.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from .material_repository import MaterialRepository
-from .storage.source_repository import StorageSource
+from .storage.source_repository import (
+    DEFAULT_SCOPE,
+    StorageSource,
+    storage_source_config_digest,
+)
 
 
 class DeleteEvidenceError(RuntimeError):
@@ -47,6 +52,7 @@ def collect_delete_evidence(
     *,
     projects_root: str | Path | None = None,
     project_ids: Iterable[str] | None = None,
+    scope: str = DEFAULT_SCOPE,
     material_count: Callable[[str, str], int] | None = None,
     artifact_reference_counter: Callable[[StorageSource], int] | None = None,
     physical_retirement_probe: Callable[[StorageSource], Mapping[str, Any]] | None = None,
@@ -74,17 +80,32 @@ def collect_delete_evidence(
                     detail=f"projects={len(children)} limit={int(max_projects)}",
                 )
             project_list = children
+    if material_count is None:
+        if projects_root is None or not project_list:
+            raise DeleteEvidenceError(
+                "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE",
+                "the material project scope could not be established",
+                detail=(
+                    "an empty or unproven project list is not zero references; "
+                    "pass projects_root or an explicit complete project_ids list"
+                ),
+            )
+        missing = [
+            project_id
+            for project_id in project_list
+            if not (Path(projects_root) / project_id).is_dir()
+        ]
+        if missing:
+            raise DeleteEvidenceError(
+                "STORAGE_SOURCE_DELETE_EVIDENCE_INCOMPLETE",
+                "the material project scope is incomplete",
+                detail=f"missing_projects={missing}",
+            )
     materials = 0
     for project_id in project_list:
         if material_count is not None:
             materials += int(material_count(project_id, source_id))
             continue
-        if projects_root is None:
-            raise DeleteEvidenceError(
-                "STORAGE_SOURCE_DELETE_EVIDENCE_OWNER_UNAVAILABLE",
-                "the material owner is unavailable for this delete",
-                detail="pass projects_root/project_ids or material_count",
-            )
         repository = MaterialRepository(Path(projects_root) / project_id)
         materials += int(repository.reference_count(source_id))
 
@@ -129,6 +150,10 @@ def collect_delete_evidence(
         )
 
     return {
+        "scope": str(scope),
+        "source_id": source_id,
+        "config_digest": storage_source_config_digest(source),
+        "operation_id": str(uuid.uuid4().hex),
         "source_revision": int(source.runtime_revision),
         "material_references": materials,
         "artifact_references": artifacts,
