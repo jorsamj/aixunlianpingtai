@@ -577,6 +577,7 @@ class MaterialCache:
                         context={"source_id": provider.source_id, "object_key": object_key},
                     )
                 actual = file_sha256(temporary)
+                verified_size = int(temporary.stat().st_size)
                 if actual != expected:
                     raise StorageError(
                         code="STORAGE_SHA256_MISMATCH", message="素材完整性校验失败",
@@ -585,10 +586,20 @@ class MaterialCache:
                         context={"source_id": provider.source_id, "object_key": object_key, "expected_sha256": expected, "actual_sha256": actual},
                     )
                 os.replace(temporary, target)
-            except Exception:
+            except BaseException:
+                # Cancellation (asyncio.CancelledError / KeyboardInterrupt) is not
+                # an Exception; without this the partial download would leak.
                 temporary.unlink(missing_ok=True)
                 raise
-            if not self._valid(target, expected):
+            # The bytes were hashed immediately before the (same-filesystem,
+            # atomic) rename, and the per-content lock is held, so re-hashing the
+            # final name would only repeat the same read. Verify the rename kept
+            # the verified length and drop a corrupt target otherwise.
+            try:
+                final_size = int(target.stat().st_size)
+            except OSError:
+                final_size = -1
+            if final_size != verified_size:
                 target.unlink(missing_ok=True)
                 raise StorageError(
                     code="STORAGE_CACHE_WRITE_FAILED", message="素材缓存写入失败",
