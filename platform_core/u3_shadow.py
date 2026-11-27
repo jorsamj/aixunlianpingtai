@@ -29,8 +29,23 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 SCHEMA_NAME = "w3_material_gt"
-SCHEMA_VERSION = 1
-CONTRACT_VERSION = "u3-shadow-snapshot-v1"
+SCHEMA_VERSION = 2
+CONTRACT_VERSION = "u3-shadow-snapshot-v2"
+REQUIRED_TABLES = {
+    "materials": ("materials", "material_meta", "material_labels",
+                  "material_annotation_scopes", "negative_pool_members",
+                  "negative_pool_categories", "negative_pool_links",
+                  "negative_pool_algorithm_members", "negative_pool_meta"),
+    "annotations": ("annotations", "annotation_meta", "annotation_label_references"),
+}
+#: Historical evidence preserved verbatim (exact rows, JSON) rather than re-typed.
+EVIDENCE_TABLES = {
+    "materials": ("material_migrations", "material_storage_audit", "material_retirements",
+                  "material_cleanup_deferred", "material_assignment_receipts",
+                  "negative_pool_operations"),
+    "annotations": ("annotation_delete_backup", "annotation_negative_reviews",
+                    "annotation_candidate_commits", "task_negative_confirmations"),
+}
 PAGE_SIZE = 500
 
 MATERIAL_COLUMNS = (
@@ -166,15 +181,86 @@ _MATERIAL_TABLES = {
 }
 _ANNOTATION_TABLES = {
     "annotations": ("annotations", ANNOTATION_COLUMNS, ("image_id",)),
+    # The real owner keeps box_count/scope_ref/annotation_state/source_kind with
+    # PRIMARY KEY(image_id,label_code); all of them are part of the evidence.
     "annotation_label_references": (
-        "annotation_label_references", ("image_id", "label_code", "source_kind"),
-        ("image_id", "label_code", "source_kind"),
+        "annotation_label_references",
+        ("image_id", "label_code", "box_count", "scope_ref", "annotation_state", "source_kind"),
+        ("image_id", "label_code"),
     ),
 }
 
 
+def _table_rows_all(database, table: str, *, page_size: int = PAGE_SIZE) -> list[dict[str, Any]]:
+    """Verbatim rows for a historical evidence table.
+
+    Rowid tables page by rowid; ``WITHOUT ROWID`` tables (composite primary keys,
+    e.g. material_assignment_receipts) page by their primary-key row value, so an
+    evidence table is never read unbounded.
+    """
+    columns = _sqlite_columns(database, table)
+    if not columns:
+        return []
+    pk = [str(row[1]) for row in database.execute(f"PRAGMA table_info({table})") if int(row[5])]
+    rows: list[dict[str, Any]] = []
+    if not pk:
+        after = 0
+        while True:
+            page = database.execute(
+                f"SELECT rowid AS __rowid, * FROM {table} WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                (after, page_size),
+            ).fetchall()
+            for raw in page:
+                record = dict(raw)
+                record.pop("__rowid", None)
+                rows.append(record)
+            if len(page) < page_size:
+                break
+            after = int(page[-1]["__rowid"])
+        return rows
+    order = ",".join(pk)
+    placeholders = ",".join("?" for _ in pk)
+    after_values: tuple[Any, ...] | None = None
+    while True:
+        if after_values is None:
+            page = database.execute(
+                f"SELECT * FROM {table} ORDER BY {order} LIMIT ?", (page_size,)
+            ).fetchall()
+        else:
+            page = database.execute(
+                f"SELECT * FROM {table} WHERE ({order}) > ({placeholders}) "
+                f"ORDER BY {order} LIMIT ?",
+                (*after_values, page_size),
+            ).fetchall()
+        for raw in page:
+            rows.append(dict(raw))
+        if len(page) < page_size:
+            break
+        after_values = tuple(page[-1][name] for name in pk)
+    return rows
+
+
+def _schema_version(database) -> int | None:
+    try:
+        return int(database.execute("PRAGMA user_version").fetchone()[0])
+    except sqlite3.Error:
+        return None
+
+
 def export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[str, Any]:
-    """Deterministic snapshot of the authoritative SQLite owners (read-only)."""
+    """Deterministic snapshot of the authoritative SQLite owners (read-only).
+
+    Cross-store consistency is *barrier based*, not a claim of a global atomic
+    snapshot: the export runs inside the owners' existing
+    ``material_annotation_lifecycle_fence`` (the lock that serializes material
+    lifecycle commits with formal annotation writes), reads each store inside one
+    SQLite read transaction, and then re-reads both revision high-water marks.
+    A revision that moved during the export makes the snapshot unusable and the
+    export is refused. Owners that do not take that fence are therefore detected,
+    never silently mixed into an "admitted" snapshot.
+    """
+    from .material_repository import material_annotation_lifecycle_fence
+
     project = Path(project_dir)
     materials_db = project / "materials.sqlite3"
     annotations_db = project / "annotations.sqlite3"
@@ -183,46 +269,157 @@ def export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[st
             "U3_MATERIALS_STORE_MISSING", "the material store does not exist",
             detail=str(materials_db),
         )
+    if not annotations_db.is_file():
+        raise U3MigrationError(
+            "U3_ANNOTATIONS_STORE_MISSING", "the formal annotation store does not exist",
+            detail=str(annotations_db),
+        )
+    table_state: dict[str, dict[str, Any]] = {}
     stores: dict[str, Any] = {}
-    with closing(_open_read_only(materials_db)) as database:
-        stores["materials"] = _store_snapshot(database, project_id, tables=_MATERIAL_TABLES)
-        revision_row = database.execute(
-            "SELECT value FROM material_meta WHERE key='revision'"
-        ).fetchone()
-        material_revision = int(revision_row[0]) if revision_row else None
-        pool_revision_row = None
-        if _sqlite_columns(database, "negative_pool_meta"):
-            pool_revision_row = database.execute(
+    with material_annotation_lifecycle_fence(project, timeout=60):
+        with closing(_open_read_only(materials_db)) as database:
+            present = _sqlite_columns(database, "materials") != set()
+            missing = [
+                name for name in REQUIRED_TABLES["materials"]
+                if not _sqlite_columns(database, name)
+            ]
+            if missing:
+                raise U3MigrationError(
+                    "U3_OWNER_INCOMPLETE",
+                    "the material owner is missing required tables",
+                    detail=f"missing={missing} present={present}",
+                )
+            stores["materials"] = _store_snapshot(
+                database, project_id, tables=_MATERIAL_TABLES
+            )
+            evidence: dict[str, Any] = {}
+            for table in EVIDENCE_TABLES["materials"]:
+                exists = bool(_sqlite_columns(database, table))
+                table_state[f"materials.{table}"] = {
+                    "present": exists,
+                    "schema_version": _schema_version(database),
+                    "row_count": 0,
+                }
+                if exists:
+                    evidence[table] = _table_rows_all(database, table)
+                    table_state[f"materials.{table}"]["row_count"] = len(evidence[table])
+            stores["materials"]["evidence"] = evidence
+            for name, (table, _columns, _keys) in _MATERIAL_TABLES.items():
+                table_state[f"materials.{table}"] = {
+                    "present": True,
+                    "schema_version": _schema_version(database),
+                    "row_count": len(stores["materials"].get(name) or []),
+                }
+            for meta_table in ("material_meta", "negative_pool_meta"):
+                table_state[f"materials.{meta_table}"] = {
+                    "present": True,
+                    "schema_version": _schema_version(database),
+                    "row_count": int(
+                        database.execute(f"SELECT COUNT(*) FROM {meta_table}").fetchone()[0]
+                    ),
+                }
+            revision_row = database.execute(
+                "SELECT value FROM material_meta WHERE key='revision'"
+            ).fetchone()
+            material_revision = int(revision_row[0]) if revision_row else None
+            pool_row = database.execute(
                 "SELECT revision FROM negative_pool_meta WHERE id=1"
             ).fetchone()
-        pool_revision = int(pool_revision_row[0]) if pool_revision_row else None
-    if annotations_db.is_file():
+            pool_revision = int(pool_row[0]) if pool_row else None
+            materials_schema = _schema_version(database)
         with closing(_open_read_only(annotations_db)) as database:
+            missing = [
+                name for name in REQUIRED_TABLES["annotations"]
+                if not _sqlite_columns(database, name)
+            ]
+            if missing:
+                raise U3MigrationError(
+                    "U3_OWNER_INCOMPLETE",
+                    "the annotation owner is missing required tables",
+                    detail=f"missing={missing}",
+                )
             stores["annotations"] = _store_snapshot(
                 database, project_id, tables=_ANNOTATION_TABLES
             )
-            meta = None
-            if _sqlite_columns(database, "annotation_meta"):
-                meta = database.execute(
-                    "SELECT value FROM annotation_meta WHERE key='revision'"
-                ).fetchone()
+            evidence = {}
+            for table in EVIDENCE_TABLES["annotations"]:
+                exists = bool(_sqlite_columns(database, table))
+                table_state[f"annotations.{table}"] = {
+                    "present": exists,
+                    "schema_version": _schema_version(database),
+                    "row_count": 0,
+                }
+                if exists:
+                    evidence[table] = _table_rows_all(database, table)
+                    table_state[f"annotations.{table}"]["row_count"] = len(evidence[table])
+            stores["annotations"]["evidence"] = evidence
+            for name, (table, _columns, _keys) in _ANNOTATION_TABLES.items():
+                table_state[f"annotations.{table}"] = {
+                    "present": True,
+                    "schema_version": _schema_version(database),
+                    "row_count": len(stores["annotations"].get(name) or []),
+                }
+            table_state["annotations.annotation_meta"] = {
+                "present": True,
+                "schema_version": _schema_version(database),
+                "row_count": int(
+                    database.execute("SELECT COUNT(*) FROM annotation_meta").fetchone()[0]
+                ),
+            }
+            meta = database.execute(
+                "SELECT value FROM annotation_meta WHERE key='revision'"
+            ).fetchone()
             annotation_revision = int(meta[0]) if meta else None
-    else:
-        stores["annotations"] = {"annotations": [], "annotation_label_references": []}
-        annotation_revision = None
-    counts = {f"{store}.{table}": len(rows) for store, tables in stores.items() for table, rows in tables.items()}
-    digests = {f"{store}.{table}": _digest(rows) for store, tables in stores.items() for table, rows in tables.items()}
+            annotations_schema = _schema_version(database)
+        # Revision re-check: a store that moved during the export invalidates it.
+        with closing(_open_read_only(materials_db)) as database:
+            after_row = database.execute(
+                "SELECT value FROM material_meta WHERE key='revision'"
+            ).fetchone()
+            after_pool = database.execute(
+                "SELECT revision FROM negative_pool_meta WHERE id=1"
+            ).fetchone()
+            after_materials_revision = int(after_row[0]) if after_row else None
+            after_pool_revision = int(after_pool[0]) if after_pool else None
+        with closing(_open_read_only(annotations_db)) as database:
+            after_meta = database.execute(
+                "SELECT value FROM annotation_meta WHERE key='revision'"
+            ).fetchone()
+            after_annotation_revision = int(after_meta[0]) if after_meta else None
+    if (after_materials_revision, after_pool_revision, after_annotation_revision) != (
+        material_revision, pool_revision, annotation_revision
+    ):
+        raise U3MigrationError(
+            "U3_SNAPSHOT_SOURCE_CHANGED",
+            "a source owner changed during the snapshot export",
+            detail=(
+                f"materials={material_revision}->{after_materials_revision} "
+                f"pool={pool_revision}->{after_pool_revision} "
+                f"annotations={annotation_revision}->{after_annotation_revision}"
+            ),
+        )
+    counts = {f"{store}.{table}": len(rows) for store, tables in stores.items()
+              for table, rows in tables.items() if table != "evidence"}
+    digests = {f"{store}.{table}": _digest(rows) for store, tables in stores.items()
+               for table, rows in tables.items() if table != "evidence"}
+    for store, tables in stores.items():
+        for table, rows in (tables.get("evidence") or {}).items():
+            counts[f"{store}.evidence.{table}"] = len(rows)
+            digests[f"{store}.evidence.{table}"] = _digest(rows)
     return {
         "contract_version": CONTRACT_VERSION,
         "project_id": str(project_id),
         "stores": stores,
         "counts": counts,
         "digests": digests,
+        "table_state": table_state,
+        "schema_versions": {"materials": materials_schema, "annotations": annotations_schema},
         "revisions": {
             "materials": material_revision,
             "annotations": annotation_revision,
             "negative_pool": pool_revision,
         },
+        "consistency": "MATERIAL_ANNOTATION_LIFECYCLE_FENCE+REVISION_RECHECK",
         "content_digest": _digest(
             [{"table": name, "digest": value} for name, value in sorted(digests.items())]
         ),
@@ -257,8 +454,9 @@ CREATE TABLE IF NOT EXISTS w3_material_gt.annotation (
     PRIMARY KEY (project_id, image_id));
 CREATE TABLE IF NOT EXISTS w3_material_gt.annotation_label_reference (
     project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
-    source_kind TEXT NOT NULL,
-    PRIMARY KEY (project_id, image_id, label_code, source_kind));
+    box_count INTEGER NOT NULL DEFAULT 0, scope_ref INTEGER NOT NULL DEFAULT 0,
+    annotation_state TEXT NOT NULL, source_kind TEXT NOT NULL,
+    PRIMARY KEY (project_id, image_id, label_code));
 CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_member (
     project_id TEXT NOT NULL, material_id TEXT NOT NULL, joined_at TEXT,
     PRIMARY KEY (project_id, material_id),
@@ -279,6 +477,14 @@ CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_algorithm_member (
     FOREIGN KEY (project_id, material_id)
         REFERENCES w3_material_gt.negative_pool_member(project_id, material_id)
         ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.evidence_row (
+    project_id TEXT NOT NULL, store TEXT NOT NULL, table_name TEXT NOT NULL,
+    row_key TEXT NOT NULL, payload JSONB NOT NULL,
+    PRIMARY KEY (project_id, store, table_name, row_key));
+CREATE TABLE IF NOT EXISTS w3_material_gt.table_state (
+    project_id TEXT NOT NULL, store TEXT NOT NULL, table_name TEXT NOT NULL,
+    present BOOLEAN NOT NULL, schema_version INTEGER, row_count INTEGER NOT NULL,
+    PRIMARY KEY (project_id, store, table_name));
 CREATE TABLE IF NOT EXISTS w3_material_gt.store_revision (
     project_id TEXT NOT NULL, store TEXT NOT NULL, revision BIGINT, recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, store));
@@ -287,6 +493,17 @@ CREATE TABLE IF NOT EXISTS w3_material_gt.store_revision (
 
 def schema_checksum() -> str:
     return hashlib.sha256(_SCHEMA.encode("utf-8")).hexdigest()
+
+
+#: Structural corrections of the shadow schema itself (no production data lives
+#: here). Version 1 used a wider reference key and no evidence tables, so the
+#: upgrade rebuilds that one table instead of pretending it is compatible.
+_SCHEMA_UPGRADES = {
+    2: (
+        "DROP TABLE IF EXISTS w3_material_gt.annotation_label_reference CASCADE",
+        _SCHEMA,
+    ),
+}
 
 
 def ensure_schema(connection) -> dict[str, Any]:
@@ -307,19 +524,103 @@ def ensure_schema(connection) -> dict[str, Any]:
                 )
                 row = cursor.fetchone()
                 version = int(row["version"] or 0) if row else 0
+            if version > SCHEMA_VERSION:
+                raise U3MigrationError(
+                    "U3_SCHEMA_NEWER_THAN_TOOL",
+                    "the shadow schema is newer than this tool",
+                    detail=f"database={version} tool={SCHEMA_VERSION}",
+                )
+            if present and version:
+                cursor.execute(
+                    f"SELECT version,checksum FROM {SCHEMA_NAME}.schema_migration ORDER BY version"
+                )
+                for row in cursor.fetchall():
+                    recorded = int(row["version"])
+                    if recorded in (1, 2) and str(row["checksum"]) != schema_checksum() and recorded == version:
+                        raise U3MigrationError(
+                            "U3_SCHEMA_CHECKSUM_MISMATCH",
+                            "an applied shadow migration no longer matches this tool",
+                            detail=f"version={recorded}",
+                        )
             if version < SCHEMA_VERSION:
-                for statement in [part for part in _SCHEMA.split(";") if part.strip()]:
+                statements: list[str] = []
+                for target in range(version + 1, SCHEMA_VERSION + 1):
+                    statements.extend(_SCHEMA_UPGRADES.get(target, ()))
+                if not statements:
+                    statements = list(_SCHEMA_UPGRADES.get(SCHEMA_VERSION, ()))
+                for statement in statements:
                     cursor.execute(statement)
                 cursor.execute(
                     f"INSERT INTO {SCHEMA_NAME}.schema_migration(version,name,checksum,applied_by) "
-                    "VALUES(%s,%s,%s,%s) ON CONFLICT (version) DO NOTHING",
-                    (SCHEMA_VERSION, "u3-material-gt-v1", schema_checksum(), "u3-shadow"),
+                    "VALUES(%s,%s,%s,%s) ON CONFLICT (version) DO UPDATE SET "
+                    "checksum=EXCLUDED.checksum, applied_at=now()",
+                    (SCHEMA_VERSION, f"u3-material-gt-v{SCHEMA_VERSION}", schema_checksum(), "u3-shadow"),
                 )
     return {"schema": SCHEMA_NAME, "version": SCHEMA_VERSION}
 
 
-def import_project_snapshot(connection, snapshot: Mapping[str, Any]) -> dict[str, int]:
-    """Import one snapshot in a single transaction (idempotent replay)."""
+def _material_store_rows(stores: Mapping[str, Any], name: str) -> list[Mapping[str, Any]]:
+    return list((stores.get("materials") or {}).get(name) or [])
+
+
+def material_stores_links(stores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return _material_store_rows(stores, "negative_pool_links")
+
+
+def material_stores_algo(stores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return _material_store_rows(stores, "negative_pool_algorithm_members")
+
+
+def material_stores_pool(stores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return _material_store_rows(stores, "negative_pool_members")
+
+
+def material_stores_cats(stores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return _material_store_rows(stores, "negative_pool_categories")
+
+
+def material_stores_scopes(stores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return _material_store_rows(stores, "material_annotation_scopes")
+
+
+def material_stores_labels(stores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return _material_store_rows(stores, "material_labels")
+
+
+def _delete_absent(cursor, schema: str, table: str, project_id: str,
+                   key_columns: tuple[str, ...], values: list[tuple[Any, ...]]) -> None:
+    """Delete project rows whose key is not in the snapshot (bounded batches)."""
+    cursor.execute("CREATE TEMP TABLE IF NOT EXISTS u3_keep (k1 text, k2 text, PRIMARY KEY (k1, k2))")
+    cursor.execute("DELETE FROM u3_keep")
+    for value in values:
+        cursor.execute(
+            "INSERT INTO u3_keep VALUES (%s,%s) ON CONFLICT DO NOTHING",
+            (str(value[0]), str(value[1]) if len(value) > 1 else ""),
+        )
+    if len(key_columns) == 1:
+        condition = "t.%s::text NOT IN (SELECT k1 FROM u3_keep)" % key_columns[0]
+    else:
+        condition = ("NOT EXISTS (SELECT 1 FROM u3_keep AS k WHERE k.k1=t.%s::text "
+                     "AND k.k2=t.%s::text)") % (key_columns[0], key_columns[1])
+    cursor.execute(f"DELETE FROM {schema}.{table} AS t WHERE t.project_id=%s AND {condition}",
+                   (project_id,))
+
+
+def import_project_snapshot(
+    connection, snapshot: Mapping[str, Any], *, mode: str = "full",
+) -> dict[str, int]:
+    """Import one snapshot in a single transaction.
+
+    ``mode="full"`` (default) makes the target project *equal* to the snapshot:
+    rows of this project that the snapshot no longer contains are deleted
+    (children before parents) and everything else is upserted. ``incremental``
+    only upserts. Both are idempotent, both are scoped to one ``project_id`` and
+    both roll back completely on any failure.
+    """
+    if str(mode) not in {"full", "incremental"}:
+        raise U3MigrationError(
+            "U3_IMPORT_MODE_INVALID", "unsupported import mode", detail=str(mode)
+        )
     if str(snapshot.get("contract_version") or "") != CONTRACT_VERSION:
         raise U3MigrationError(
             "U3_SNAPSHOT_CONTRACT_MISMATCH", "snapshot contract does not match",
@@ -337,6 +638,33 @@ def import_project_snapshot(connection, snapshot: Mapping[str, Any]) -> dict[str
     with connection.transaction():
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"u3_import:{project_id}",))
+            if mode == "full":
+                # Delete only rows of THIS project that the snapshot dropped.
+                for table, key_columns, values in (
+                    ("negative_pool_link", ("material_id", "category_id"),
+                     [(row.get("material_id"), row.get("category_id")) for row in material_stores_links(stores)]),
+                    ("negative_pool_algorithm_member", ("algorithm_id", "material_id"),
+                     [(row.get("algorithm_id"), row.get("material_id")) for row in material_stores_algo(stores)]),
+                    ("negative_pool_member", ("material_id",),
+                     [(row.get("material_id"),) for row in material_stores_pool(stores)]),
+                    ("negative_pool_category", ("id",),
+                     [(row.get("id"),) for row in material_stores_cats(stores)]),
+                    ("material_annotation_scope", ("material_id", "label_code"),
+                     [(row.get("material_id"), row.get("label_code")) for row in material_stores_scopes(stores)]),
+                    ("material_label", ("material_id", "label_code"),
+                     [(row.get("material_id"), row.get("label_code")) for row in material_stores_labels(stores)]),
+                    ("annotation_label_reference", ("image_id", "label_code"),
+                     [(row.get("image_id"), row.get("label_code"))
+                      for row in (stores.get("annotations") or {}).get("annotation_label_references") or []]),
+                    ("annotation", ("image_id",),
+                     [(row.get("image_id"),)
+                      for row in (stores.get("annotations") or {}).get("annotations") or []]),
+                    ("material", ("id",),
+                     [(row.get("id"),) for row in materials]),
+                ):
+                    _delete_absent(
+                        cursor, SCHEMA_NAME, table, project_id, key_columns, values,
+                    )
             material_sql = (
                 f"INSERT INTO {SCHEMA_NAME}.material(project_id,id,filename,storage_source_id,"
                 "storage_type,object_key,content_sha256,size_bytes,etag,processing_status,"
@@ -396,9 +724,14 @@ def import_project_snapshot(connection, snapshot: Mapping[str, Any]) -> dict[str
                 counters["annotations"] += 1
             for row in (stores.get("annotations") or {}).get("annotation_label_references") or []:
                 cursor.execute(
-                    f"INSERT INTO {SCHEMA_NAME}.annotation_label_reference(project_id,image_id,label_code,source_kind) "
-                    "VALUES(%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-                    (project_id, row.get("image_id"), row.get("label_code"), row.get("source_kind")),
+                    f"INSERT INTO {SCHEMA_NAME}.annotation_label_reference(project_id,image_id,"
+                    "label_code,box_count,scope_ref,annotation_state,source_kind) "
+                    "VALUES(%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (project_id,image_id,label_code) "
+                    "DO UPDATE SET box_count=EXCLUDED.box_count,scope_ref=EXCLUDED.scope_ref,"
+                    "annotation_state=EXCLUDED.annotation_state,source_kind=EXCLUDED.source_kind",
+                    (project_id, row.get("image_id"), row.get("label_code"),
+                     row.get("box_count"), row.get("scope_ref"),
+                     row.get("annotation_state"), row.get("source_kind")),
                 )
                 counters["references"] += 1
             for row in material_stores.get("negative_pool_members") or []:
@@ -431,6 +764,42 @@ def import_project_snapshot(connection, snapshot: Mapping[str, Any]) -> dict[str
                     (project_id, row.get("algorithm_id"), row.get("material_id"), row.get("joined_at")),
                 )
                 counters["pool_algorithm_members"] += 1
+            for store, tables in (stores or {}).items():
+                for table, rows in (tables.get("evidence") or {}).items():
+                    if mode == "full":
+                        _delete_absent(
+                            cursor, SCHEMA_NAME, "evidence_row", project_id,
+                            ("store", "table_name"),
+                            [(str(store), str(table))],
+                        )
+                        cursor.execute(
+                            f"DELETE FROM {SCHEMA_NAME}.evidence_row WHERE project_id=%s "
+                            "AND store=%s AND table_name=%s AND row_key NOT IN (SELECT k1 FROM u3_keep)",
+                            (project_id, str(store), str(table)),
+                        )
+                    for row in rows:
+                        row_key = _digest([row])
+                        cursor.execute(
+                            f"INSERT INTO {SCHEMA_NAME}.evidence_row(project_id,store,table_name,row_key,payload) "
+                            "VALUES(%s,%s,%s,%s,%s::jsonb) ON CONFLICT "
+                            "(project_id,store,table_name,row_key) DO UPDATE SET payload=EXCLUDED.payload",
+                            (project_id, str(store), str(table), row_key,
+                             json.dumps(_canonical(dict(row)), ensure_ascii=False, sort_keys=True)),
+                        )
+                        counters.setdefault("evidence", 0)
+                        counters["evidence"] += 1
+            for name, state in (snapshot.get("table_state") or {}).items():
+                store, _, table = name.partition(".")
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.table_state(project_id,store,table_name,present,"
+                    "schema_version,row_count) VALUES(%s,%s,%s,%s,%s,%s) ON CONFLICT "
+                    "(project_id,store,table_name) DO UPDATE SET present=EXCLUDED.present,"
+                    "schema_version=EXCLUDED.schema_version,row_count=EXCLUDED.row_count",
+                    (project_id, store, table, bool(state.get("present")),
+                     state.get("schema_version"), int(state.get("row_count") or 0)),
+                )
+                counters.setdefault("table_state", 0)
+                counters["table_state"] += 1
             for store, revision in (snapshot.get("revisions") or {}).items():
                 cursor.execute(
                     f"INSERT INTO {SCHEMA_NAME}.store_revision(project_id,store,revision) "
@@ -484,8 +853,13 @@ def read_target_snapshot(connection, project_id: str) -> dict[str, Any]:
             "WHERE project_id=%s ORDER BY image_id", ANNOTATION_COLUMNS,
         ),
         "annotation_label_references": (
-            "SELECT image_id,label_code,source_kind FROM {schema}.annotation_label_reference "
-            "WHERE project_id=%s ORDER BY image_id,label_code,source_kind", None,
+            "SELECT image_id,label_code,box_count,scope_ref,annotation_state,source_kind "
+            "FROM {schema}.annotation_label_reference "
+            "WHERE project_id=%s ORDER BY image_id,label_code", None,
+        ),
+        "evidence": (
+            "SELECT store,table_name,payload AS payload_json FROM {schema}.evidence_row "
+            "WHERE project_id=%s ORDER BY store,table_name,row_key", None,
         ),
     }
     with connection.cursor(row_factory=dict_row) as cursor:
@@ -517,20 +891,59 @@ def read_target_snapshot(connection, project_id: str) -> dict[str, Any]:
                             else value
                         )
                 rows.append(record)
+            if name == "evidence":
+                # Regroup verbatim evidence rows by their original store/table.
+                grouped: dict[str, dict[str, list[dict[str, Any]]]] = {"materials": {}, "annotations": {}}
+                for record in rows:
+                    store = str(record.pop("store"))
+                    table = str(record.pop("table_name"))
+                    value = record.pop("payload_json")
+                    grouped.setdefault(store, {}).setdefault(table, []).append(
+                        value if isinstance(value, dict) else json.loads(value)
+                    )
+                for store, tables in grouped.items():
+                    stores.setdefault(store, {})["evidence"] = tables
+                continue
             stores["annotations"][name] = rows
         cursor.execute(
             f"SELECT store,revision FROM {SCHEMA_NAME}.store_revision WHERE project_id=%s",
             (project_id,),
         )
         revisions = {str(row["store"]): row["revision"] for row in cursor.fetchall()}
-    counts = {f"{store}.{table}": len(rows) for store, tables in stores.items() for table, rows in tables.items()}
-    digests = {f"{store}.{table}": _digest(rows) for store, tables in stores.items() for table, rows in tables.items()}
+        cursor.execute(
+            f"SELECT store,table_name,present,schema_version,row_count FROM {SCHEMA_NAME}.table_state "
+            "WHERE project_id=%s ORDER BY store,table_name",
+            (project_id,),
+        )
+        table_state = {
+            f"{row['store']}.{row['table_name']}": {
+                "present": bool(row["present"]),
+                "schema_version": row["schema_version"],
+                "row_count": int(row["row_count"]),
+            }
+            for row in cursor.fetchall()
+        }
+    # Present-but-empty evidence tables must exist as keys on both sides, otherwise
+    # an empty historical table would look like a mismatch instead of "zero rows".
+    for name, state in table_state.items():
+        store, _, table = name.partition(".")
+        if state.get("present") and store in EVIDENCE_TABLES and table in EVIDENCE_TABLES[store]:
+            stores.setdefault(store, {}).setdefault("evidence", {}).setdefault(table, [])
+    counts = {f"{store}.{table}": len(rows) for store, tables in stores.items()
+              for table, rows in tables.items() if table != "evidence"}
+    digests = {f"{store}.{table}": _digest(rows) for store, tables in stores.items()
+               for table, rows in tables.items() if table != "evidence"}
+    for store, tables in {k: v.get("evidence") or {} for k, v in stores.items()}.items():
+        for table, rows in tables.items():
+            counts[f"{store}.evidence.{table}"] = len(rows)
+            digests[f"{store}.evidence.{table}"] = _digest(rows)
     return {
         "contract_version": CONTRACT_VERSION,
         "project_id": str(project_id),
         "stores": stores,
         "counts": counts,
         "digests": digests,
+        "table_state": table_state,
         "revisions": revisions,
         "content_digest": _digest(
             [{"table": name, "digest": value} for name, value in sorted(digests.items())]
@@ -592,6 +1005,19 @@ def reconcile(source: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str,
     )[:50]
     if (source.get("revisions") or {}) != (target.get("revisions") or {}):
         blocking.append("revision_high_water_mismatch")
+    source_state = source.get("table_state") or {}
+    target_state = target.get("table_state") or {}
+    for name, state in source_state.items():
+        present = (target_state.get(name) or {}).get("present")
+        if bool(state.get("present")) != bool(present):
+            blocking.append(f"table_presence_mismatch:{name}")
+    for store, tables in REQUIRED_TABLES.items():
+        for table in tables:
+            key = f"{store}.{table}"
+            if not (source_state.get(key) or {}).get("present"):
+                blocking.append(f"required_table_missing_source:{key}")
+            if not (target_state.get(key) or {}).get("present"):
+                blocking.append(f"required_table_missing_target:{key}")
     return {
         "same": not blocking,
         "verdict": "OK" if not blocking else "MISMATCH",

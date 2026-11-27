@@ -76,8 +76,10 @@ CREATE TABLE IF NOT EXISTS annotations (
     version INTEGER NOT NULL, content_digest TEXT NOT NULL, boxes_json TEXT NOT NULL,
     scope_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS annotation_label_references (
-    image_id TEXT NOT NULL, label_code TEXT NOT NULL, source_kind TEXT NOT NULL DEFAULT 'gt',
-    updated_at TEXT NOT NULL, PRIMARY KEY(image_id,label_code));
+    image_id TEXT NOT NULL, label_code TEXT NOT NULL,
+    box_count INTEGER NOT NULL DEFAULT 0, scope_ref INTEGER NOT NULL DEFAULT 0,
+    annotation_state TEXT NOT NULL, source_kind TEXT NOT NULL,
+    PRIMARY KEY(image_id,label_code));
 CREATE TABLE IF NOT EXISTS annotation_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT OR IGNORE INTO annotation_meta VALUES ('revision','0');
 """
@@ -126,7 +128,10 @@ def _fixture(tmp_path, project_id="p1"):
             "INSERT INTO annotations VALUES ('m1','annotated',3,'digest-a',?,?,'2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00')",
             (json.dumps([{"label": "fire", "bbox": [1, 2, 3, 4]}]), json.dumps(["fire"])),
         )
-        database.execute("INSERT INTO annotation_label_references VALUES ('m1','fire','gt','2026-01-01T00:00:00+00:00')")
+        database.execute(
+            "INSERT INTO annotation_label_references VALUES "
+            "('m1','fire',1,0,'annotated','sqlite')"
+        )
         database.execute("UPDATE annotation_meta SET value='4' WHERE key='revision'")
     return project
 
@@ -208,6 +213,39 @@ def test_import_rolls_back_completely_on_an_integrity_failure(pg, tmp_path):
     with psycopg.connect(pg.get_uri()) as connection:
         import_project_snapshot(connection, snapshot)
         assert reconcile(snapshot, read_target_snapshot(connection, "p2"))["same"] is True
+
+
+def test_full_snapshot_reflects_source_deletions(pg, tmp_path):
+    """A full import must delete rows the source removed, for this project only."""
+    project = _fixture(tmp_path, project_id="p3")
+    snapshot = export_project_snapshot(project, "p3")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        assert reconcile(snapshot, read_target_snapshot(connection, "p3"))["same"] is True
+
+    # Remove a category link, the category, a pool member and an annotation.
+    with sqlite3.connect(project / "materials.sqlite3") as database:
+        database.execute("DELETE FROM negative_pool_links WHERE material_id='m3'")
+        database.execute("DELETE FROM negative_pool_algorithm_members WHERE material_id='m3'")
+        database.execute("DELETE FROM negative_pool_members WHERE material_id='m3'")
+        database.execute("DELETE FROM negative_pool_categories WHERE id='cat-fire'")
+        database.execute("DELETE FROM material_labels WHERE material_id='m1'")
+    with sqlite3.connect(project / "annotations.sqlite3") as database:
+        database.execute("DELETE FROM annotation_label_references WHERE image_id='m1'")
+
+    changed = export_project_snapshot(project, "p3")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, changed)
+        target = read_target_snapshot(connection, "p3")
+        assert reconcile(changed, target)["same"] is True, reconcile(changed, target)
+        with connection.cursor() as cursor:
+            for table in ("negative_pool_link", "negative_pool_algorithm_member",
+                          "negative_pool_member", "negative_pool_category",
+                          "material_label", "annotation_label_reference"):
+                cursor.execute(f"SELECT count(*) FROM {SCHEMA_NAME}.{table} WHERE project_id='p3'")
+                assert cursor.fetchone()[0] == 0, table
+        # Other projects are untouched by a project-scoped full import.
+        assert read_target_snapshot(connection, "p2")["counts"]["materials.materials"] == 3
 
 
 def test_schema_checksum_is_stable():
