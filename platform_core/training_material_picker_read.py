@@ -977,7 +977,21 @@ class SQLitePickerReadProvider(PickerReadProvider):
                 generation = _read_meta(
                     database, "annotation_meta", "task_negative_confirmation_generation",
                 )
-                present = "task_negative_confirmations" in _table_presence(database)
+                observed = _table_presence(database)
+                recorded = _recorded_structure(
+                    database, "annotation_meta", "evidence_structure",
+                )
+                present = "task_negative_confirmations" in observed
+                if present and (recorded is None or "task_negative_confirmations" not in recorded):
+                    raise PickerOwnerUnverifiable(
+                        "the task negative confirmation structure is not certified",
+                        detail=self.project_id,
+                    )
+                if not present and recorded is not None and "task_negative_confirmations" in recorded:
+                    raise PickerOwnerUnverifiable(
+                        "the task negative confirmation structure disagrees with its presence",
+                        detail=self.project_id,
+                    )
                 rows: list[Mapping[str, Any]] = []
                 has_any = False
                 if present:

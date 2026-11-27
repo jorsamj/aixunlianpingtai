@@ -564,24 +564,51 @@ def test_deferred_early_exit_still_verifies_history(tmp_path):
         provider.read_page(_query(filters=_filter(), page=1, page_size=1))
 
 
-def test_task_status_change_is_detected_without_usage_revision_change(tmp_path, monkeypatch):
-    project, _usage = _business_project(tmp_path)
+def _insert_task(tasks_path, task_id, status, project_id="p1"):
+    with sqlite3.connect(tasks_path) as database:
+        database.execute(
+            "INSERT INTO tasks(task_id,project_id,kind,status,priority,resource_key,"
+            "required_capabilities,payload_ref,log_ref,progress,stage,attempt,"
+            "created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, project_id, "TRAINING", status, 5, "gpu", "[]", "payload",
+             "task.log", 0.0, "queued", 0,
+             "2026-09-15T12:00:00+00:00", "2026-09-15T12:00:00+00:00"),
+        )
+
+
+def test_real_task_status_change_rejects_cursor_without_usage_revision_change(tmp_path):
+    project, usage = _business_project(tmp_path)
+    tasks_path = project.parent.parent / "task_runtime" / "tasks.sqlite3"
+    _insert_task(tasks_path, "t-live", "RUNNING")
     provider = BusinessReadProvider(
         SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
     )
-    calls = {"count": 0}
-
-    def statuses(task_ids):
-        ids = [str(task_id) for task_id in task_ids]
-        if not ids:
-            return {}
-        calls["count"] += 1
-        status = "RUNNING" if calls["count"] == 1 else "CANCELLED"
-        return {task_id: status for task_id in ids}
-
-    monkeypatch.setattr(provider, "_task_statuses", statuses)
+    first = provider.read_page(_query(filters=_filter(), page_size=2))
+    revision = usage.read_revision()
+    with sqlite3.connect(tasks_path) as database:
+        database.execute(
+            "UPDATE tasks SET status='CANCELLED', updated_at='2026-09-15T13:00:00+00:00' "
+            "WHERE task_id='t-live'"
+        )
+    assert usage.read_revision() == revision  # the usage revision did not move
     with pytest.raises(BusinessHistoryChanged):
-        list(provider.iter_candidates(_query(filters=_filter())))
+        provider.read_page(_query(filters=_filter(), page_size=2, cursor=first.next_cursor))
+
+
+def test_swapped_active_task_statuses_are_detected_even_with_equal_counts(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    tasks_path = project.parent.parent / "task_runtime" / "tasks.sqlite3"
+    _insert_task(tasks_path, "t-a", "RUNNING")
+    _insert_task(tasks_path, "t-b", "CANCEL_REQUESTED")
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    first = provider.read_page(_query(filters=_filter(), page_size=2))
+    with sqlite3.connect(tasks_path) as database:
+        database.execute("UPDATE tasks SET status='CANCEL_REQUESTED' WHERE task_id='t-a'")
+        database.execute("UPDATE tasks SET status='RUNNING' WHERE task_id='t-b'")
+    with pytest.raises(BusinessHistoryChanged):
+        provider.read_page(_query(filters=_filter(), page_size=2, cursor=first.next_cursor))
 
 
 def test_central_task_owner_path_and_cross_project_guard(tmp_path):
@@ -708,3 +735,91 @@ def test_frozen_selection_reference_matches_the_business_set(pg, tmp_path):
     )
     read2 = read_selection(data_dir, frozen2["selection_ref"], context)
     assert excluded not in read2 and read2 == sorted(remaining)
+
+
+def test_bounded_batches_do_not_accumulate_or_recheck_everything(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    calls = {"count": 0}
+    real = provider.usage.query_filter
+
+    def counting(*args, **kwargs):
+        calls["count"] += 1
+        return real(*args, **kwargs)
+
+    provider.usage.query_filter = counting
+    with provider.read_session(_query(filters=_filter(), count_mode="deferred")) as session:
+        assert not hasattr(session, "_facts")
+        batches = list(session.batches(batch_size=4))
+    assert len(batches) == 3
+    # One bounded history read per batch; verify() adds no full-candidate re-read.
+    assert calls["count"] == 3
+
+
+def test_candidate_stream_consumes_a_business_cursor(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    expected = [item.material.id for batch in provider.iter_candidates(
+        _query(filters=_filter()), batch_size=5,
+    ) for item in batch]
+    first = provider.read_page(_query(filters=_filter(), page_size=4))
+    tail = [item.material.id for batch in provider.iter_candidates(
+        _query(filters=_filter(), cursor=first.next_cursor), batch_size=5,
+    ) for item in batch]
+    assert tail == expected[4:]
+    with pytest.raises(PickerUnsupportedFilter):
+        provider.read_page(_query(filters=_filter(), page_size=2, verify_owner=False))
+
+
+def test_roles_match_the_original_role_page(tmp_path):
+    from platform_core.training_material_picker_api import _role_material_page
+
+    project, _usage = _business_project(tmp_path)
+    repository = MaterialRepository(project)
+    annotations = AnnotationRepository(project)
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    ids = [f"m{index:03d}" for index in range(12)]
+    contract = {"algorithm_id": ALGORITHM, "effective_label_codes": ["fire"],
+                "task_negative_confirmations": []}
+    baseline = _role_material_page(
+        repository, annotations, contract, image_ids=ids, page=1, limit=60,
+        filters={"label_mode": "any", "browse_only": True},
+        sort_order="oldest", count_mode="exact",
+    )
+    expected = {str(item["id"]): item["sample_role"] for item in baseline["items"]}
+    page = provider.read_page(_query(
+        filters=_filter(history_policy="include_history", browse_only=True),
+        page=1, page_size=100, count_mode="exact",
+    ))
+    assert {item.material.id: item.sample_role for item in page.items} == expected
+
+
+def test_browse_mode_keeps_the_real_confirmation_role(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    annotations = AnnotationRepository(project)
+    material = {str(row["id"]): row for row in MaterialRepository(project).get_many(["m001"])}["m001"]
+    record = annotations.get("m001")
+    contract = {"algorithm_id": ALGORITHM, "effective_label_codes": ["fire"],
+                "task_negative_confirmations": []}
+    identity = task_negative_identity(
+        {**record, "content_sha256": material["content_sha256"], "id": "m001"}, contract,
+    )
+    annotations.confirm_task_negatives(
+        task_negative_context(contract), [identity], {"actor_id": "tester"},
+    )
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    browse = provider.read_page(_query(
+        filters=_filter(history_policy="include_history", browse_only=True,
+                        sample_role="confirmed_negative"),
+        page=1, page_size=100, count_mode="exact",
+    ))
+    matched = {item.material.id: item for item in browse.items}
+    assert "m001" in matched and matched["m001"].confirmation_receipt

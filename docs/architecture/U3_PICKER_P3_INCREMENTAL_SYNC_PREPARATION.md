@@ -94,3 +94,17 @@ P3-B 代码需在 P2 审计通过后另行授权。
 4. **幂等/缺口/失败/重建**：`(stream, sequence)` + 摘要幂等；序缺口、摘要不一致或 Owner 结构
    未认证 → 停止增量、标记重建；重建复用现有完整导出/导入，不清空 PG 投影掩盖异常；Owner 数据
    永不因同步失败被修改。
+
+## 7. 事件内容与 READY 原子发布（最终收口）
+
+1. **不可变投影事件**：事件必须携带该实体的**完整投影快照**（material/GT/pool 行的规范化
+   字段 + `payload_digest`），而不是只带主键或“旧摘要”。消费者按 `(stream, sequence)` 写入
+   事件所描述的那一版实体；实体后续变化会产生更高 sequence 的新事件，禁止用旧摘要去读取已
+   变化的实体。若事件只带变更键，必须同时证明可合并的高水位（`sequence` + 实体
+   `updated_generation`），且合并结果与直接读 Owner 一致。
+2. **增量期间的可见性**：消费批次在 PG 事务内应用事件并推进该流游标；批次提交前
+   `picker_snapshot_state.status=STALE`（或保留旧 READY 但不得改变其 `snapshot_id` 指向的内容）。
+   只有所有流游标与 `revision_vector` 对齐、依赖检查通过后，才在同一事务内发布新的 READY
+   身份；禁止“旧 READY 身份指向已变化的投影”。
+3. 保持：每 Owner 同事务日志、单调 sequence、tombstone、幂等重放、缺口检测与完整重建；
+   增量失败不改 Owner，不用清空投影掩盖异常。

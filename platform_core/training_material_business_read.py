@@ -307,6 +307,13 @@ class BusinessReadProvider:
         # never a per-project file. ``project.id`` scoping happens in SQL.
         default_tasks = self.project_path.parent.parent / "task_runtime" / "tasks.sqlite3"
         self.tasks_path = Path(tasks_path) if tasks_path else default_tasks
+        if usage is not None:
+            usage_path = Path(getattr(usage, "path", self.tasks_path))
+            if usage_path != self.tasks_path:
+                raise PickerProjectMismatch(
+                    "the injected usage owner is not the central Task store",
+                    detail=f"usage={usage_path} tasks={self.tasks_path}",
+                )
         self.usage = usage or TrainingMaterialUsage(self.tasks_path)
 
     # -- helpers ---------------------------------------------------------
@@ -337,18 +344,28 @@ class BusinessReadProvider:
             ) from error
 
     def _task_evidence_digest(self) -> str:
-        """Bounded Task-status evidence; revision alone does not cover status."""
+        """Identity digest of every Task that can hold an active reservation.
+
+        Only non-terminal statuses affect eligibility (``query_filter`` treats
+        exactly these as active), so ``(task_id, status)`` pairs for that bounded
+        set prove identity: a task leaving the set, entering it, or changing
+        between active statuses always changes the digest, even when per-status
+        counts are unchanged. No history rows are loaded and no per-material
+        query is issued.
+        """
         try:
             with closing(self._tasks_connection()) as database:
                 rows = database.execute(
-                    "SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY status"
+                    "SELECT task_id, status FROM tasks WHERE status IN "
+                    "('QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION') "
+                    "ORDER BY task_id"
                 ).fetchall()
         except sqlite3.Error as error:
             raise BusinessHistoryUnavailable(
-                "the Task status evidence could not be read", detail=str(error),
+                "the Task eligibility evidence could not be read", detail=str(error),
             ) from error
         return hashlib.sha256(
-            json.dumps([[str(row[0]), int(row[1])] for row in rows]).encode("utf-8")
+            json.dumps([[str(row["task_id"]), str(row["status"])] for row in rows]).encode("utf-8")
         ).hexdigest()
 
     def _tasks_connection(self) -> sqlite3.Connection:
@@ -361,20 +378,6 @@ class BusinessReadProvider:
         )
         connection.row_factory = sqlite3.Row
         return connection
-
-    def _task_statuses(self, task_ids: Sequence[str]) -> dict[str, str]:
-        ids = [str(value) for value in dict.fromkeys(task_ids) if str(value)]
-        if not ids:
-            return {}
-        with closing(self._tasks_connection()) as database:
-            rows = []
-            for offset in range(0, len(ids), 200):
-                chunk = ids[offset:offset + 200]
-                rows.extend(database.execute(
-                    "SELECT task_id, status FROM tasks WHERE task_id IN ("
-                    + ",".join("?" for _ in chunk) + ")", chunk,
-                ))
-        return {str(row["task_id"]): str(row["status"] or "") for row in rows}
 
     def _picker_context(self) -> Any:
         return self.picker.snapshot_context(self.project_id)
@@ -410,7 +413,10 @@ class BusinessReadProvider:
         annotations: Mapping[str, Mapping[str, Any]],
         receipts,
     ) -> list[Mapping[str, Any]]:
-        if query.filters.browse_only or not contract.get("effective_label_codes"):
+        if not contract.get("effective_label_codes"):
+            return []
+        if not query.verify_owner:
+            # A diagnostic read is not a current-owner proof.
             return []
         if receipts is None or not receipts.authoritative or not receipts.owner_equivalent:
             # Uncertified or diagnostic-only reads never prove current eligibility.
@@ -491,7 +497,6 @@ class BusinessReadProvider:
             annotation = annotation_rows.get(item.id)
             fact = by_id.get(item.id) or {}
             state = str(fact.get("state") or "unknown")
-            session.observe(item.id, fact)
             if filters.history_scope == "current_only":
                 if not fact.get("current_algorithm_trained"):
                     continue
@@ -596,11 +601,24 @@ class BusinessReadProvider:
     ) -> Iterator[tuple[BusinessMaterial, ...]]:
         if query.page is not None:
             raise PickerUnsupportedFilter("candidate streaming does not support page mode")
+        fingerprint = _business_fingerprint(query)
         with self.read_session(query) as session:
-            yield from session.batches(batch_size=batch_size)
+            base_cursor = None
+            if query.cursor:
+                start = _decode_business_cursor(
+                    query.cursor, fingerprint=fingerprint,
+                    snapshot=session.snapshot_id, usage=session.usage_revision,
+                    task_evidence=session.task_evidence,
+                )
+                base_cursor = _picker_cursor_for(session, query, start)
+            yield from session.batches(batch_size=batch_size, cursor=base_cursor)
 
     def read_page(self, query: BusinessQuery) -> BusinessPage:
         self._require_project(query.project_id)
+        if not query.verify_owner:
+            raise PickerUnsupportedFilter(
+                "formal business reads require current-owner verification",
+            )
         size, page = _validate_business_query(query)
         page_number = 1 if page is None else page
         fingerprint = _business_fingerprint(query)
@@ -671,58 +689,28 @@ class _BusinessSession:
         self.usage_revision = usage_revision
         self.task_evidence = task_evidence
         self._owner_equivalent = owner_equivalent
-        self._facts: dict[str, dict[str, Any]] = {}
-        self._expected_status: dict[str, str] = {}
 
     # -- recording -------------------------------------------------------
+    @property
+    def owner_equivalent(self) -> bool:
+        return bool(self._owner_equivalent)
+
     def observe(self, image_id: str, fact: Mapping[str, Any]) -> None:
-        self._facts[image_id] = {
-            "state": str(fact.get("state") or "unknown"),
-            "benchmark_protected": bool(fact.get("benchmark_protected")),
-            "current_algorithm_trained": bool(fact.get("current_algorithm_trained")),
-            "other_algorithm_trained": bool(fact.get("other_algorithm_trained")),
-        }
-        statuses = self.provider._task_statuses(fact.get("task_ids") or [])
-        for task_id, status in statuses.items():
-            self._expected_status.setdefault(task_id, status)
+        # No per-material fact accumulation and no per-material Task read: the
+        # session-level history/Task revisions below are the consistency proof.
+        return None
 
     # -- verification ----------------------------------------------------
     def verify(self) -> None:
+        """Bounded final proof: no candidate re-read, no full-history scan."""
         if self.provider._usage_revision() != self.usage_revision:
             raise BusinessHistoryChanged(
                 "the training history changed during the business read",
             )
         if self.provider._task_evidence_digest() != self.task_evidence:
             raise BusinessHistoryChanged(
-                "the Task status changed during the business read",
+                "the active Task eligibility evidence changed during the business read",
             )
-        observed = self.provider._task_statuses(list(self._expected_status))
-        for task_id, status in self._expected_status.items():
-            if observed.get(task_id, "<missing>") != status:
-                raise BusinessHistoryChanged(
-                    "a Task status that affects eligibility changed during the read",
-                    detail=f"task={task_id}",
-                )
-        if self._facts:
-            rows = self.provider.materials.get_many(list(self._facts))
-            again = self.provider._history_facts(self.query, rows)
-            for image_id, before in self._facts.items():
-                after = (again.get("by_image_id") or {}).get(image_id) or {}
-                for key in ("state", "benchmark_protected",
-                            "current_algorithm_trained", "other_algorithm_trained"):
-                    value = after.get(key)
-                    expected = before[key]
-                    if key == "state":
-                        if str(value or "unknown") != expected:
-                            raise BusinessHistoryChanged(
-                                "a history state changed during the business read",
-                                detail=f"image={image_id}",
-                            )
-                    elif bool(value) != expected:
-                        raise BusinessHistoryChanged(
-                            "a history scope fact changed during the business read",
-                            detail=f"image={image_id}",
-                        )
         if self.provider._picker_context().snapshot_id != self.snapshot_id:
             raise PickerSnapshotStale(
                 "the picker snapshot changed during the business read",
@@ -821,26 +809,49 @@ def compare_candidate_sets(
     """Read-only equivalence over the same business query.
 
     Both streams must be fully consumed, both sessions must verify (owner,
-    history, Task status) and both must observe the same history revision; only
-    then is a count/digest published.
+    history, active Task evidence), and both must observe the same owner
+    revision vector, history revision and Task evidence; only then is a
+    count/digest published.
     """
-    first_ids, first_revision = _collect(first, query, limit)
-    second_ids, second_revision = _collect(second, query, limit)
-    if first_revision != second_revision:
-        raise BusinessHistoryChanged("the two reads used different history revisions")
+    first_ids, first_meta = _collect(first, query, limit)
+    second_ids, second_meta = _collect(second, query, limit)
+    if not (first_meta["owner_equivalent"] and second_meta["owner_equivalent"]):
+        raise BusinessReadError("a candidate set was not proven current")
+    if first_meta["owner_vector"] != second_meta["owner_vector"]:
+        raise BusinessCandidateMismatch(
+            "the two reads observed different owner revision vectors",
+        )
+    if (first_meta["usage_revision"] != second_meta["usage_revision"]
+            or first_meta["task_evidence"] != second_meta["task_evidence"]):
+        raise BusinessHistoryChanged(
+            "the two reads observed different Task history evidence",
+        )
     if first_ids != second_ids:
         raise BusinessCandidateMismatch(
             "candidate sets differ",
             detail=f"first={len(first_ids)} second={len(second_ids)}",
         )
-    return {"count": len(first_ids), "digest": selection_digest(first_ids), "ids": first_ids}
+    return {
+        "count": len(first_ids),
+        "digest": selection_digest(first_ids),
+        "ids": first_ids,
+        "owner_vector": first_meta["owner_vector"],
+        "usage_revision": first_meta["usage_revision"],
+        "task_evidence": first_meta["task_evidence"],
+    }
 
 
 def _collect(provider: BusinessReadProvider, query: BusinessQuery, limit: int):
     ids: list[str] = []
-    revision = ""
     with provider.read_session(query) as session:
-        revision = session.usage_revision
+        meta = {
+            "owner_equivalent": bool(session.owner_equivalent),
+            "owner_vector": _canonical_vector(
+                provider._picker_context().revision_vector
+            ),
+            "usage_revision": session.usage_revision,
+            "task_evidence": session.task_evidence,
+        }
         for batch in session.batches():
             for item in batch:
                 ids.append(item.material.id)
@@ -849,4 +860,26 @@ def _collect(provider: BusinessReadProvider, query: BusinessQuery, limit: int):
                         f"candidate comparison is limited to {limit} materials",
                     )
         session.verify()
-    return ids, revision
+    return ids, meta
+
+
+def _canonical_vector(vector: Mapping[str, Any] | None) -> str:
+    """Project only the versions both sides can prove (PG/SQLite share these)."""
+    value = dict(vector or {})
+
+    def stream(name: str) -> Mapping[str, Any]:
+        item = value.get(name)
+        return item if isinstance(item, Mapping) else {}
+
+    proof = {
+        "materials.revision": stream("materials").get("revision"),
+        "annotations.revision": stream("annotations").get("revision"),
+        "negative_pool.revision": stream("negative_pool").get("revision"),
+        "materials_evidence.generation": stream("materials_evidence").get("generation"),
+        "materials_evidence.structure_generation": stream("materials_evidence").get("structure_generation"),
+        "annotations_evidence.generation": stream("annotations_evidence").get("generation"),
+        "annotations_evidence.structure_generation": stream("annotations_evidence").get("structure_generation"),
+        "negative_confirmation.generation": stream("negative_confirmation").get("generation"),
+        "negative_confirmation.structure_generation": stream("negative_confirmation").get("structure_generation"),
+    }
+    return json.dumps(proof, ensure_ascii=False, sort_keys=True)

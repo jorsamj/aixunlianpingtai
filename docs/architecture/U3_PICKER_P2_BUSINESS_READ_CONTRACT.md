@@ -101,3 +101,18 @@ SQLite 历史 → 角色/用途 → 最终过滤 → 分页/统计。SQLite 权�
 - **分页/统计/冻结**：移除普通扫描 50,000 硬上限（仅比较报告保留上限）；cursor + exact 显式拒绝
   （剩余数量不得冒充总量）；冻结等价对照原 `training_selection_reference` 的
   `freeze_selection`/`read_selection`（ID、数量、摘要、手工排除）。
+
+## 8. 第三轮收口（2026-11-28）
+
+- 历史一致性改为**可证明版本**：`training_usage_meta.revision`（全部 usage 表触发器）
+  + **活跃 Task 身份摘要**（`(task_id,status)` 对 `QUEUED/RUNNING/CANCEL_REQUESTED/
+  AWAITING_CONFIRMATION` 的有界查询，sha256）。不使用按状态计数；两个任务状态互换、任务进出
+  活跃集、活跃状态变化都会改变摘要。cursor 绑定两者，任一变化拒绝续读。
+- 会话不再累积 `_facts`/payload/历史事实，不再逐素材查询 Task 状态，`verify()` 只做三次有界
+  比较（usage revision、Task 摘要、picker 快照），不重跑全量 `query_filter`。
+- `iter_candidates` 与 `read_page` 共用业务 cursor 校验/续读。
+- 浏览模式仍消费权威回执（角色不因 `browse_only` 改变）；`verify_owner=False` 仅诊断，
+  正式 `read_page` 显式拒绝，且不用于回执权威性。
+- SQLite 回执增加同事务结构认证（`evidence_structure` 与表存在一致）。
+- `compare_candidate_sets` 必须同时证明：两端 owner 版本子集（revision/generation/
+  structure）、usage revision、活跃 Task 摘要一致，且两端 `owner_equivalent=True`。
