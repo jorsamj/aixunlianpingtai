@@ -7,6 +7,12 @@
 | 已完成代码 | U2 完整性（SIGKILL/回滚/删除证据） | 真实子进程终止三窗口；反向回滚含切后 create/update/delete；删除需完整跨域证据（收集器仅实现素材侧） |
 | 已完成代码 | 素材热点（C） | v12/v20/v44/video 改为 id 快照 + 500 批 GT/素材读取；合成 1201 行 v12 GT 快照 4271ms→15ms |
 | 已完成代码 | 转换 BMODEL 门禁（D） | BMODEL 交付要求 ONNX↔BMODEL 数值/检测均 consistent，否则 `BMODEL_EVIDENCE_NOT_ELIGIBLE`；L0–L5 矩阵文档 |
+| 已完成代码 | SmartAudit 写锁 | create/review/cancel/retry 统一在 finally 释放；复核后锁外刷新；新增前端合同测试 |
+| 已完成代码 | U3 快照/证据/完整导入 | 生命周期栅栏+修订复核；必需表 fail-closed；10 张历史证据表逐行为证据；full 快照删除；schema v2 校验 |
+| 已完成代码 | U5 只读 readiness | 只读诊断权威库/版本/租约/停止未证明/GPU 预留/阻断原因 |
+| 未开发 | U3 Picker PG 等价读 | 本轮未实现（需与选材链一并设计） |
+| 未开发 | 模型转换 G1 | 类别身份与 BMODEL 证据绑定仍未实现 |
+| 未开发 | Vue 母模型管理 | v63 安装/取消/登记页面未实现 |
 | 已完成代码 | U3 影子迁移（核心） | `u3_shadow.py`：materials/GT/负样本池 Schema + 确定性快照 + 单事务幂等导入 + 对账 + CLI；真实 PG 3 项合同 |
 | 已完成代码 | U2 身份链 | finish/abort 全身份核验 + 条件化 UPDATE；删除证据绑定 scope/source/config/operation |
 | 已完成代码 | 素材缓存 | materialize 冷启动单次哈希；取消/中断不再遗留 .part 临时文件 |
@@ -38,6 +44,19 @@
 | 真实环境待验证 | 20 万素材、2 万批选、NAS/OSS | 需生产级隔离环境，未执行 |
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
+
+## 第三批：SmartAudit 写锁、U3 正确性收口、U5 只读诊断（2026-11-27，本批）
+
+- 起始 `9628234e79f8f06147c8d5dca013e334b9320e1e`。VERSION 42.24.592 未改；未启用 PostgreSQL 生产 Provider、未迁移真实数据、未连接 4070/A800。提交：`f942bf26`（SmartAudit）、`5e2f0198`（U3）、`edc74183`（U5 readiness）、本文档。
+- SmartAudit：`writeBusy` 此前在 create/review/cancel/retry 设置后无人释放（异常/未知结果后整页永久 busy），且复核回调在仍持锁时调用 `loadFindings()`，刷新被 `writeBusy` 直接短路丢弃。现统一 `writeOnce()`：设置锁 → `reads.run` → `finally` 清锁；复核刷新改到**成功后且锁已释放**的钩子。create/cancel/retry 的错误经 `reads.errors` 展示，原 `request_id`/`generation`/`review_token` 回执与“未知结果保留原 request_id”不变。新增 `tests/frontend/smart-audit-write-lock.test.mjs`（2 项，源码合同：统一包装 + 锁外刷新）。
+- U3 快照一致性（重要修正）：导出改为在 `material_annotation_lifecycle_fence` 内进行，两个 SQLite 库各自单读事务，导出后**重新读取**素材/负池/GT 的 revision 高水位，任一变化即 `U3_SNAPSHOT_SOURCE_CHANGED`；快照显式声明 `consistency=MATERIAL_ANNOTATION_LIFECYCLE_FENCE+REVISION_RECHECK`，不再宣称"两个读事务=全局原子快照"。未加该栅栏的写入者由 revision 复核检测而非静默混入。
+- U3 Owner 完整性：必需表按 store 强制（缺失即 `U3_OWNER_INCOMPLETE`），每张表记录 present/schema_version/row_count；`annotation_label_reference` 恢复 `box_count/scope_ref/annotation_state/source_kind` 与 `PRIMARY KEY(image_id,label_code)`；10 张历史证据表（material_migrations、material_storage_audit、material_retirements、material_cleanup_deferred、material_assignment_receipts、negative_pool_operations、annotation_delete_backup、annotation_negative_reviews、annotation_candidate_commits、task_negative_confirmations）以 verbatim 行进入 `evidence_row`（rowid 表按 rowid、WITHOUT ROWID 表按复合主键分页），`table_state` 记录存在性与版本；对账验证必需表与表存在性。
+- U3 完整快照导入：`import_project_snapshot(mode="full"|"incremental")`，默认 full 在单事务内先删后写（子表先于父表、仅当前 `project_id`），replay 幂等、失败整体回滚、非法规模式拒绝；标注/标注引用/素材/标签/作用域/负池链接/成员/分类均覆盖删除场景。Shadow schema 升至 v2，校验已应用版本的 checksum、拒绝高于工具的版本、提供显式升级路径。
+- U5 只读前置：`platform_core/task_store_readiness.py`（`PRAGMA query_only=ON`）报告权威库、schema user_version、任务/排队数、活动与过期租约、停止未证明（`CANCEL_REQUESTED`/`cancelling_unverified`）、`recovery_blocked`、GPU 预留、worker 实例与明确 blocker 列表；不写、不领、不改租约、不切换 Provider。3 项单测（缺失库、只读不变、未证明停止阻断）。
+- 验证：U3 真实 PG **4 项**、U5 单测 **3 项**、前端合同 **2 项**（node --test）、`vue-tsc --noEmit` 0 错误、SmartAudit SFC 编译通过、`py_compile` 与 `git diff --check` 通过。未跑全仓 pytest/Playwright/完整构建/规模测试。
+- 未完成（本轮明确）：U3 Picker 的 PostgreSQL 等价读（ATTACH 替代）未实现；模型转换 G1 类别身份与 BMODEL 证据绑定未改代码；Vue 母模型管理（v63 安装/取消/登记）未实现。原因：均需与对应 Owner 合同一并设计，且本轮优先级给了 P0 正确性；不把审计当实现。
+- 真实环境待验证：20 万素材、2 万批选、缓存冷热/磁盘回收、NAS/OSS/S3、BM 系列/RKNN/昇腾实机、U2 生产切换与回滚、U3 真实项目数据对账。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改。
 
 ## 第二批多工作流：U2 身份链、U3 影子迁移、缓存与 Vue（2026-11-27，本批）
 
