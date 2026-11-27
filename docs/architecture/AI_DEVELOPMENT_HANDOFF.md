@@ -1,16 +1,21 @@
 # AI 开发接续入口
 
-> **2026-11-27 / U3 Picker P0（Schema V4 基础合同，5696050c）**：本轮只做 P0，不实现 Provider。
-> `u3_shadow.py` 升到 `SCHEMA_VERSION=4`：新增 `picker_snapshot_state`、`u3_shadow_import`、
-> `u3_projection_cursor`、`task_negative_confirmation` 与 9 个 Picker 索引（算法级索引因与
-> `negative_pool_algorithm_member` 主键重复未建）；V1–V3 历史 DDL 与 checksum 未改。
-> 导入侧新增确定性 `snapshot_id`、快照自证完整性、revision 不回退、同 revision 不同摘要拒绝、
-> full 重放 `ALREADY_APPLIED`、状态/游标/台账与数据同事务；负样本确认只做查询投影
-> （原 `evidence_row` 保留）。真实 PostgreSQL 定向 **39 passed / 0 skipped**
-> （schema 13 + material/GT 26）。顺带修复 CLI `read_target_snapshot` 在 `dict_row` 连接下的
-> `KeyError: 0`（只固定该游标为 `tuple_row`）。P1～P4 未实施；未改生产、未改 VERSION、
-> 未启用 PostgreSQL 读取。合同与边界见
-> [U3 Picker P0 Schema V4](U3_PICKER_P0_SCHEMA_V4_20261127.md)。
+> **2026-11-27 / U3 Picker P0 审计整改（293543be）**：按独立审计只修三项，不新增 Schema V5。
+> ① **Owner 侧单调 generation**：`annotations.sqlite3` 新增 `task_negative_confirmation_generation`
+> 与 `evidence_generation`，`materials.sqlite3` 新增 `evidence_generation`，由同事务 SQLite
+> Trigger 覆盖 INSERT/UPDATE/DELETE，旧库打开时原地补装（不升 user_version）；
+> `confirm_task_negatives()` 与导出共用 `material_annotation_lifecycle_fence`（锁序统一为
+> 生命周期锁 → SQLite），导出读取并复核 generation。快照 `evidence_streams`（generation +
+> 重算摘要 + 表结构）进入 `snapshot_id`/`revision_vector`；低 generation 或同 generation
+> 不同摘要一律拒绝，`negative_confirmation_revision` 仍是 COUNT 兼容语义。
+> ② **full 导入前置完整性**：普通项目也必须在任何写入前通过 contract/project/lifecycle/
+> 必需表/十张证据表/table_state/counts/digests/content_digest/三项 revision/snapshot_id
+> 校验，否则 `U3_SNAPSHOT_INCOMPLETE`（pending 保留原错误码）。
+> ③ **V4 结构核验补强**：四张 V4 表真实主键、列类型、NOT NULL、status/outcome CHECK、
+> 索引所属表与列顺序全部对 catalog 校验，篡改一律 `U3_SCHEMA_STRUCTURE_INVALID`，不自动修复。
+> 定向用例：真实 PostgreSQL **50 passed / 0 skipped**（schema 17 + material/GT 33）。
+> V1–V3 历史 DDL/checksum、VERSION 42.24.592 未改；P1 Provider 未启动。
+> 合同见 [U3 Picker P0 Schema V4](U3_PICKER_P0_SCHEMA_V4_20261127.md)。
 
 ## 统一剩余任务台账（架构阶段）
 

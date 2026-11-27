@@ -439,7 +439,10 @@ SELECT 1 FROM selection s JOIN material_index.materials m ON m.id=s.image_id
 
 > 2026-11-27 更新（P0 已实现）：以下规则已落到 `u3_shadow.py` V4 的
 > `picker_snapshot_state` + 导入保护中，并按“受 revision 约束的投影表”计算摘要
-> （历史证据表不参与单调比较）。实现与验收见
+> （历史证据表不参与单调比较）。证据表的可变性由 Owner 侧单调 generation 保护：
+> `task_negative_confirmations` → `annotation_meta.task_negative_confirmation_generation`，
+> 其余证据表 → `annotation_meta.evidence_generation` / `material_meta.evidence_generation`
+> （SQLite Trigger 同事务递增）。实现与验收见
 > [U3 Picker P0 Schema V4](U3_PICKER_P0_SCHEMA_V4_20261127.md)。
 
 - 记录四个高水位：`material_revision`、`annotation_revision`、`negative_pool_revision`、`usage_revision`（若任务库不可读则记 `null` 并显式标注 `unavailable`，对齐 `training_material_usage.py:213-228` 的 `'unknown'` 语义）。
