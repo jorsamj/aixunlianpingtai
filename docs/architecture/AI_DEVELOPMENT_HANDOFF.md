@@ -1,5 +1,21 @@
 # AI 开发接续入口
 
+> **2026-11-27 / U3-P1 Picker PostgreSQL 只读读取层（38204b17）**：新增
+> `platform_core/training_material_picker_read.py`（Provider 合同 + `SQLitePickerReadProvider`
+> 基准 + `PostgresPickerReadProvider` 独立 SQL），`training_material_picker_api.py` 与
+> `u3_shadow.py` **零改动**，现有 Picker 路由/前端/训练链路未切换。
+> P1 已支持：项目隔离、processed 状态、文件名 ASCII 大小写搜索、存储源、创建时间、标签
+> ANY/ALL、正式 GT/确认空、显式 ID、负样本池成员/分类/算法、`(created_at,id)` 稳定排序、
+> 页码与 keyset cursor、exact/deferred 计数、有界批量读取、池关系、任务级回执权威性。
+> 一致性：页面/COUNT/GT 在同一 `REPEATABLE READ, READ ONLY` 事务；READY 之外还要求 Owner
+> revision/generation/structure 与当前 SQLite 一致（只读 meta，不导出数据），否则
+> `PICKER_SNAPSHOT_STALE` / `PICKER_OWNER_UNVERIFIABLE`；不支持的条件显式报错，legacy GT
+> 内容不可证明时返回 `unproven_legacy_ids`，不伪造 GT。
+> 定向用例：真实 PostgreSQL 16 **23 passed / 0 skipped**（P0 57 项未重跑）；CI 的
+> `Storage Cache Governance` U3 步骤已纳入该文件，JUnit 门禁改为跨 suite 汇总（<70 视为缺测）。
+> 未新增 Schema V5、未改 VERSION 42.24.592、未启用生产读取、未启动 P2。
+> 合同见 [U3 Picker P1 Read Provider](U3_PICKER_P1_READ_PROVIDER_20261127.md)。
+
 > **2026-11-27 / U3 P0 负样本池证据版本收口（e0de1c83）**：只修两个问题，不重写 U3、
 > 不新增 V5、不改历史 DDL/checksum、VERSION 仍 42.24.592。
 > ① `negative_pool_operations` 纳入 materials evidence generation 触发器覆盖：两次合法
