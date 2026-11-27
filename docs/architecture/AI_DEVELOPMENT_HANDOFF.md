@@ -48,6 +48,13 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第十四批：evidence 命名空间校验下沉到导入边界（2026-11-27，本批）
+
+- 起始 `19265f18f50c8c5fa82e763cc058cd36ec40ae3a`。VERSION 42.24.592 未改。
+- 原全局检查只在 `pending_clear_eligible()`（pending + full）中执行，普通 full / incremental 仍可写入未知 evidence 命名空间。现提取 `evidence_namespace_error(snapshot)`，在 `import_project_snapshot()` 的 advisory lock 之后、任何 DELETE/INSERT/UPDATE 之前对所有模式与所有项目执行：允许集合严格为 `EVIDENCE_TABLES` 十张表的 `store.evidence.table`；`counts`/`digests` 中任何集合外 `*.evidence.*` 键拒绝；stores 中未知 store 携带 `evidence`（含空字典）拒绝；已知 store 的 evidence 必须是 dict、值必须是 list；非字典 store payload 不被静默跳过。pending 项目抛 `U3_PENDING_IMPORT_INCOMPLETE`，其他项目抛 `U3_EVIDENCE_NAMESPACE_INVALID`；未知 evidence 无法进入 `evidence_row`。十张表的 absent 保留/empty 清空语义不变。
+- 新增真实 PostgreSQL 矩阵用例：pending 与非 pending × full 与 incremental，覆盖未知 store 携带证据、未知 store 的 `evidence={}`、非字典 store payload；每次拒绝后 stores/table_state/revisions（及 pending 标记）完全不变；合法快照在两种模式下仍正常导入。
+- 验证：`test_u3_schema_upgrade_postgres.py` 10 项 + `test_u3_material_gt_postgres.py` 16 项 = **26 passed**（真实 PostgreSQL，0 skip）。
+
 ## 第十三批：全局 evidence 命名空间校验（2026-11-27，本批）
 
 - 起始 `d9c0e5d6d55337c1a965cc69c382a59714305972`。VERSION 42.24.592 未改。
