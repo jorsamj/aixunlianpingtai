@@ -29,6 +29,7 @@ from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.u3_shadow import (
     _digest,
+    _snapshot_identity,
     U3MigrationError,
     SCHEMA_NAME,
     export_project_snapshot,
@@ -143,11 +144,50 @@ def _fixture(tmp_path, project_id="p1"):
 
 def _clear(connection):
     with connection.cursor() as cursor:
-        for table in ("negative_pool_algorithm_member", "negative_pool_link", "negative_pool_member",
+        for table in ("u3_shadow_import", "u3_projection_cursor", "picker_snapshot_state",
+                      "task_negative_confirmation",
+                      "negative_pool_algorithm_member", "negative_pool_link", "negative_pool_member",
                       "negative_pool_category", "annotation_label_reference", "annotation",
                       "material_annotation_scope", "material_label", "material", "store_revision"):
             cursor.execute(f"DELETE FROM {SCHEMA_NAME}.{table}")
     connection.commit()
+
+
+def _state(connection, project_id):
+    # One explicit transaction: an uncommitted implicit read would leave the
+    # connection busy for the next REPEATABLE READ snapshot.
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT snapshot_id,content_digest,material_revision,annotation_revision,"
+                "negative_pool_revision,negative_confirmation_revision,"
+                "negative_confirmation_generation,status "
+                f"FROM {SCHEMA_NAME}.picker_snapshot_state WHERE project_id=%s",
+                (project_id,),
+            )
+            return cursor.fetchone()
+
+
+def _cursors(connection, project_id):
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT store,last_applied_seq,source_revision FROM {SCHEMA_NAME}.u3_projection_cursor "
+                "WHERE project_id=%s ORDER BY store",
+                (project_id,),
+            )
+            return cursor.fetchall()
+
+
+def _ledger(connection, project_id):
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT outcome,error_code,snapshot_digest FROM {SCHEMA_NAME}.u3_shadow_import "
+                "WHERE project_id=%s ORDER BY import_id",
+                (project_id,),
+            )
+            return cursor.fetchall()
 
 
 def test_shadow_export_import_reconcile(pg, tmp_path):
@@ -202,11 +242,14 @@ def test_shadow_export_import_reconcile(pg, tmp_path):
 def test_import_rolls_back_completely_on_an_integrity_failure(pg, tmp_path):
     project = _fixture(tmp_path, project_id="p2")
     snapshot = export_project_snapshot(project, "p2")
-    # A pool member whose material does not exist must fail the whole import.
+    # A pool member whose material does not exist must fail the whole import. The
+    # snapshot is resealed so the failure is the real foreign-key write, not the
+    # (separately tested) integrity gate.
     broken = json.loads(json.dumps(snapshot))
     broken["stores"]["materials"]["negative_pool_members"].append(
         {"material_id": "ghost", "joined_at": "2026-01-01T00:00:00+00:00"}
     )
+    _reseal(broken)
     with psycopg.connect(pg.get_uri()) as connection:
         with pytest.raises(Exception) as failure:
             import_project_snapshot(connection, broken)
@@ -228,15 +271,20 @@ def test_full_snapshot_reflects_source_deletions(pg, tmp_path):
         import_project_snapshot(connection, snapshot)
         assert reconcile(snapshot, read_target_snapshot(connection, "p3"))["same"] is True
 
-    # Remove a category link, the category, a pool member and an annotation.
+    # Remove a category link, the category, a pool member and an annotation. The
+    # owner revisions move with the data: a source row that changed without a new
+    # revision is refused by the v4 identity contract.
     with sqlite3.connect(project / "materials.sqlite3") as database:
         database.execute("DELETE FROM negative_pool_links WHERE material_id='m3'")
         database.execute("DELETE FROM negative_pool_algorithm_members WHERE material_id='m3'")
         database.execute("DELETE FROM negative_pool_members WHERE material_id='m3'")
         database.execute("DELETE FROM negative_pool_categories WHERE id='cat-fire'")
         database.execute("DELETE FROM material_labels WHERE material_id='m1'")
+        database.execute("UPDATE material_meta SET value='8' WHERE key='revision'")
+        database.execute("UPDATE negative_pool_meta SET revision=revision+1 WHERE id=1")
     with sqlite3.connect(project / "annotations.sqlite3") as database:
         database.execute("DELETE FROM annotation_label_references WHERE image_id='m1'")
+        database.execute("UPDATE annotation_meta SET value='5' WHERE key='revision'")
 
     changed = export_project_snapshot(project, "p3")
     with psycopg.connect(pg.get_uri()) as connection:
@@ -810,6 +858,34 @@ def _recompute_content_digest(snapshot):
     return snapshot
 
 
+def _reseal(snapshot):
+    """Recompute counts/digests/identity, as an honest exporter would.
+
+    Used when a test needs a snapshot that is *self-consistent but invalid* (for
+    example a pool member whose material does not exist): the integrity gate must
+    pass so the write-level failure being tested is the one that surfaces.
+    """
+    counts, digests = {}, {}
+    for store, tables in snapshot["stores"].items():
+        for table, rows in tables.items():
+            if table == "evidence":
+                for name, items in rows.items():
+                    counts[f"{store}.evidence.{name}"] = len(items)
+                    digests[f"{store}.evidence.{name}"] = _digest(items)
+                continue
+            counts[f"{store}.{table}"] = len(rows)
+            digests[f"{store}.{table}"] = _digest(rows)
+    snapshot["counts"] = counts
+    snapshot["digests"] = digests
+    snapshot["content_digest"] = _digest(
+        [{"table": name, "digest": value} for name, value in sorted(digests.items())]
+    )
+    snapshot["snapshot_id"] = _snapshot_identity(
+        snapshot["project_id"], snapshot["content_digest"], snapshot["revisions"]
+    )
+    return snapshot
+
+
 def test_pending_import_refuses_snapshot_missing_an_evidence_table(pg, tmp_path):
     project = _fixture(tmp_path, project_id="p10")
     _seed_evidence(project)
@@ -1038,3 +1114,277 @@ def test_evidence_namespace_is_enforced_for_every_import_mode(pg, tmp_path):
         # The legal snapshot is still accepted in both modes.
         assert import_project_snapshot(connection, snapshot, mode="incremental")["evidence"] >= 10
         assert reconcile(snapshot, read_target_snapshot(connection, "p14"))["same"] is True
+
+# ---------------------------------------------------------------------------
+# U3 Picker P0: snapshot identity, revision protection, atomic cursor/ledger
+# ---------------------------------------------------------------------------
+def test_replaying_an_applied_full_snapshot_changes_no_business_row(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q1")
+    snapshot = export_project_snapshot(project, "q1")
+    with psycopg.connect(pg.get_uri()) as connection:
+        first = import_project_snapshot(connection, snapshot)
+        assert first["outcome"] == "APPLIED"
+        assert first["snapshot_status"] == "READY"
+        before = read_target_snapshot(connection, "q1")
+        state_before = _state(connection, "q1")
+        assert state_before[7] == "READY"
+        assert state_before[5] == 0  # no confirmation receipts in this fixture
+
+        replay = import_project_snapshot(connection, snapshot)
+        assert replay["outcome"] == "ALREADY_APPLIED"
+        after = read_target_snapshot(connection, "q1")
+        assert after["stores"] == before["stores"]
+        assert after["counts"] == before["counts"]
+        assert after["table_state"] == before["table_state"]
+        assert _state(connection, "q1") == state_before
+        outcomes = [row[0] for row in _ledger(connection, "q1")]
+        assert outcomes == ["APPLIED", "ALREADY_APPLIED"]
+
+
+def test_owner_revision_regression_is_refused_and_audited(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q2")
+    snapshot = export_project_snapshot(project, "q2")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        baseline = read_target_snapshot(connection, "q2")
+
+        older = _reseal(copy.deepcopy(snapshot))
+        older["revisions"]["materials"] = snapshot["revisions"]["materials"] - 1
+        _reseal(older)
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, older)
+        assert refused.value.code == "U3_SNAPSHOT_REVISION_REGRESSION"
+        assert "store=materials" in refused.value.detail
+        after = read_target_snapshot(connection, "q2")
+        assert after["stores"] == baseline["stores"]
+        assert after["revisions"] == baseline["revisions"]
+        ledger = _ledger(connection, "q2")
+        assert [row[0] for row in ledger] == ["APPLIED", "REFUSED"]
+        assert ledger[1][1] == "U3_SNAPSHOT_REVISION_REGRESSION"
+
+
+def test_same_revision_with_different_content_is_refused(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q3")
+    snapshot = export_project_snapshot(project, "q3")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        baseline = read_target_snapshot(connection, "q3")
+
+        diverged = copy.deepcopy(snapshot)
+        diverged["stores"]["materials"]["materials"][0]["filename"] = "renamed-without-revision.jpg"
+        _reseal(diverged)
+        assert diverged["revisions"] == snapshot["revisions"]
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, diverged)
+        assert refused.value.code == "U3_SNAPSHOT_REVISION_DIVERGED"
+        after = read_target_snapshot(connection, "q3")
+        assert after["stores"] == baseline["stores"]
+
+
+def test_a_snapshot_that_does_not_match_its_own_identity_is_refused(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q4")
+    snapshot = export_project_snapshot(project, "q4")
+    with psycopg.connect(pg.get_uri()) as connection:
+        tampered = copy.deepcopy(snapshot)
+        tampered["stores"]["materials"]["materials"][0]["filename"] = "tampered.jpg"
+        with pytest.raises(U3MigrationError) as digest_failure:
+            import_project_snapshot(connection, tampered)
+        assert digest_failure.value.code == "U3_SNAPSHOT_INTEGRITY_FAILED"
+        assert "digest:materials.materials" in digest_failure.value.detail
+
+        # Counts/digests recomputed for the changed row but the declared snapshot
+        # identity kept: the identity itself no longer matches.
+        relabelled = copy.deepcopy(snapshot)
+        relabelled["stores"]["materials"]["materials"][0]["filename"] = "relabelled.jpg"
+        relabelled["digests"] = dict(relabelled["digests"])
+        relabelled["digests"]["materials.materials"] = _digest(
+            relabelled["stores"]["materials"]["materials"]
+        )
+        relabelled["content_digest"] = _digest(
+            [{"table": name, "digest": value}
+             for name, value in sorted(relabelled["digests"].items())]
+        )
+        with pytest.raises(U3MigrationError) as id_failure:
+            import_project_snapshot(connection, relabelled)
+        assert id_failure.value.code == "U3_SNAPSHOT_INTEGRITY_FAILED"
+        assert "reason=snapshot_id" in id_failure.value.detail
+
+        # A full import must declare integrity metadata at all.
+        stripped = copy.deepcopy(snapshot)
+        for key in ("counts", "digests", "content_digest", "snapshot_id"):
+            stripped.pop(key, None)
+        with pytest.raises(U3MigrationError) as metadata_failure:
+            import_project_snapshot(connection, stripped)
+        assert metadata_failure.value.code == "U3_SNAPSHOT_INTEGRITY_FAILED"
+        assert "metadata_missing" in metadata_failure.value.detail
+        assert read_target_snapshot(connection, "q4")["counts"]["materials.materials"] == 0
+
+
+def test_failed_import_rolls_back_rows_cursors_state_and_ledger(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q5")
+    snapshot = export_project_snapshot(project, "q5")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        baseline = read_target_snapshot(connection, "q5")
+        state_before = _state(connection, "q5")
+        cursors_before = _cursors(connection, "q5")
+        ledger_before = _ledger(connection, "q5")
+        # Every cursor was committed with the data.
+        assert cursors_before == [
+            ("annotations", None, 4), ("materials", None, 7), ("negative_pool", None, 0),
+        ]
+
+        newer = copy.deepcopy(snapshot)
+        newer["stores"]["materials"]["materials"][0]["filename"] = "must-not-land.jpg"
+        newer["stores"]["materials"]["negative_pool_members"].append(
+            {"material_id": "ghost", "joined_at": "2026-01-01T00:00:00+00:00"}
+        )
+        newer["revisions"] = {"materials": 8, "annotations": 4, "negative_pool": 1}
+        _reseal(newer)
+        with pytest.raises(Exception) as failure:
+            import_project_snapshot(connection, newer)
+        assert "foreign key" in str(failure.value).lower() or "violates" in str(failure.value).lower()
+
+        after = read_target_snapshot(connection, "q5")
+        assert after["stores"] == baseline["stores"]
+        assert after["revisions"] == baseline["revisions"]
+        assert _state(connection, "q5") == state_before
+        assert _cursors(connection, "q5") == cursors_before
+        assert _ledger(connection, "q5") == ledger_before
+
+
+def test_projects_keep_independent_identity_and_ledgers(pg, tmp_path):
+    first = _fixture(tmp_path / "a", project_id="q6a")
+    second = _fixture(tmp_path / "b", project_id="q6b")
+    with sqlite3.connect(second / "materials.sqlite3") as database:
+        database.execute("UPDATE material_meta SET value='1' WHERE key='revision'")
+    second_snapshot = export_project_snapshot(second, "q6b")
+    first_snapshot = export_project_snapshot(first, "q6a")
+    assert second_snapshot["revisions"]["materials"] == 1 < first_snapshot["revisions"]["materials"]
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, first_snapshot)
+        # A lower revision in ANOTHER project is not a regression.
+        assert import_project_snapshot(connection, second_snapshot)["outcome"] == "APPLIED"
+        # A regression in one project leaves the other untouched.
+        older = _reseal(copy.deepcopy(second_snapshot))
+        older["revisions"]["materials"] = 0
+        _reseal(older)
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, older)
+        assert refused.value.code == "U3_SNAPSHOT_REVISION_REGRESSION"
+        assert read_target_snapshot(connection, "q6a")["counts"]["materials.materials"] == 3
+        assert _state(connection, "q6a")[2] == 7
+        assert _state(connection, "q6b")[2] == 1
+        assert [row[0] for row in _ledger(connection, "q6a")] == ["APPLIED"]
+        assert [row[0] for row in _ledger(connection, "q6b")] == ["APPLIED", "REFUSED"]
+
+
+def test_incremental_apply_marks_the_published_state_stale(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q7")
+    snapshot = export_project_snapshot(project, "q7")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        assert _state(connection, "q7")[7] == "READY"
+        import_project_snapshot(connection, snapshot, mode="incremental")
+        assert _state(connection, "q7")[7] == "STALE"
+        # A full republish of the same snapshot restores READY (it re-verifies).
+        assert import_project_snapshot(connection, snapshot)["outcome"] == "APPLIED"
+        assert _state(connection, "q7")[7] == "READY"
+
+
+def _seed_confirmations(project):
+    with sqlite3.connect(project / "annotations.sqlite3") as database:
+        database.execute(
+            "CREATE TABLE IF NOT EXISTS task_negative_confirmations ("
+            "receipt_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, evidence_json TEXT NOT NULL)"
+        )
+        for receipt, context, image in (("r-1", "ctx-a", "m1"), ("r-2", "ctx-a", "m2")):
+            evidence = {
+                "image_id": image, "annotation_version": 3, "annotation_hash": "digest-a",
+                "receipt_id": receipt, "context_key": context,
+            }
+            database.execute(
+                "INSERT INTO task_negative_confirmations VALUES (?,?,?)",
+                (receipt, context, json.dumps(evidence, sort_keys=True)),
+            )
+
+
+def test_task_negative_confirmation_projection_matches_the_owner_receipts(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q8")
+    _seed_confirmations(project)
+    snapshot = export_project_snapshot(project, "q8")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT receipt_id,context_key,image_id,evidence "
+                f"FROM {SCHEMA_NAME}.task_negative_confirmation WHERE project_id=%s "
+                "ORDER BY receipt_id",
+                ("q8",),
+            )
+            rows = cursor.fetchall()
+            assert [(row[0], row[1], row[2]) for row in rows] == [
+                ("r-1", "ctx-a", "m1"), ("r-2", "ctx-a", "m2"),
+            ]
+            assert rows[0][3]["receipt_id"] == "r-1"
+            # The verbatim owner row is still retained as historical evidence.
+            cursor.execute(
+                f"SELECT count(*) FROM {SCHEMA_NAME}.evidence_row WHERE project_id=%s "
+                "AND store='annotations' AND table_name='task_negative_confirmations'",
+                ("q8",),
+            )
+            assert cursor.fetchone()[0] == 2
+        state = _state(connection, "q8")
+        assert state[5] == 2  # COUNT(*) compatibility revision
+        assert state[6] == 0  # generation starts at the first published snapshot
+
+    # Deleting a receipt changes the generation without changing an owner revision.
+    with sqlite3.connect(project / "annotations.sqlite3") as database:
+        database.execute("DELETE FROM task_negative_confirmations WHERE receipt_id='r-2'")
+    smaller = export_project_snapshot(project, "q8")
+    assert smaller["revisions"] == snapshot["revisions"]
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, smaller)
+        state = _state(connection, "q8")
+        assert state[5] == 1
+        assert state[6] == 1
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT receipt_id FROM {SCHEMA_NAME}.task_negative_confirmation "
+                "WHERE project_id=%s ORDER BY receipt_id",
+                ("q8",),
+            )
+            assert [row[0] for row in cursor.fetchall()] == ["r-1"]
+
+
+def test_malformed_confirmation_evidence_fails_closed_and_rolls_back(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q9")
+    with sqlite3.connect(project / "annotations.sqlite3") as database:
+        database.execute(
+            "CREATE TABLE task_negative_confirmations ("
+            "receipt_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, evidence_json TEXT NOT NULL)"
+        )
+        database.execute(
+            "INSERT INTO task_negative_confirmations VALUES ('','ctx','{\"image_id\": \"m1\"}')"
+        )
+    snapshot = export_project_snapshot(project, "q9")
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, snapshot)
+        assert refused.value.code == "U3_NEGATIVE_CONFIRMATION_INVALID"
+        assert read_target_snapshot(connection, "q9")["counts"]["materials.materials"] == 0
+        assert _state(connection, "q9") is None
+        assert _cursors(connection, "q9") == []
+        assert _ledger(connection, "q9") == []
+
+
+def test_snapshot_identity_is_deterministic_and_matches_the_export(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="q10")
+    first = export_project_snapshot(project, "q10")
+    second = export_project_snapshot(project, "q10")
+    assert first["snapshot_id"] == second["snapshot_id"]
+    assert len(first["snapshot_id"]) == 36
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, first)
+        assert _state(connection, "q10")[0] == first["snapshot_id"]

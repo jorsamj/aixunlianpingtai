@@ -18,6 +18,13 @@ Contract notes (see docs/architecture/U3_MATERIAL_GT_NEGATIVE_POOL_MIGRATION_INV
 * a replay of the same snapshot changes nothing;
 * reconcile explains every difference and treats an unprovable owner as a failure,
   never as "zero".
+
+Schema V4 (this build) adds the read-side identity contracts only: a published
+snapshot state, an import ledger, projection cursors, a query projection of the
+task-level negative confirmations, and the label-first / owner-order indexes the
+Picker needs. It never adds a write authority: the SQLite owners stay the source
+of truth, ``task_negative_confirmation`` is derived read-only data (the verbatim
+evidence stays in ``evidence_row``) and an owner revision may not go backwards.
 """
 from __future__ import annotations
 
@@ -25,12 +32,13 @@ import hashlib
 import json
 import re
 import sqlite3
+import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 SCHEMA_NAME = "w3_material_gt"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 #: Pseudo store-revision key recording that v1 reference rows were upgraded with
 #: provisional counters and must be replaced by a full authoritative SQLite import
 #: before the target may be considered complete.
@@ -531,6 +539,14 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         for table, rows in (tables.get("evidence") or {}).items():
             counts[f"{store}.evidence.{table}"] = len(rows)
             digests[f"{store}.evidence.{table}"] = _digest(rows)
+    content_digest = _digest(
+        [{"table": name, "digest": value} for name, value in sorted(digests.items())]
+    )
+    revisions = {
+        "materials": material_revision,
+        "annotations": annotation_revision,
+        "negative_pool": pool_revision,
+    }
     return {
         "contract_version": CONTRACT_VERSION,
         "project_id": str(project_id),
@@ -539,19 +555,18 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         "digests": digests,
         "table_state": table_state,
         "schema_versions": {"materials": materials_schema, "annotations": annotations_schema},
-        "revisions": {
-            "materials": material_revision,
-            "annotations": annotation_revision,
-            "negative_pool": pool_revision,
-        },
+        "revisions": revisions,
         "consistency": "MATERIAL_ANNOTATION_LIFECYCLE_FENCE+REVISION_RECHECK",
-        "content_digest": _digest(
-            [{"table": name, "digest": value} for name, value in sorted(digests.items())]
-        ),
+        "content_digest": content_digest,
+        # Deterministic identity: the same owner state always names the same
+        # snapshot, so a replay is recognisable without a random token.
+        "snapshot_id": _snapshot_identity(project_id, content_digest, revisions),
     }
 
 
-_SCHEMA = """
+#: The exact v3 DDL this tool applied. Kept verbatim so a v3 database can be
+#: validated against its own contract before it is upgraded to v4.
+_SCHEMA_V3 = """
 CREATE SCHEMA IF NOT EXISTS w3_material_gt;
 CREATE TABLE IF NOT EXISTS w3_material_gt.schema_migration (
     version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum CHAR(64) NOT NULL,
@@ -623,6 +638,82 @@ CREATE TABLE IF NOT EXISTS w3_material_gt.store_revision (
     project_id TEXT NOT NULL, store TEXT NOT NULL, revision BIGINT, recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (project_id, store));
 """
+
+
+#: V4 read-side contract. Every object is additive: no business table is rebuilt,
+#: no historical evidence changes meaning and a database created directly at v4
+#: gets the same objects as an upgraded v3 one.
+_SCHEMA_V4_ADDITIONS = """
+CREATE TABLE IF NOT EXISTS w3_material_gt.picker_snapshot_state (
+    project_id TEXT PRIMARY KEY,
+    snapshot_id TEXT NOT NULL,
+    content_digest CHAR(64) NOT NULL,
+    material_revision BIGINT,
+    annotation_revision BIGINT,
+    negative_pool_revision BIGINT,
+    materials_digest CHAR(64),
+    annotations_digest CHAR(64),
+    negative_pool_digest CHAR(64),
+    negative_confirmation_revision BIGINT NOT NULL,
+    negative_confirmation_generation BIGINT NOT NULL DEFAULT 0,
+    negative_confirmation_digest CHAR(64),
+    revision_vector JSONB NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('READY', 'STALE', 'INCOMPLETE')),
+    captured_at TIMESTAMPTZ,
+    published_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS w3_material_gt.u3_shadow_import (
+    import_id BIGSERIAL PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    snapshot_digest TEXT NOT NULL,
+    revision_vector JSONB NOT NULL,
+    import_mode TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('APPLIED', 'ALREADY_APPLIED', 'REFUSED', 'FAILED')),
+    error_code TEXT,
+    detail TEXT,
+    imported_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_u3_shadow_import_project
+    ON w3_material_gt.u3_shadow_import(project_id, snapshot_digest, outcome);
+CREATE TABLE IF NOT EXISTS w3_material_gt.u3_projection_cursor (
+    project_id TEXT NOT NULL,
+    store TEXT NOT NULL,
+    last_applied_seq BIGINT,
+    source_revision BIGINT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, store));
+-- Derived read-only projection of annotations.task_negative_confirmations. The
+-- original row (receipt_id, context_key, evidence_json) stays verbatim in
+-- evidence_row, and this table only makes the receipt queryable by context/image.
+CREATE TABLE IF NOT EXISTS w3_material_gt.task_negative_confirmation (
+    project_id TEXT NOT NULL,
+    receipt_id TEXT NOT NULL,
+    context_key TEXT NOT NULL,
+    image_id TEXT,
+    evidence JSONB NOT NULL,
+    PRIMARY KEY (project_id, receipt_id));
+CREATE INDEX IF NOT EXISTS idx_picker_negative_receipt
+    ON w3_material_gt.task_negative_confirmation(project_id, context_key, image_id);
+CREATE INDEX IF NOT EXISTS idx_picker_material_order
+    ON w3_material_gt.material(project_id, processing_status, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_picker_material_source_order
+    ON w3_material_gt.material(project_id, storage_source_id, processing_status, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_picker_material_label
+    ON w3_material_gt.material_label(project_id, label_code, material_id);
+CREATE INDEX IF NOT EXISTS idx_picker_material_scope
+    ON w3_material_gt.material_annotation_scope(project_id, label_code, material_id);
+CREATE INDEX IF NOT EXISTS idx_picker_gt_label
+    ON w3_material_gt.annotation_label_reference(project_id, label_code, image_id);
+CREATE INDEX IF NOT EXISTS idx_picker_gt_state
+    ON w3_material_gt.annotation(project_id, annotation_state, image_id);
+CREATE INDEX IF NOT EXISTS idx_picker_pool_joined
+    ON w3_material_gt.negative_pool_member(project_id, joined_at, material_id);
+CREATE INDEX IF NOT EXISTS idx_picker_pool_category
+    ON w3_material_gt.negative_pool_link(project_id, category_id, material_id);
+"""
+
+#: The current DDL. A fresh target executes this text; an older target applies
+#: ``_SCHEMA_UPGRADES`` one version at a time.
+_SCHEMA = _SCHEMA_V3 + _SCHEMA_V4_ADDITIONS
 
 
 #: The exact v1 DDL this tool once applied. Historical migration rows are
@@ -760,7 +851,7 @@ def schema_checksum() -> str:
     return hashlib.sha256(_SCHEMA.encode("utf-8")).hexdigest()
 
 
-_HISTORICAL_SCHEMAS = {1: _SCHEMA_V1, 2: _SCHEMA_V2}
+_HISTORICAL_SCHEMAS = {1: _SCHEMA_V1, 2: _SCHEMA_V2, 3: _SCHEMA_V3}
 
 
 def schema_checksum_for(version: int) -> str:
@@ -843,7 +934,51 @@ _SCHEMA_UPGRADES = {
         """CREATE UNIQUE INDEX IF NOT EXISTS uq_negative_pool_category_name
     ON w3_material_gt.negative_pool_category(project_id, lower(name COLLATE "C"))""",
     ),
+    # v3 -> v4: purely additive read-side contract (state, ledger, cursors,
+    # confirmation projection and the Picker indexes). No existing table, row or
+    # historical evidence is touched, so the upgrade is safe to re-run and a
+    # failure rolls the whole migration back.
+    4: (_SCHEMA_V4_ADDITIONS,),
 }
+
+
+#: Structural contract of the v4 read-side objects (verified against the real
+#: catalog, never inferred from the migration rows).
+V4_TABLES = {
+    "picker_snapshot_state": (
+        "project_id", "snapshot_id", "content_digest", "material_revision",
+        "annotation_revision", "negative_pool_revision", "materials_digest",
+        "annotations_digest", "negative_pool_digest",
+        "negative_confirmation_revision", "negative_confirmation_generation",
+        "negative_confirmation_digest", "revision_vector", "status",
+        "captured_at", "published_at",
+    ),
+    "u3_shadow_import": (
+        "import_id", "project_id", "snapshot_id", "snapshot_digest",
+        "revision_vector", "import_mode", "outcome", "error_code", "detail",
+        "imported_at",
+    ),
+    "u3_projection_cursor": (
+        "project_id", "store", "last_applied_seq", "source_revision", "updated_at",
+    ),
+    "task_negative_confirmation": (
+        "project_id", "receipt_id", "context_key", "image_id", "evidence",
+    ),
+}
+#: ``negative_pool_algorithm_member`` already has (project_id, algorithm_id,
+#: material_id) as its primary key, so no second algorithm-first index is added.
+V4_INDEXES = (
+    "idx_u3_shadow_import_project",
+    "idx_picker_negative_receipt",
+    "idx_picker_material_order",
+    "idx_picker_material_source_order",
+    "idx_picker_material_label",
+    "idx_picker_material_scope",
+    "idx_picker_gt_label",
+    "idx_picker_gt_state",
+    "idx_picker_pool_joined",
+    "idx_picker_pool_category",
+)
 
 
 def _assert_target_structure(cursor) -> None:
@@ -919,6 +1054,30 @@ def _assert_target_structure(cursor) -> None:
     expected_primary = ("project_id", "image_id", "label_code")
     if primary_columns != expected_primary:
         missing = list(missing) + [f"primary_key={primary_columns}"]
+    # V4 objects: a migration row alone never proves the read-side contract exists.
+    cursor.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema=%s AND table_name = ANY(%s)",
+        (SCHEMA_NAME, list(V4_TABLES)),
+    )
+    v4_columns: dict[str, set[str]] = {}
+    for row in cursor.fetchall():
+        v4_columns.setdefault(str(row["table_name"]), set()).add(str(row["column_name"]))
+    for table, columns in V4_TABLES.items():
+        present_columns = v4_columns.get(table)
+        if present_columns is None:
+            missing = list(missing) + [f"v4_table={table}"]
+            continue
+        for column in columns:
+            if column not in present_columns:
+                missing = list(missing) + [f"v4_column={table}.{column}"]
+    cursor.execute(
+        "SELECT indexname FROM pg_indexes WHERE schemaname=%s", (SCHEMA_NAME,)
+    )
+    indexes = {str(row["indexname"]) for row in cursor.fetchall()}
+    missing = list(missing) + [
+        f"v4_index={name}" for name in V4_INDEXES if name not in indexes
+    ]
     if missing or absent:
         raise U3MigrationError(
             "U3_SCHEMA_STRUCTURE_INVALID",
@@ -1231,9 +1390,274 @@ def pending_clear_eligible(snapshot: Mapping[str, Any], project_id: str) -> tupl
     return True, "complete"
 
 
+#: Read-side revision streams. Only the tables below are covered by a monotonic
+#: owner revision. Historical evidence and ``table_state`` may change without one,
+#: so they never participate in the regression / same-revision-digest comparison.
+REVISION_STORES = {
+    "materials": (
+        "materials.materials", "materials.material_labels",
+        "materials.material_annotation_scopes",
+    ),
+    "annotations": (
+        "annotations.annotations", "annotations.annotation_label_references",
+    ),
+    "negative_pool": (
+        "materials.negative_pool_members", "materials.negative_pool_categories",
+        "materials.negative_pool_links", "materials.negative_pool_algorithm_members",
+    ),
+}
+
+#: Policy refusals worth an audit row. They happen after the target schema exists,
+#: so the ledger insert itself is safe; every other failure rolls back completely
+#: (including the ledger row), which is the atomicity contract.
+REFUSAL_LEDGER_CODES = frozenset({
+    "U3_SNAPSHOT_INTEGRITY_FAILED",
+    "U3_SNAPSHOT_REVISION_REGRESSION",
+    "U3_SNAPSHOT_REVISION_DIVERGED",
+})
+
+_STATE_COLUMNS = (
+    "material_revision", "annotation_revision", "negative_pool_revision",
+    "materials_digest", "annotations_digest", "negative_pool_digest",
+    "negative_confirmation_revision", "negative_confirmation_generation",
+    "negative_confirmation_digest", "content_digest", "snapshot_id", "status",
+)
+
+
+def _snapshot_identity(
+    project_id: str, content_digest: str, revisions: Mapping[str, Any],
+) -> str:
+    """Deterministic snapshot id: the same payload always names the same snapshot.
+
+    Determinism matters because an export must stay byte-identical when nothing
+    changed, and because a replay must be recognisable without a random token.
+    """
+    body = json.dumps(
+        {
+            "project_id": str(project_id),
+            "contract_version": CONTRACT_VERSION,
+            "content_digest": str(content_digest),
+            "revisions": dict(revisions or {}),
+        },
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "u3-shadow:" + body))
+
+
+def _declared_snapshot_id(snapshot: Mapping[str, Any]) -> str:
+    declared = str(snapshot.get("snapshot_id") or "")
+    if declared:
+        return declared
+    return _snapshot_identity(
+        str(snapshot.get("project_id") or ""),
+        str(snapshot.get("content_digest") or ""),
+        snapshot.get("revisions") or {},
+    )
+
+
+def _count_matches(value: Any, length: int) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value == length
+
+
+def snapshot_integrity_error(snapshot: Mapping[str, Any]) -> str | None:
+    """Recompute the declared counts/digests instead of trusting them.
+
+    Returns a stable reason (or ``None``). A snapshot that claims integrity but
+    does not match its own rows is refused before anything is written; a snapshot
+    with no integrity metadata at all is reported as ``metadata_missing`` so the
+    full-import path can require it.
+    """
+    digests = snapshot.get("digests")
+    counts = snapshot.get("counts")
+    if not isinstance(digests, dict) or not isinstance(counts, dict):
+        return "metadata_missing"
+    stores = snapshot.get("stores") or {}
+    for store, payload in stores.items():
+        if not isinstance(payload, dict):
+            return f"store_payload:{store}"
+        for table, rows in payload.items():
+            if table == "evidence":
+                if not isinstance(rows, dict):
+                    return f"evidence_shape:{store}"
+                for name, items in rows.items():
+                    key = f"{store}.evidence.{name}"
+                    if not isinstance(items, list):
+                        return f"shape:{key}"
+                    if not _count_matches(counts.get(key), len(items)):
+                        return f"count:{key}"
+                    if digests.get(key) != _digest(items):
+                        return f"digest:{key}"
+                continue
+            key = f"{store}.{table}"
+            if not isinstance(rows, list):
+                return f"shape:{key}"
+            if not _count_matches(counts.get(key), len(rows)):
+                return f"count:{key}"
+            if digests.get(key) != _digest(rows):
+                return f"digest:{key}"
+    expected = _digest(
+        [{"table": name, "digest": value} for name, value in sorted(digests.items())]
+    )
+    if str(snapshot.get("content_digest") or "") != expected:
+        return "content_digest"
+    if str(snapshot.get("snapshot_id") or "") and str(snapshot["snapshot_id"]) != (
+        _snapshot_identity(
+            str(snapshot.get("project_id") or ""), expected, snapshot.get("revisions") or {}
+        )
+    ):
+        return "snapshot_id"
+    return None
+
+
+def _store_digest(digests: Mapping[str, Any], store: str) -> str | None:
+    tables = REVISION_STORES[store]
+    if any(not isinstance(digests.get(name), str) for name in tables):
+        return None
+    return _digest([{"table": name, "digest": digests[name]} for name in sorted(tables)])
+
+
+def _revision_vector(
+    revisions: Mapping[str, Any], store_digests: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    vector: dict[str, dict[str, Any]] = {}
+    for store in REVISION_STORES:
+        revision = (revisions or {}).get(store)
+        if isinstance(revision, int) and not isinstance(revision, bool):
+            vector[store] = {"revision": revision, "digest": (store_digests or {}).get(store)}
+    return vector
+
+
+def _confirmation_projection(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Derive the queryable confirmation rows from the verbatim evidence rows.
+
+    The original ``(receipt_id, context_key, evidence_json)`` row is already in the
+    snapshot as evidence; this projection never invents a receipt and never becomes
+    the owner of the confirmation.
+    """
+    annotations = (snapshot.get("stores") or {}).get("annotations") or {}
+    rows = (annotations.get("evidence") or {}).get("task_negative_confirmations") or []
+    projection: list[dict[str, Any]] = []
+    for item in rows:
+        payload = item.get("payload") if isinstance(item, dict) else None
+        if not isinstance(payload, dict):
+            raise U3MigrationError(
+                "U3_NEGATIVE_CONFIRMATION_INVALID",
+                "a task negative confirmation has no verbatim payload",
+                detail="payload",
+            )
+        receipt = payload.get("receipt_id")
+        context = payload.get("context_key")
+        if not isinstance(receipt, str) or not receipt:
+            raise U3MigrationError(
+                "U3_NEGATIVE_CONFIRMATION_INVALID",
+                "a task negative confirmation has no receipt id",
+                detail="receipt_id",
+            )
+        if not isinstance(context, str) or not context:
+            raise U3MigrationError(
+                "U3_NEGATIVE_CONFIRMATION_INVALID",
+                "a task negative confirmation has no context key",
+                detail=f"receipt={receipt}",
+            )
+        raw = payload.get("evidence_json")
+        if isinstance(raw, (str, bytes, bytearray)):
+            try:
+                evidence = json.loads(raw)
+            except (TypeError, ValueError) as error:
+                raise U3MigrationError(
+                    "U3_NEGATIVE_CONFIRMATION_INVALID",
+                    "a task negative confirmation is not valid JSON",
+                    detail=f"receipt={receipt}",
+                ) from error
+        else:
+            evidence = raw
+        if not isinstance(evidence, dict):
+            raise U3MigrationError(
+                "U3_NEGATIVE_CONFIRMATION_INVALID",
+                "a task negative confirmation is not a JSON object",
+                detail=f"receipt={receipt}",
+            )
+        image_id = evidence.get("image_id")
+        projection.append({
+            "receipt_id": receipt,
+            "context_key": context,
+            "image_id": None if image_id is None else str(image_id),
+            "evidence": evidence,
+        })
+    projection.sort(key=lambda row: row["receipt_id"])
+    return projection
+
+
+def _read_snapshot_state(cursor, project_id: str) -> dict[str, Any] | None:
+    cursor.execute(
+        f"SELECT {','.join(_STATE_COLUMNS)} FROM {SCHEMA_NAME}.picker_snapshot_state "
+        "WHERE project_id=%s",
+        (project_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return dict(zip(_STATE_COLUMNS, row))
+
+
+def _read_legacy_revisions(cursor, project_id: str) -> dict[str, Any]:
+    """Pre-v4 targets record their high-water marks only in ``store_revision``."""
+    cursor.execute(
+        f"SELECT store, revision FROM {SCHEMA_NAME}.store_revision WHERE project_id=%s",
+        (project_id,),
+    )
+    return {
+        str(store): revision for store, revision in cursor.fetchall()
+        if str(store) != LEGACY_REFERENCE_PENDING_STORE and revision is not None
+    }
+
+
+def _insert_import_ledger(
+    cursor, *, project_id: str, snapshot_id: str, snapshot_digest: str,
+    revision_vector: Mapping[str, Any], mode: str, outcome: str,
+    error_code: str | None = None, detail: str = "",
+) -> None:
+    cursor.execute(
+        f"INSERT INTO {SCHEMA_NAME}.u3_shadow_import(project_id,snapshot_id,"
+        "snapshot_digest,revision_vector,import_mode,outcome,error_code,detail) "
+        "VALUES(%s,%s,%s,%s::jsonb,%s,%s,%s,%s)",
+        (
+            project_id, snapshot_id, snapshot_digest,
+            json.dumps(_canonical(dict(revision_vector)), ensure_ascii=False, sort_keys=True),
+            mode, outcome, error_code, detail or None,
+        ),
+    )
+
+
+def _record_refusal(connection, snapshot: Mapping[str, Any], mode: str,
+                    error: U3MigrationError) -> None:
+    """Best-effort audit row for a policy refusal (never for a rolled-back write)."""
+    project_id = str(snapshot.get("project_id") or "")
+    if not project_id:
+        return
+    try:
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                _insert_import_ledger(
+                    cursor,
+                    project_id=project_id,
+                    snapshot_id=_declared_snapshot_id(snapshot),
+                    snapshot_digest=str(snapshot.get("content_digest") or ""),
+                    revision_vector=_revision_vector(
+                        snapshot.get("revisions") or {}, snapshot.get("digests") or {}
+                    ),
+                    mode=mode,
+                    outcome="REFUSED",
+                    error_code=error.code,
+                    detail=error.detail,
+                )
+    except Exception:  # noqa: BLE001 - the refusal itself must not be masked
+        return
+
+
 def import_project_snapshot(
     connection, snapshot: Mapping[str, Any], *, mode: str = "full",
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Import one snapshot in a single transaction.
 
     ``mode="full"`` (default) makes the target project *equal* to the snapshot:
@@ -1241,7 +1665,27 @@ def import_project_snapshot(
     (children before parents) and everything else is upserted. ``incremental``
     only upserts. Both are idempotent, both are scoped to one ``project_id`` and
     both roll back completely on any failure.
+
+    Identity contract (v4): a snapshot that claims integrity must match its own
+    counts/digests; an owner revision may never regress; the same revision with a
+    different projection digest is refused; a replay of an already applied full
+    snapshot returns ``outcome="ALREADY_APPLIED"`` without touching business rows.
+    The published state, the projection cursors and the ledger row are committed in
+    the same transaction as the data, so a partial import cannot advance them.
     """
+    ensure_schema(connection)
+    try:
+        return _apply_project_snapshot(connection, snapshot, str(mode))
+    except U3MigrationError as error:
+        if error.code in REFUSAL_LEDGER_CODES:
+            _record_refusal(connection, snapshot, str(mode), error)
+        raise
+
+
+def _apply_project_snapshot(
+    connection, snapshot: Mapping[str, Any], mode: str,
+) -> dict[str, Any]:
+    """Apply one validated snapshot inside a single PostgreSQL transaction."""
     if str(mode) not in {"full", "incremental"}:
         raise U3MigrationError(
             "U3_IMPORT_MODE_INVALID", "unsupported import mode", detail=str(mode)
@@ -1259,9 +1703,12 @@ def import_project_snapshot(
     counters = {"materials": 0, "labels": 0, "scopes": 0, "annotations": 0,
                 "references": 0, "pool_members": 0, "pool_categories": 0,
                 "pool_links": 0, "pool_algorithm_members": 0}
-    ensure_schema(connection)
+    from psycopg.rows import tuple_row
+
+    # Every read below is positional, so the cursor pins the tuple factory
+    # explicitly: callers may connect with ``dict_row`` (the operator CLI does).
     with connection.transaction():
-        with connection.cursor() as cursor:
+        with connection.cursor(row_factory=tuple_row) as cursor:
             cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"u3_import:{project_id}",))
             cursor.execute(
                 f"SELECT 1 AS pending FROM {SCHEMA_NAME}.store_revision "
@@ -1293,6 +1740,104 @@ def import_project_snapshot(
                             "a pending project requires a complete authoritative snapshot",
                             detail=f"reason={reason}",
                         )
+            # Snapshot integrity is verified before any write. A full import must
+            # declare it (it claims to be the authoritative state of the project).
+            if mode == "full" or isinstance(snapshot.get("digests"), dict):
+                integrity = snapshot_integrity_error(snapshot)
+                if integrity:
+                    raise U3MigrationError(
+                        "U3_SNAPSHOT_INTEGRITY_FAILED",
+                        "the snapshot does not match its own identity",
+                        detail=f"reason={integrity}",
+                    )
+            revisions = snapshot.get("revisions") or {}
+            store_digests = {
+                store: _store_digest(snapshot.get("digests") or {}, store)
+                for store in REVISION_STORES
+            }
+            revision_vector = _revision_vector(revisions, store_digests)
+            prior_state = _read_snapshot_state(cursor, project_id)
+            if prior_state is None:
+                # A pre-v4 target only has store_revision high-water marks; it has
+                # no digest yet, so the first v4 import re-establishes identity.
+                baseline = _read_legacy_revisions(cursor, project_id)
+                baseline_digests = {store: None for store in REVISION_STORES}
+            else:
+                baseline = {
+                    "materials": prior_state["material_revision"],
+                    "annotations": prior_state["annotation_revision"],
+                    "negative_pool": prior_state["negative_pool_revision"],
+                }
+                baseline_digests = {
+                    "materials": prior_state["materials_digest"],
+                    "annotations": prior_state["annotations_digest"],
+                    "negative_pool": prior_state["negative_pool_digest"],
+                }
+            for store in REVISION_STORES:
+                source_revision = revisions.get(store)
+                if (
+                    isinstance(source_revision, bool)
+                    or not isinstance(source_revision, int)
+                    or source_revision < 0
+                ):
+                    raise U3MigrationError(
+                        "U3_SNAPSHOT_INTEGRITY_FAILED",
+                        "the snapshot carries no usable owner revision",
+                        detail=f"reason=revision:{store}",
+                    )
+                target_revision = baseline.get(store)
+                if isinstance(target_revision, int) and not isinstance(target_revision, bool):
+                    if source_revision < target_revision:
+                        raise U3MigrationError(
+                            "U3_SNAPSHOT_REVISION_REGRESSION",
+                            "an older owner revision may not replace a newer projection",
+                            detail=(
+                                f"store={store} target={target_revision} "
+                                f"source={source_revision}"
+                            ),
+                        )
+                    target_digest = baseline_digests.get(store)
+                    if (
+                        source_revision == target_revision
+                        and isinstance(target_digest, str) and target_digest
+                        and isinstance(store_digests.get(store), str)
+                        and store_digests[store] != target_digest
+                    ):
+                        raise U3MigrationError(
+                            "U3_SNAPSHOT_REVISION_DIVERGED",
+                            "the same owner revision carries different content",
+                            detail=f"store={store} revision={source_revision}",
+                        )
+            already_applied = (
+                mode == "full"
+                and prior_state is not None
+                and not project_pending
+                and str(prior_state["status"]) == "READY"
+                and all(
+                    revisions.get(store) == baseline.get(store)
+                    and store_digests.get(store) == baseline_digests.get(store)
+                    for store in REVISION_STORES
+                )
+                and str(prior_state["content_digest"]) == str(snapshot.get("content_digest") or "")
+            )
+            if already_applied:
+                # A replay of the exact snapshot that is already published: the
+                # target already equals it, so only the audit row is appended.
+                _insert_import_ledger(
+                    cursor, project_id=project_id,
+                    snapshot_id=_declared_snapshot_id(snapshot),
+                    snapshot_digest=str(snapshot.get("content_digest") or ""),
+                    revision_vector=revision_vector, mode=mode,
+                    outcome="ALREADY_APPLIED",
+                )
+                counters["outcome"] = "ALREADY_APPLIED"
+                counters["negative_confirmation_revision"] = int(
+                    prior_state["negative_confirmation_revision"]
+                )
+                counters["negative_confirmation_generation"] = int(
+                    prior_state["negative_confirmation_generation"]
+                )
+                return counters
             if mode == "full":
                 # Delete only rows of THIS project that the snapshot dropped.
                 for table, key_columns, values in (
@@ -1489,6 +2034,121 @@ def import_project_snapshot(
                 else:
                     counters["legacy_pending_cleared"] = 0
                     counters["legacy_pending_retained"] = reason
+            # Derived confirmation projection: queryable rows only, the verbatim
+            # owner evidence stays in evidence_row and is never rewritten here.
+            confirmation_rows = _confirmation_projection(snapshot)
+            if mode == "full":
+                cursor.execute(
+                    f"DELETE FROM {SCHEMA_NAME}.task_negative_confirmation "
+                    "WHERE project_id=%s",
+                    (project_id,),
+                )
+            for row in confirmation_rows:
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.task_negative_confirmation"
+                    "(project_id,receipt_id,context_key,image_id,evidence) "
+                    "VALUES(%s,%s,%s,%s,%s::jsonb) ON CONFLICT (project_id,receipt_id) "
+                    "DO UPDATE SET context_key=EXCLUDED.context_key,"
+                    "image_id=EXCLUDED.image_id,evidence=EXCLUDED.evidence",
+                    (
+                        project_id, row["receipt_id"], row["context_key"], row["image_id"],
+                        json.dumps(_canonical(row["evidence"]), ensure_ascii=False, sort_keys=True),
+                    ),
+                )
+                counters["negative_confirmations"] = (
+                    counters.get("negative_confirmations", 0) + 1
+                )
+            cursor.execute(
+                f"SELECT receipt_id,context_key,image_id,evidence "
+                f"FROM {SCHEMA_NAME}.task_negative_confirmation "
+                "WHERE project_id=%s ORDER BY receipt_id",
+                (project_id,),
+            )
+            confirmation_digest_rows = []
+            for receipt_id, context_key, image_id, evidence in cursor.fetchall():
+                confirmation_digest_rows.append({
+                    "receipt_id": str(receipt_id),
+                    "context_key": str(context_key),
+                    "image_id": None if image_id is None else str(image_id),
+                    "evidence": evidence if isinstance(evidence, dict) else json.loads(evidence),
+                })
+            confirmation_count = len(confirmation_digest_rows)
+            confirmation_digest = _digest(confirmation_digest_rows)
+            prior_generation = (
+                int(prior_state["negative_confirmation_generation"]) if prior_state else 0
+            )
+            prior_confirmation_digest = (
+                prior_state["negative_confirmation_digest"] if prior_state else None
+            )
+            confirmation_generation = (
+                prior_generation
+                if not prior_confirmation_digest
+                else prior_generation + int(prior_confirmation_digest != confirmation_digest)
+            )
+            complete, _reason = pending_clear_eligible(snapshot, project_id)
+            if mode == "full":
+                status = "READY" if complete else "INCOMPLETE"
+            else:
+                # An incremental apply only proves that the target contains the
+                # snapshot; it cannot prove that the target equals it.
+                status = (
+                    "STALE"
+                    if prior_state is not None and str(prior_state["status"]) == "READY"
+                    else "INCOMPLETE"
+                )
+            snapshot_identity = _declared_snapshot_id(snapshot)
+            cursor.execute(
+                f"INSERT INTO {SCHEMA_NAME}.picker_snapshot_state(project_id,snapshot_id,"
+                "content_digest,material_revision,annotation_revision,negative_pool_revision,"
+                "materials_digest,annotations_digest,negative_pool_digest,"
+                "negative_confirmation_revision,negative_confirmation_generation,"
+                "negative_confirmation_digest,revision_vector,status,captured_at,published_at) "
+                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,NULL,now()) "
+                "ON CONFLICT (project_id) DO UPDATE SET snapshot_id=EXCLUDED.snapshot_id,"
+                "content_digest=EXCLUDED.content_digest,"
+                "material_revision=EXCLUDED.material_revision,"
+                "annotation_revision=EXCLUDED.annotation_revision,"
+                "negative_pool_revision=EXCLUDED.negative_pool_revision,"
+                "materials_digest=EXCLUDED.materials_digest,"
+                "annotations_digest=EXCLUDED.annotations_digest,"
+                "negative_pool_digest=EXCLUDED.negative_pool_digest,"
+                "negative_confirmation_revision=EXCLUDED.negative_confirmation_revision,"
+                "negative_confirmation_generation=EXCLUDED.negative_confirmation_generation,"
+                "negative_confirmation_digest=EXCLUDED.negative_confirmation_digest,"
+                "revision_vector=EXCLUDED.revision_vector,status=EXCLUDED.status,"
+                "published_at=now()",
+                (
+                    project_id, snapshot_identity, str(snapshot.get("content_digest") or ""),
+                    revisions.get("materials"), revisions.get("annotations"),
+                    revisions.get("negative_pool"),
+                    store_digests["materials"], store_digests["annotations"],
+                    store_digests["negative_pool"],
+                    confirmation_count, confirmation_generation, confirmation_digest,
+                    json.dumps(_canonical(revision_vector), ensure_ascii=False, sort_keys=True),
+                    status,
+                ),
+            )
+            # The cursors are part of the same commit: a failed import cannot leave
+            # a cursor ahead of the data. ``last_applied_seq`` stays NULL until the
+            # P3 change log defines per-stream sequence numbers.
+            for store in REVISION_STORES:
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.u3_projection_cursor"
+                    "(project_id,store,last_applied_seq,source_revision) "
+                    "VALUES(%s,%s,NULL,%s) ON CONFLICT (project_id,store) DO UPDATE SET "
+                    "source_revision=EXCLUDED.source_revision, updated_at=now()",
+                    (project_id, store, revisions.get(store)),
+                )
+            _insert_import_ledger(
+                cursor, project_id=project_id, snapshot_id=snapshot_identity,
+                snapshot_digest=str(snapshot.get("content_digest") or ""),
+                revision_vector=revision_vector, mode=mode, outcome="APPLIED",
+            )
+            counters["outcome"] = "APPLIED"
+            counters["snapshot_id"] = snapshot_identity
+            counters["snapshot_status"] = status
+            counters["negative_confirmation_revision"] = confirmation_count
+            counters["negative_confirmation_generation"] = confirmation_generation
     return counters
 
 
@@ -1501,7 +2161,7 @@ def read_target_snapshot(connection, project_id: str) -> dict[str, Any]:
     instead of silently inheriting its (default Read Committed) snapshot.
     """
     from psycopg.pq import TransactionStatus
-    from psycopg.rows import dict_row
+    from psycopg.rows import dict_row, tuple_row
 
     if connection.info.transaction_status != TransactionStatus.IDLE:
         raise U3MigrationError(
@@ -1513,7 +2173,8 @@ def read_target_snapshot(connection, project_id: str) -> dict[str, Any]:
     with connection.transaction():
         with connection.cursor() as setup:
             setup.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        with connection.cursor() as identity:
+        # Positional read: the caller may connect with ``dict_row`` (the CLI does).
+        with connection.cursor(row_factory=tuple_row) as identity:
             identity.execute("SELECT pg_current_snapshot() AS snapshot")
             snapshot_identity = str(identity.fetchone()[0])
         stores: dict[str, Any] = {"materials": {}, "annotations": {}}

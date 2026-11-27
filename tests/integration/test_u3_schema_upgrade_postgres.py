@@ -26,8 +26,11 @@ from platform_core.u3_shadow import (
     SCHEMA_NAME,
     SCHEMA_VERSION,
     U3MigrationError,
+    V4_INDEXES,
+    V4_TABLES,
     _SCHEMA_V1,
     _SCHEMA_V2,
+    _SCHEMA_V3,
     ensure_schema,
     import_project_snapshot,
     read_target_snapshot,
@@ -149,7 +152,7 @@ def _assert_upgraded(connection) -> None:
             f"SELECT version,checksum FROM {SCHEMA_NAME}.schema_migration ORDER BY version"
         )
         rows = cursor.fetchall()
-        assert [int(row[0]) for row in rows] == [1, 2, 3]
+        assert [int(row[0]) for row in rows] == list(range(1, SCHEMA_VERSION + 1))
         for version, checksum in rows:
             assert str(checksum) == schema_checksum_for(int(version))
         cursor.execute(f"SELECT id,filename FROM {SCHEMA_NAME}.material WHERE project_id='p1'")
@@ -198,7 +201,7 @@ def _assert_upgraded(connection) -> None:
                 )
 
 
-def test_v1_upgrades_to_v3_preserving_reference_evidence(pg):
+def test_v1_upgrades_to_current_preserving_reference_evidence(pg):
     with psycopg.connect(pg.get_uri()) as connection:
         _build(connection, _SCHEMA_V1, (1,))
         assert ensure_schema(connection)["version"] == SCHEMA_VERSION
@@ -250,7 +253,7 @@ def test_v1_pool_link_with_missing_category_is_refused(pg):
         assert orphan.value.code == "U3_UPGRADE_LINK_ORPHAN"
 
 
-def test_real_v2_upgrades_to_v3_with_both_foreign_keys(pg):
+def test_real_v2_upgrades_to_current_with_both_foreign_keys(pg):
     with psycopg.connect(pg.get_uri()) as connection:
         _build(connection, _SCHEMA_V2, (1, 2))
         assert ensure_schema(connection)["version"] == SCHEMA_VERSION
@@ -285,7 +288,7 @@ def test_real_v2_upgrades_to_v3_with_both_foreign_keys(pg):
 
 
 def test_tampered_or_unknown_versions_are_refused(pg):
-    for version in (1, 2, 3):
+    for version in range(1, SCHEMA_VERSION + 1):
         with psycopg.connect(pg.get_uri()) as connection:
             _build(connection, _SCHEMA_V1, (1,))
             ensure_schema(connection)
@@ -524,3 +527,114 @@ def test_not_valid_foreign_key_is_refused(pg):
             ensure_schema(connection)
         assert unvalidated.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
         assert "negative_pool_category" in unvalidated.value.detail
+
+# ---------------------------------------------------------------------------
+# V4 read-side contract: additive upgrade, fresh install, no fake migration row
+# ---------------------------------------------------------------------------
+def _v4_objects(cursor):
+    cursor.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema=%s AND table_name = ANY(%s)",
+        (SCHEMA_NAME, list(V4_TABLES)),
+    )
+    columns = {}
+    for table, column in cursor.fetchall():
+        columns.setdefault(str(table), set()).add(str(column))
+    cursor.execute("SELECT indexname FROM pg_indexes WHERE schemaname=%s", (SCHEMA_NAME,))
+    indexes = {str(row[0]) for row in cursor.fetchall()}
+    return columns, indexes
+
+
+def test_v3_upgrades_to_v4_without_touching_business_or_evidence_rows(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V3, (1, 2, 3))
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.evidence_row"
+                    "(project_id,store,table_name,row_key,payload) "
+                    "VALUES ('p1','annotations','task_negative_confirmations','k1',"
+                    "'{\"receipt_id\": \"r1\"}'::jsonb)"
+                )
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.table_state"
+                    "(project_id,store,table_name,present,schema_version,row_count) "
+                    "VALUES ('p1','annotations','task_negative_confirmations',TRUE,3,1)"
+                )
+        assert ensure_schema(connection)["version"] == SCHEMA_VERSION == 4
+        _assert_upgraded(connection)
+        with connection.cursor() as cursor:
+            columns, indexes = _v4_objects(cursor)
+            for table, required in V4_TABLES.items():
+                assert table in columns, table
+                for column in required:
+                    assert column in columns[table], (table, column)
+            assert set(V4_INDEXES) <= indexes, sorted(set(V4_INDEXES) - indexes)
+            # The algorithm-first index would duplicate the member primary key.
+            assert "idx_picker_pool_algorithm" not in indexes
+            # v3 rows (business and historical evidence) are untouched.
+            cursor.execute(
+                f"SELECT id,filename FROM {SCHEMA_NAME}.material WHERE project_id='p1'"
+            )
+            assert cursor.fetchall() == [("m-old", "old.jpg")]
+            cursor.execute(
+                f"SELECT payload FROM {SCHEMA_NAME}.evidence_row "
+                "WHERE project_id='p1' AND row_key='k1'"
+            )
+            assert cursor.fetchone()[0] == {"receipt_id": "r1"}
+            cursor.execute(
+                f"SELECT present,row_count FROM {SCHEMA_NAME}.table_state "
+                "WHERE project_id='p1' AND table_name='task_negative_confirmations'"
+            )
+            assert cursor.fetchone() == (True, 1)
+        # Re-running the migration is a no-op.
+        assert ensure_schema(connection)["version"] == 4
+        with connection.cursor() as cursor:
+            cursor.execute(f"SELECT count(*) FROM {SCHEMA_NAME}.schema_migration")
+            assert cursor.fetchone()[0] == 4
+
+
+def test_v4_fresh_target_has_the_read_side_contract(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE")
+        assert ensure_schema(connection)["version"] == 4
+        with connection.cursor() as cursor:
+            columns, indexes = _v4_objects(cursor)
+            assert set(columns) == set(V4_TABLES)
+            assert set(V4_INDEXES) <= indexes
+            cursor.execute(
+                f"SELECT version,checksum FROM {SCHEMA_NAME}.schema_migration ORDER BY version"
+            )
+            rows = cursor.fetchall()
+            assert [int(row[0]) for row in rows] == [4]
+            assert str(rows[0][1]) == schema_checksum_for(4)
+
+
+def test_recorded_v4_with_a_missing_read_side_object_is_refused(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE")
+        ensure_schema(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP TABLE {SCHEMA_NAME}.u3_projection_cursor")
+        with pytest.raises(U3MigrationError) as refused:
+            ensure_schema(connection)
+        assert refused.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
+        assert "v4_table=u3_projection_cursor" in refused.value.detail
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE")
+        ensure_schema(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP INDEX {SCHEMA_NAME}.idx_picker_gt_label")
+        with pytest.raises(U3MigrationError) as refused:
+            ensure_schema(connection)
+        assert refused.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
+        assert "v4_index=idx_picker_gt_label" in refused.value.detail
