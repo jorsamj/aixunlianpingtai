@@ -31,22 +31,34 @@ class TaskStoreReadinessError(RuntimeError):
         self.detail = str(detail or "")
 
 
+#: Tables the current task schema (user_version 8) always has and whose absence
+#: (or structural damage) makes the diagnostic meaningless. ``worker_instances``
+#: comes from the base task schema, ``gpu_reservations`` from
+#: ``ensure_gpu_runtime_schema`` called by every TaskRepository initialization.
+REQUIRED_TABLES = {
+    "tasks": ("task_id", "status", "stage", "lease_expires_at", "attempt"),
+    "worker_instances": ("instance_key", "owner_token", "worker_id", "heartbeat_at", "expires_at"),
+    "gpu_reservations": ("task_id", "gpu_uuid", "worker_id", "lease_token", "expires_at"),
+}
+
+
 def _columns(database, table: str) -> set[str]:
-    try:
-        return {str(row[1]) for row in database.execute(f"PRAGMA table_info({table})")}
-    except sqlite3.Error:
-        return set()
+    """Read table columns; any SQLite error propagates (never "no columns")."""
+    return {str(row[1]) for row in database.execute(f"PRAGMA table_info({table})")}
 
 
 def _scalar(database, statement: str, parameters: tuple[Any, ...] = ()) -> int:
-    try:
-        row = database.execute(statement, parameters).fetchone()
-    except sqlite3.Error:
-        return 0
+    """Run one count; any SQLite error propagates (never a silent 0)."""
+    row = database.execute(statement, parameters).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
 
 
-def readiness(data_dir: str | Path, *, now: str | None = None) -> dict[str, Any]:
+def readiness(
+    data_dir: str | Path,
+    *,
+    now: str | None = None,
+    stop_proof: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Report the read-only facts that would block or allow a U5 switch.
 
     ``now`` is an ISO-8601 UTC instant (defaults to the real current time) so the
@@ -60,8 +72,13 @@ def readiness(data_dir: str | Path, *, now: str | None = None) -> dict[str, Any]
     instant = now or datetime.now(timezone.utc).isoformat()
     root = Path(data_dir)
     path = root / "task_runtime" / "tasks.sqlite3"
+    proof = dict(stop_proof or {})
+    proof_ok = bool(proof.get("workers_stopped") is True and str(proof.get("evidence") or "").strip())
     report: dict[str, Any] = {
         "provider": "sqlite",
+        "worker_registration": "optional",
+        "external_stop_proof": proof if proof else None,
+        "external_stop_proof_valid": proof_ok,
         "authority": str(path),
         "present": path.is_file(),
         "schema_version": None,
@@ -98,13 +115,20 @@ def readiness(data_dir: str | Path, *, now: str | None = None) -> dict[str, Any]
                 ]
                 report["ready_for_cutover"] = False
                 return report
-            columns = _columns(database, "tasks")
-            missing = [
-                name for name in ("task_id", "status", "stage", "lease_expires_at", "attempt")
-                if name not in columns
-            ]
-            if missing:
-                report["blockers"] = [f"task_table_incomplete:{','.join(missing)}"]
+            structural: list[str] = []
+            tables_present: dict[str, bool] = {}
+            for table, required_columns in REQUIRED_TABLES.items():
+                present = _columns(database, table)
+                tables_present[table] = bool(present)
+                if not present:
+                    structural.append(f"{table}_table_missing")
+                    continue
+                missing = [name for name in required_columns if name not in present]
+                if missing:
+                    structural.append(f"{table}_incomplete:{','.join(missing)}")
+            report["tables"] = tables_present
+            if structural:
+                report["blockers"] = structural
                 report["ready_for_cutover"] = False
                 return report
             report["tasks"] = _scalar(database, "SELECT COUNT(*) FROM tasks")
@@ -141,19 +165,17 @@ def readiness(data_dir: str | Path, *, now: str | None = None) -> dict[str, Any]
                 "SELECT COUNT(*) FROM tasks WHERE stage LIKE 'recovery_blocked%' "
                 "OR stage IN ('process_cleanup_blocked','lease_expired_process_alive')",
             )
-            if _columns(database, "gpu_reservations"):
-                report["gpu_reservations"] = _scalar(
-                    database, "SELECT COUNT(*) FROM gpu_reservations"
-                )
-            if _columns(database, "worker_instances"):
-                report["worker_instances_active"] = _scalar(
-                    database, "SELECT COUNT(*) FROM worker_instances WHERE expires_at > ?",
-                    (instant,),
-                )
-                report["worker_instances_expired"] = _scalar(
-                    database, "SELECT COUNT(*) FROM worker_instances WHERE expires_at <= ?",
-                    (instant,),
-                )
+            report["gpu_reservations"] = _scalar(
+                database, "SELECT COUNT(*) FROM gpu_reservations"
+            )
+            report["worker_instances_active"] = _scalar(
+                database, "SELECT COUNT(*) FROM worker_instances WHERE expires_at > ?",
+                (instant,),
+            )
+            report["worker_instances_expired"] = _scalar(
+                database, "SELECT COUNT(*) FROM worker_instances WHERE expires_at <= ?",
+                (instant,),
+            )
     except sqlite3.Error as error:
         raise TaskStoreReadinessError(
             "TASK_STORE_READ_FAILED", "the task store could not be read", detail=str(error)
@@ -179,6 +201,12 @@ def readiness(data_dir: str | Path, *, now: str | None = None) -> dict[str, Any]
         # a switch safe while it runs, so the cutover requires a real drain
         # (stopped workers), not just a count in the report.
         blockers.append("active_worker_instances_require_drain")
+    # ``claim_next`` only needs a worker_id string: a running worker does not have
+    # to be registered, so an empty worker_instances table cannot prove that every
+    # worker stopped. A cutover therefore needs an external stop proof (services
+    # stopped/drained) in addition to the database evidence.
+    if not proof_ok:
+        blockers.append("external_worker_stop_proof_required")
     if report["worker_instances_expired"]:
         blockers.append("expired_worker_instances")
     report["blockers"] = blockers

@@ -687,3 +687,23 @@ def test_evidence_absent_and_empty_tables_are_distinct(pg, tmp_path):
             ]
             == EVIDENCE_ROWS["material_cleanup_deferred"]
         )
+
+def test_evidence_metadata_error_fails_closed_instead_of_retaining(tmp_path, monkeypatch):
+    """A metadata read failure is not "table absent": the export must refuse."""
+    from platform_core import u3_shadow as u3_module
+
+    project = _fixture(tmp_path, project_id="p8")
+    _seed_evidence(project)
+    real_columns = u3_module._sqlite_columns
+
+    def failing(database, table):
+        if table == "material_storage_audit":
+            raise sqlite3.OperationalError("database disk image is malformed")
+        return real_columns(database, table)
+
+    monkeypatch.setattr(u3_module, "_sqlite_columns", failing)
+    with pytest.raises(u3_module.U3MigrationError) as failure:
+        u3_module.export_project_snapshot(project, "p8")
+    assert failure.value.code == "U3_OWNER_UNREADABLE"
+    # Nothing was produced, so no snapshot can later be treated as retained.
+    assert not (project / "u3-snapshot.json").exists()

@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 SCHEMA_NAME = "w3_material_gt"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 CONTRACT_VERSION = "u3-shadow-snapshot-v2"
 REQUIRED_TABLES = {
     "materials": ("materials", "material_meta", "material_labels",
@@ -92,10 +92,13 @@ class U3MigrationError(RuntimeError):
 
 
 def _sqlite_columns(database, table: str) -> set[str]:
-    try:
-        return {str(row[1]) for row in database.execute(f"PRAGMA table_info({table})")}
-    except sqlite3.Error:
-        return set()
+    """Table columns; an empty set means the table does not exist.
+
+    SQLite errors are NOT caught here: a metadata read failure must not look like
+    "table absent" (which would silently keep retained evidence instead of failing
+    the export).
+    """
+    return {str(row[1]) for row in database.execute(f"PRAGMA table_info({table})")}
 
 
 def _canonical(value: Any) -> Any:
@@ -307,6 +310,18 @@ def _schema_version(database) -> int | None:
 
 
 def export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[str, Any]:
+    """Public wrapper: any SQLite read failure fails the export closed."""
+    try:
+        return _export_project_snapshot(project_dir, project_id)
+    except sqlite3.Error as error:
+        raise U3MigrationError(
+            "U3_OWNER_UNREADABLE",
+            "a source store or metadata could not be read",
+            detail=str(error),
+        ) from error
+
+
+def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[str, Any]:
     """Deterministic snapshot of the authoritative SQLite owners (read-only).
 
     Cross-store consistency is *barrier based*, not a claim of a global atomic
@@ -665,13 +680,89 @@ CREATE TABLE IF NOT EXISTS w3_material_gt.store_revision (
 """
 
 
+#: The authentic v2 DDL (commit c6a94215). Historical rows are validated
+#: against this exact text, never against the current (v3) DDL.
+_SCHEMA_V2 = """
+CREATE SCHEMA IF NOT EXISTS w3_material_gt;
+CREATE TABLE IF NOT EXISTS w3_material_gt.schema_migration (
+    version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum CHAR(64) NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now(), applied_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS w3_material_gt.material (
+    project_id TEXT NOT NULL, id TEXT NOT NULL, filename TEXT, storage_source_id TEXT,
+    storage_type TEXT, object_key TEXT, content_sha256 TEXT, size_bytes BIGINT,
+    etag TEXT, processing_status TEXT, box_count INTEGER, annotated INTEGER,
+    created_at TEXT, updated_at TEXT, payload JSONB,
+    PRIMARY KEY (project_id, id));
+CREATE TABLE IF NOT EXISTS w3_material_gt.material_label (
+    project_id TEXT NOT NULL, material_id TEXT NOT NULL, label_code TEXT NOT NULL,
+    box_count INTEGER, PRIMARY KEY (project_id, material_id, label_code),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.material(project_id, id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.material_annotation_scope (
+    project_id TEXT NOT NULL, material_id TEXT NOT NULL, label_code TEXT NOT NULL,
+    PRIMARY KEY (project_id, material_id, label_code),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.material(project_id, id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.annotation (
+    project_id TEXT NOT NULL, image_id TEXT NOT NULL, annotation_state TEXT NOT NULL,
+    version INTEGER NOT NULL, content_digest TEXT NOT NULL, boxes JSONB NOT NULL,
+    scope JSONB NOT NULL, created_at TEXT, updated_at TEXT,
+    PRIMARY KEY (project_id, image_id));
+CREATE TABLE IF NOT EXISTS w3_material_gt.annotation_label_reference (
+    project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
+    box_count INTEGER NOT NULL DEFAULT 0, scope_ref INTEGER NOT NULL DEFAULT 0,
+    annotation_state TEXT NOT NULL, source_kind TEXT NOT NULL,
+    PRIMARY KEY (project_id, image_id, label_code));
+CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_member (
+    project_id TEXT NOT NULL, material_id TEXT NOT NULL, joined_at TEXT,
+    PRIMARY KEY (project_id, material_id),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.material(project_id, id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_category (
+    project_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, enabled INTEGER,
+    PRIMARY KEY (project_id, id));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_negative_pool_category_name
+    ON w3_material_gt.negative_pool_category(project_id, lower(name));
+CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_link (
+    project_id TEXT NOT NULL, material_id TEXT NOT NULL, category_id TEXT NOT NULL,
+    PRIMARY KEY (project_id, material_id, category_id),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.negative_pool_member(project_id, material_id)
+        ON DELETE CASCADE,
+    FOREIGN KEY (project_id, category_id)
+        REFERENCES w3_material_gt.negative_pool_category(project_id, id)
+        ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_algorithm_member (
+    project_id TEXT NOT NULL, algorithm_id TEXT NOT NULL, material_id TEXT NOT NULL,
+    joined_at TEXT, PRIMARY KEY (project_id, algorithm_id, material_id),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.negative_pool_member(project_id, material_id)
+        ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.evidence_row (
+    project_id TEXT NOT NULL, store TEXT NOT NULL, table_name TEXT NOT NULL,
+    row_key TEXT NOT NULL, payload JSONB NOT NULL,
+    PRIMARY KEY (project_id, store, table_name, row_key));
+CREATE TABLE IF NOT EXISTS w3_material_gt.table_state (
+    project_id TEXT NOT NULL, store TEXT NOT NULL, table_name TEXT NOT NULL,
+    present BOOLEAN NOT NULL, schema_version INTEGER, row_count INTEGER NOT NULL,
+    PRIMARY KEY (project_id, store, table_name));
+CREATE TABLE IF NOT EXISTS w3_material_gt.store_revision (
+    project_id TEXT NOT NULL, store TEXT NOT NULL, revision BIGINT, recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, store));
+"""
+
+
 def schema_checksum() -> str:
     return hashlib.sha256(_SCHEMA.encode("utf-8")).hexdigest()
 
 
+_HISTORICAL_SCHEMAS = {1: _SCHEMA_V1, 2: _SCHEMA_V2}
+
+
 def schema_checksum_for(version: int) -> str:
-    if version == 1:
-        return hashlib.sha256(_SCHEMA_V1.encode("utf-8")).hexdigest()
+    """Checksum of the DDL that version actually applied (never the current one)."""
+    if version in _HISTORICAL_SCHEMAS:
+        return hashlib.sha256(_HISTORICAL_SCHEMAS[version].encode("utf-8")).hexdigest()
     if version == SCHEMA_VERSION:
         return schema_checksum()
     raise U3MigrationError(
@@ -684,9 +775,17 @@ def schema_checksum_for(version: int) -> str:
 #: here). Version 2 corrects the reference-table key, adds the evidence/table
 #: state tables and restores the pool constraints.
 _SCHEMA_UPGRADES = {
+    # v1 -> v2: corrected reference key + evidence/table-state tables.
     2: (
         "DROP TABLE IF EXISTS w3_material_gt.annotation_label_reference CASCADE",
-        _SCHEMA,
+        _SCHEMA_V2,
+    ),
+    # v2 -> v3: the category uniqueness fold becomes locale independent (ASCII
+    # only, matching SQLite COLLATE NOCASE). Only the index changes.
+    3: (
+        "DROP INDEX IF EXISTS w3_material_gt.uq_negative_pool_category_name",
+        """CREATE UNIQUE INDEX IF NOT EXISTS uq_negative_pool_category_name
+    ON w3_material_gt.negative_pool_category(project_id, lower(name COLLATE "C"))""",
     ),
 }
 
@@ -743,15 +842,29 @@ def ensure_schema(connection) -> dict[str, Any]:
                                 detail=f"from={version} to={target}",
                             )
                         statements += _SCHEMA_UPGRADES[target]
+                applied_versions = (
+                    [SCHEMA_VERSION] if version == 0
+                    else list(range(version + 1, SCHEMA_VERSION + 1))
+                )
                 for statement in statements:
                     for part in [piece for piece in statement.split(";") if piece.strip()]:
                         cursor.execute(part)
-                cursor.execute(
-                    f"INSERT INTO {SCHEMA_NAME}.schema_migration(version,name,checksum,applied_by) "
-                    "VALUES(%s,%s,%s,%s) ON CONFLICT (version) DO UPDATE SET "
-                    "checksum=EXCLUDED.checksum, applied_at=now()",
-                    (SCHEMA_VERSION, f"u3-material-gt-v{SCHEMA_VERSION}", schema_checksum(), "u3-shadow"),
-                )
+                for applied in applied_versions:
+                    if applied == 0:
+                        continue
+                    cursor.execute(
+                        f"INSERT INTO {SCHEMA_NAME}.schema_migration"
+                        "(version,name,checksum,applied_by) VALUES(%s,%s,%s,%s) "
+                        "ON CONFLICT (version) DO UPDATE SET checksum=EXCLUDED.checksum, "
+                        "applied_at=now()",
+                        (
+                            applied,
+                            f"u3-material-gt-v{applied}",
+                            schema_checksum_for(applied),
+                            "u3-shadow",
+                        ),
+                    )
+
     return {"schema": SCHEMA_NAME, "version": SCHEMA_VERSION}
 
 

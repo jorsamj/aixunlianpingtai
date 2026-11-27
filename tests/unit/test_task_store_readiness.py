@@ -18,13 +18,16 @@ def _store(tmp_path):
     return repository, task
 
 
+PROOF = {"workers_stopped": True, "evidence": "systemctl stop changlian-worker; nodes drained"}
+
+
 def _update(repository, sql, parameters=()):
     with sqlite3.connect(repository.path) as database:
         database.execute(sql, parameters)
 
 
 def test_missing_store_is_reported_and_blocks(tmp_path):
-    report = readiness(tmp_path, now=NOW)
+    report = readiness(tmp_path, now=NOW, stop_proof=PROOF)
     assert report["present"] is False
     assert report["blockers"] == ["task_store_missing"]
     assert report["ready_for_cutover"] is False and report["read_only"] is True
@@ -54,7 +57,7 @@ def test_unverified_stop_and_recovery_are_read_from_the_real_stage(tmp_path):
     repository, task = _store(tmp_path)
     _update(repository, "UPDATE tasks SET status='CANCEL_REQUESTED', stage='cancelling' WHERE task_id=?",
             (task.task_id,))
-    report = readiness(tmp_path, now=NOW)
+    report = readiness(tmp_path, now=NOW, stop_proof=PROOF)
     assert report["unverified_stop"] == 1
     assert "unverified_stop_proof" in report["blockers"]
 
@@ -73,8 +76,10 @@ def test_incomplete_or_unsupported_schema_fails_closed(tmp_path):
     with sqlite3.connect(path) as database:
         database.execute("PRAGMA user_version=8")
         database.execute("CREATE TABLE tasks (task_id TEXT PRIMARY KEY, status TEXT)")
-    report = readiness(tmp_path, now=NOW)
-    assert report["blockers"] and report["blockers"][0].startswith("task_table_incomplete")
+    report = readiness(tmp_path, now=NOW, stop_proof=PROOF)
+    assert report["blockers"] and any(
+        b.startswith("tasks_incomplete:") for b in report["blockers"]
+    )
     assert report["ready_for_cutover"] is False
 
     with sqlite3.connect(path) as database:
@@ -118,7 +123,7 @@ def test_active_worker_instance_requires_a_real_drain(tmp_path):
             "heartbeat_at,expires_at) VALUES ('k2','o2','w2',2,?,?,?)",
             ("2026-11-26T00:00:00+00:00", "2026-11-26T23:59:00+00:00", "2026-11-27T01:00:00+00:00"),
         )
-    report = readiness(tmp_path, now=NOW)
+    report = readiness(tmp_path, now=NOW, stop_proof=PROOF)
     assert report["worker_instances_active"] == 1
     assert "active_worker_instances_require_drain" in report["blockers"]
     assert report["ready_for_cutover"] is False
@@ -133,6 +138,60 @@ def test_expired_worker_instance_is_a_blocker(tmp_path):
             "heartbeat_at,expires_at) VALUES ('k1','o1','w1',1,?,?,?)",
             ("2026-11-26T00:00:00+00:00", "2026-11-26T00:00:00+00:00", "2026-11-26T23:00:00+00:00"),
         )
-    report = readiness(tmp_path, now=NOW)
+    report = readiness(tmp_path, now=NOW, stop_proof=PROOF)
     assert report["worker_instances_expired"] == 1
     assert "expired_worker_instances" in report["blockers"]
+
+def test_required_tables_missing_block_the_cutover(tmp_path):
+    repository, task = _store(tmp_path)
+    _update(repository, "UPDATE tasks SET status='SUCCEEDED' WHERE task_id=?", (task.task_id,))
+    with sqlite3.connect(repository.path) as database:
+        database.execute("DROP TABLE worker_instances")
+    workers = readiness(tmp_path, now=NOW, stop_proof=PROOF)
+    assert workers["blockers"] == ["worker_instances_table_missing"]
+    assert workers["ready_for_cutover"] is False
+
+    with sqlite3.connect(repository.path) as database:
+        database.execute("DROP TABLE gpu_reservations")
+    gpu = readiness(tmp_path, now=NOW, stop_proof=PROOF)
+    assert "gpu_reservations_table_missing" in gpu["blockers"]
+    assert gpu["ready_for_cutover"] is False
+
+
+def test_required_table_columns_missing_block_the_cutover(tmp_path):
+    repository, task = _store(tmp_path)
+    _update(repository, "UPDATE tasks SET status='SUCCEEDED' WHERE task_id=?", (task.task_id,))
+    with sqlite3.connect(repository.path) as database:
+        database.execute("DROP TABLE worker_instances")
+        database.execute("CREATE TABLE worker_instances (instance_key TEXT PRIMARY KEY, owner_token TEXT)")
+    report = readiness(tmp_path, now=NOW, stop_proof=PROOF)
+    assert any(b.startswith("worker_instances_incomplete:") for b in report["blockers"])
+    assert report["ready_for_cutover"] is False
+
+    repository2, task2 = _store(tmp_path / "second")
+    _update(repository2, "UPDATE tasks SET status='SUCCEEDED' WHERE task_id=?", (task2.task_id,))
+    with sqlite3.connect(repository2.path) as database:
+        database.execute("DROP TABLE gpu_reservations")
+        database.execute("CREATE TABLE gpu_reservations (task_id TEXT PRIMARY KEY, gpu_uuid TEXT)")
+    gpu = readiness(tmp_path / "second", now=NOW, stop_proof=PROOF)
+    assert any(b.startswith("gpu_reservations_incomplete:") for b in gpu["blockers"])
+    assert gpu["ready_for_cutover"] is False
+
+
+def test_pragma_failure_is_an_error_not_a_missing_table(tmp_path):
+    runtime = tmp_path / "task_runtime"
+    runtime.mkdir(parents=True)
+    (runtime / "tasks.sqlite3").write_bytes(b"not a sqlite database at all")
+    with pytest.raises(TaskStoreReadinessError):
+        readiness(tmp_path, now=NOW, stop_proof=PROOF)
+
+
+def test_worker_stop_proof_is_required_even_without_registered_workers(tmp_path):
+    repository, task = _store(tmp_path)
+    _update(repository, "UPDATE tasks SET status='SUCCEEDED' WHERE task_id=?", (task.task_id,))
+    without = readiness(tmp_path, now=NOW)
+    assert "external_worker_stop_proof_required" in without["blockers"]
+    assert without["ready_for_cutover"] is False
+    with_proof = readiness(tmp_path, now=NOW, stop_proof=PROOF)
+    assert "external_worker_stop_proof_required" not in with_proof["blockers"]
+    assert with_proof["ready_for_cutover"] is True
