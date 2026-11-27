@@ -957,6 +957,16 @@ def test_pending_import_rejects_invalid_evidence_state_shapes(pg, tmp_path):
         stray = damaged()
         stray["digests"]["materials.evidence.material_unknown"] = _digest([])
         variants["unknown_digests_key"] = _recompute_content_digest(stray)
+        # Unknown *store* namespaces are refused in all three places.
+        stray = damaged()
+        stray["counts"]["other.evidence.unknown_table"] = 0
+        variants["unknown_store_counts_key"] = _recompute_content_digest(stray)
+        stray = damaged()
+        stray["digests"]["other.evidence.unknown_table"] = _digest([])
+        variants["unknown_store_digests_key"] = _recompute_content_digest(stray)
+        stray = damaged()
+        stray["stores"]["other"] = {"evidence": {"unknown_table": []}}
+        variants["unknown_store_evidence_data"] = _recompute_content_digest(stray)
 
         for name, candidate in variants.items():
             with pytest.raises(U3MigrationError) as refused:

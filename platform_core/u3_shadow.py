@@ -1146,19 +1146,33 @@ def pending_clear_eligible(snapshot: Mapping[str, Any], project_id: str) -> tupl
                 return False, f"count:{key}"
             if (digests or {}).get(key) != _digest(rows):
                 return False, f"digest:{key}"
-    for store, tables in EVIDENCE_TABLES.items():
-        evidence = (stores.get(store) or {}).get("evidence") or {}
-        known = {f"{store}.evidence.{table}" for table in tables}
-        unknown = [name for name in evidence if name not in tables]
+    allowed_evidence = {
+        f"{store}.evidence.{table}"
+        for store, tables in EVIDENCE_TABLES.items()
+        for table in tables
+    }
+    # Global namespace check: nothing outside the ten historical evidence tables
+    # may appear in counts/digests, and no unknown store may carry evidence data.
+    for source_name, source in (("counts", counts), ("digests", digests)):
+        stray = [
+            name for name in (source or {})
+            if ".evidence." in str(name) and name not in allowed_evidence
+        ]
+        if stray:
+            return False, f"evidence_unknown_{source_name}:{','.join(sorted(stray))}"
+    for store, payload in stores.items():
+        if not isinstance(payload, dict):
+            continue
+        evidence = payload.get("evidence")
+        if not evidence:
+            continue
+        if store not in EVIDENCE_TABLES:
+            return False, f"evidence_unknown_store:{store}"
+        unknown = [name for name in evidence if name not in EVIDENCE_TABLES[store]]
         if unknown:
             return False, f"evidence_unknown:{store}.{','.join(sorted(unknown))}"
-        for source_name, source in (("counts", counts), ("digests", digests)):
-            stray = [
-                name for name in (source or {})
-                if name.startswith(f"{store}.evidence.") and name not in known
-            ]
-            if stray:
-                return False, f"evidence_unknown_{source_name}:{','.join(sorted(stray))}"
+    for store, tables in EVIDENCE_TABLES.items():
+        evidence = (stores.get(store) or {}).get("evidence") or {}
         for table in tables:
             name = f"{store}.{table}"
             key = f"{store}.evidence.{table}"
