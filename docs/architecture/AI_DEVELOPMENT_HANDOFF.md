@@ -48,6 +48,13 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第十三批：全局 evidence 命名空间校验（2026-11-27，本批）
+
+- 起始 `d9c0e5d6d55337c1a965cc69c382a59714305972`。VERSION 42.24.592 未改。
+- 原检查只遍历 `EVIDENCE_TABLES` 的 materials/annotations，`other.evidence.unknown_table` 形式或未知 store 携带 evidence 可绕过。现建立允许集合 `store.evidence.table`（10 张历史证据表），对 `counts`/`digests` 中所有含 `.evidence.` 的键做全局比对（任何集合外键即拒绝），并扫描 `stores` 中所有 store 的 `evidence` 子结构（未知 store 或未知 evidence 表拒绝）。十张正常证据表与 absent 保留/empty 清空语义不变。
+- 定向用例在同一 pending 场景下再增三种非法快照（未知 store 的 counts 键、未知 store 的 digests 键、未知 store 携带 evidence 数据），均重算 `content_digest` 后仍被 `U3_PENDING_IMPORT_INCOMPLETE` 拒绝，且每次拒绝前后 stores/evidence/table_state/revisions/pending 完全一致；原始完整快照随后正常清除标记。
+- 验证：`test_u3_schema_upgrade_postgres.py` 10 项 + `test_u3_material_gt_postgres.py` 15 项 = **25 passed**（真实 PostgreSQL，0 skip）。
+
 ## 第十二批：evidence absent 状态严格校验（2026-11-27，本批）
 
 - 起始 `f3e08978119f5ab3a9e9661cc2dc5ef3f1384859`。VERSION 42.24.592 未改。
