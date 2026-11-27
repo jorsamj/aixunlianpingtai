@@ -10,6 +10,14 @@ on:
       - 'platform_core/storage/**'
       - platform_core/storage_source_*.py
       - platform_core/u3_*.py
+      - platform_core/*picker*.py
+      - platform_core/training_material_usage.py
+      - platform_core/training_selection_reference.py
+      - platform_core/training_splits.py
+      - platform_core/annotation_repository.py
+      - platform_core/material_repository.py
+      - platform_core/negative_pool.py
+      - platform_core/training_material_business_read.py
       - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
@@ -27,6 +35,14 @@ on:
       - 'platform_core/storage/**'
       - platform_core/storage_source_*.py
       - platform_core/u3_*.py
+      - platform_core/*picker*.py
+      - platform_core/training_material_usage.py
+      - platform_core/training_selection_reference.py
+      - platform_core/training_splits.py
+      - platform_core/annotation_repository.py
+      - platform_core/material_repository.py
+      - platform_core/negative_pool.py
+      - platform_core/training_material_business_read.py
       - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
@@ -213,6 +229,13 @@ jobs:
             --junitxml=u3-p1-postgres.xml \
             tests/integration/test_u3_picker_read_postgres.py
 
+      - name: U3 P2 business read contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=u3-p2-postgres.xml \
+            tests/integration/test_u3_picker_business_postgres.py
+
       - name: Refuse a run that skipped a U3 contract
         if: always()
         run: |
@@ -224,7 +247,8 @@ jobs:
           # whole file that never ran (or ran entirely as skip).
           stages = {
               "u3-p0-postgres.xml": 50,   # P0 = 57 contracts
-              "u3-p1-postgres.xml": 20,   # P1 = 39 contracts
+              "u3-p1-postgres.xml": 20,   # P1 = 41 contracts
+              "u3-p2-postgres.xml": 7,    # P2 = 7 business contracts
           }
           for name, minimum in stages.items():
               report = Path(name)

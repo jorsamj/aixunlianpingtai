@@ -253,6 +253,9 @@ class OwnerRevisionVector:
     materials_evidence_generation: int
     annotations_evidence_generation: int
     negative_confirmation_generation: int
+    negative_confirmation_structure_generation: int
+    negative_confirmation_tables: tuple[str, ...]
+    negative_confirmation_structure_certified: bool
     materials_structure_generation: int
     annotations_structure_generation: int
     materials_tables: tuple[str, ...]
@@ -456,6 +459,14 @@ def sqlite_owner_revision_source(
             materials_evidence_generation=int(materials.generation),
             annotations_evidence_generation=int(annotations.generation),
             negative_confirmation_generation=int(confirmation_generation),
+            negative_confirmation_structure_generation=int(annotations.structure_generation),
+            negative_confirmation_tables=tuple(
+                table for table in annotations.tables
+                if table == "task_negative_confirmations"
+            ),
+            negative_confirmation_structure_certified=(
+                tuple(annotations.recorded) == annotations.tables
+            ),
             materials_structure_generation=int(materials.structure_generation),
             annotations_structure_generation=int(annotations.structure_generation),
             materials_tables=materials.tables,
@@ -741,6 +752,9 @@ class SQLitePickerReadProvider(PickerReadProvider):
             },
             "negative_confirmation": {
                 "generation": vector.negative_confirmation_generation,
+                "structure_generation": vector.negative_confirmation_structure_generation,
+                "structure_certified": vector.negative_confirmation_structure_certified,
+                "tables": list(vector.negative_confirmation_tables),
             },
         }
 
@@ -942,19 +956,55 @@ class SQLitePickerReadProvider(PickerReadProvider):
             for image_id, entry in state.items()
         }
 
-    def _confirmation_state(self) -> tuple[str, bool]:
-        with closing(self.annotations._connect()) as database:
-            table = database.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='task_negative_confirmations'"
-            ).fetchone()
-            if table is None:
-                return "absent", False
-            if database.execute(
-                "SELECT 1 FROM task_negative_confirmations LIMIT 1"
-            ).fetchone() is None:
-                return "present_empty", True
-            return "present", True
+    def _confirmation_snapshot(
+        self, context_key: str, ids: Sequence[str],
+    ) -> tuple[int, str, bool, tuple[Mapping[str, Any], ...]]:
+        """Generation, table presence and receipts in ONE read-only transaction.
+
+        A missing counter is only tolerated with reliable absent evidence (the
+        table itself is absent), matching the frozen P0 export rule.
+        """
+        path = self.project_path / "annotations.sqlite3"
+        if not path.is_file():
+            raise PickerOwnerUnverifiable(
+                "the formal annotation store does not exist",
+                detail=self.project_id,
+            )
+        with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as database:
+            database.row_factory = sqlite3.Row
+            database.execute("BEGIN")
+            try:
+                generation = _read_meta(
+                    database, "annotation_meta", "task_negative_confirmation_generation",
+                )
+                present = "task_negative_confirmations" in _table_presence(database)
+                rows: list[Mapping[str, Any]] = []
+                has_any = False
+                if present:
+                    has_any = database.execute(
+                        "SELECT 1 FROM task_negative_confirmations LIMIT 1"
+                    ).fetchone() is not None
+                    for chunk in _chunks(list(ids)):
+                        rows.extend(dict(row) for row in database.execute(
+                            "SELECT receipt_id, context_key, evidence_json "
+                            "FROM task_negative_confirmations WHERE context_key=? "
+                            "AND json_extract(evidence_json,'$.image_id') IN ("
+                            + ",".join("?" for _ in chunk) + ")",
+                            [str(context_key), *chunk],
+                        ))
+            finally:
+                database.execute("COMMIT")
+        if generation is None:
+            if present:
+                raise PickerOwnerUnverifiable(
+                    "the task negative confirmation counter is missing",
+                    detail=self.project_id,
+                )
+            generation = 0
+        if not present:
+            return int(generation), "absent", False, ()
+        state = "present" if has_any else "present_empty"
+        return int(generation), state, True, tuple(rows)
 
     def get_task_negative_receipts(
         self, project_id: str, context_key: str, image_ids: Sequence[str] | None = None,
@@ -962,26 +1012,38 @@ class SQLitePickerReadProvider(PickerReadProvider):
     ) -> PickerNegativeReceipts:
         project_id = self._require_project(project_id)
         ids = _receipt_ids(image_ids)
-        state, authoritative = self._confirmation_state()
-        generation = self.annotations.task_negative_confirmation_generation()
+        generation, state, authoritative, rows = self._confirmation_snapshot(
+            context_key, ids,
+        )
         if not authoritative:
             return PickerNegativeReceipts(
-                context_key=str(context_key), generation=int(generation),
+                context_key=str(context_key), generation=generation,
                 state=state, authoritative=False, owner_equivalent=True, receipts=(),
             )
-        rows = self.annotations.task_negative_receipts(context_key, ids)
-        receipts = tuple(
-            PickerNegativeReceipt(
+        receipts: list[PickerNegativeReceipt] = []
+        for row in rows:
+            try:
+                evidence = json.loads(row.get("evidence_json") or "{}")
+            except (TypeError, ValueError) as error:
+                raise PickerQueryFailed(
+                    "a task negative confirmation receipt is not readable",
+                ) from error
+            if not isinstance(evidence, Mapping):
+                raise PickerQueryFailed(
+                    "a task negative confirmation receipt is malformed",
+                )
+            receipts.append(PickerNegativeReceipt(
                 receipt_id=str(row.get("receipt_id") or ""),
                 context_key=str(row.get("context_key") or context_key),
-                image_id=None if row.get("image_id") is None else str(row.get("image_id")),
-                evidence=dict(row),
-            )
-            for row in rows
-        )
+                image_id=(
+                    None if evidence.get("image_id") is None
+                    else str(evidence.get("image_id"))
+                ),
+                evidence=dict(evidence),
+            ))
         return PickerNegativeReceipts(
-            context_key=str(context_key), generation=int(generation),
-            state=state, authoritative=True, owner_equivalent=True, receipts=receipts,
+            context_key=str(context_key), generation=generation, state=state,
+            authoritative=True, owner_equivalent=True, receipts=tuple(receipts),
         )
 
     def revision_vector(self, project_id: str) -> Mapping[str, Any]:
@@ -1253,19 +1315,71 @@ class PostgresPickerReadProvider(PickerReadProvider):
                 ),
             },
             "negative_confirmation": {
+                "revision": cls._version(
+                    confirmation.get("revision"), "negative_confirmation.revision",
+                ),
                 "generation": cls._version(
                     confirmation.get("generation"),
                     "negative_confirmation.generation",
                 ),
+                "structure_generation": cls._version(
+                    confirmation.get("structure_generation"),
+                    "negative_confirmation.structure_generation",
+                ),
                 "tables": cls._tables(
                     confirmation.get("tables"), "negative_confirmation.tables",
                 ),
+                "structure_certified": cls._certified(
+                    confirmation.get("structure_certified"),
+                    "negative_confirmation.structure_certified",
+                ),
             },
         }
+        # The confirmation stream must agree with the annotation evidence stream:
+        # it shares the structure version and certification, and its table set is
+        # exactly the annotation evidence tables restricted to the confirmation
+        # table. A half-written or hand-edited state never passes.
+        confirmation_versions = versions["negative_confirmation"]
+        annotations_stream = versions["annotations_evidence"]
+        if confirmation_versions["structure_generation"] != annotations_stream["structure_generation"]:
+            raise PickerSnapshotStale(
+                "the confirmation structure version disagrees with annotation evidence",
+            )
+        if not annotations_stream["structure_certified"]:
+            raise PickerSnapshotStale(
+                "the annotation evidence structure is not certified",
+            )
+        expected_confirmation_tables = [
+            table for table in annotations_stream["tables"]
+            if table == "task_negative_confirmations"
+        ]
+        if confirmation_versions["tables"] != expected_confirmation_tables:
+            raise PickerSnapshotStale(
+                "the confirmation table set disagrees with annotation evidence",
+                detail=(
+                    f"confirmation={confirmation_versions['tables']} "
+                    f"annotations={expected_confirmation_tables}"
+                ),
+            )
+        present = state.get("_confirmation_present")
+        if present is None:
+            raise PickerSnapshotStale(
+                "the confirmation table presence is not recorded",
+            )
+        if bool(present) != bool(confirmation_versions["tables"]):
+            raise PickerSnapshotStale(
+                "the confirmation table presence disagrees with the snapshot",
+                detail=f"table_state={present} tables={confirmation_versions['tables']}",
+            )
+        versions["negative_confirmation"] = confirmation_versions
         for column, expected in (
             ("material_revision", versions["materials"]),
             ("annotation_revision", versions["annotations"]),
             ("negative_pool_revision", versions["negative_pool"]),
+            (
+                "negative_confirmation_revision",
+                versions["negative_confirmation"]["revision"],
+            ),
             (
                 "negative_confirmation_generation",
                 versions["negative_confirmation"]["generation"],
@@ -1337,15 +1451,27 @@ class PostgresPickerReadProvider(PickerReadProvider):
                 versions["negative_confirmation"]["generation"],
                 owner.negative_confirmation_generation,
             ),
+            (
+                "negative_confirmation.structure_generation",
+                versions["negative_confirmation"]["structure_generation"],
+                owner.negative_confirmation_structure_generation,
+            ),
         )
         for label, published, current in expected:
             if published != current:
                 mismatches.append(f"{label}={published} owner={current}")
+        if not owner.negative_confirmation_structure_certified:
+            raise PickerOwnerUnverifiable(
+                "the SQLite task negative confirmation structure is not certified",
+                detail=f"project={owner.project_id}",
+            )
         for label, published, current in (
             ("materials_evidence.tables", versions["materials_evidence"]["tables"],
              owner.materials_tables),
             ("annotations_evidence.tables", versions["annotations_evidence"]["tables"],
              owner.annotations_tables),
+            ("negative_confirmation.tables", versions["negative_confirmation"]["tables"],
+             owner.negative_confirmation_tables),
         ):
             if published != sorted(current):
                 mismatches.append(f"{label} changed")
@@ -1380,6 +1506,13 @@ class PostgresPickerReadProvider(PickerReadProvider):
                 "the picker snapshot is not READY",
                 detail=f"status={state.get('status')}",
             )
+        cursor.execute(
+            f"SELECT present FROM {self._schema}.table_state "
+            "WHERE project_id=%s AND table_name='task_negative_confirmations' LIMIT 1",
+            (str(project_id),),
+        )
+        presence = cursor.fetchone()
+        state["_confirmation_present"] = None if presence is None else bool(presence["present"])
         return state
 
     # -- SQL -------------------------------------------------------------
@@ -1509,36 +1642,11 @@ class PostgresPickerReadProvider(PickerReadProvider):
             return session.page(query)
 
     def iter_candidates(self, query: PickerQuery, *, batch_size: int = 500):
-        if query.page is not None:
-            raise PickerUnsupportedFilter(
-                "candidate iteration does not support page mode",
-            )
-        _validate_query(replace(query, page=None))
-        batch = max(1, min(int(batch_size), MAX_CANDIDATE_BATCH, MAX_PAGE_SIZE))
-        fingerprint = _query_fingerprint(query)
+        """Bounded keyset iteration; delegates to the session for one SQL path."""
         with self.read_session(
             query.project_id, verify_owner=query.verify_owner,
         ) as session:
-            position = None
-            if query.cursor:
-                position = decode_picker_cursor(
-                    query.cursor, fingerprint=fingerprint,
-                    snapshot=session.snapshot_id,
-                )
-            clauses, params = self._where(query)
-            while True:
-                items, more = session._candidate_batch(query, clauses, params, batch, position)
-                if items:
-                    yield items
-                if not more or not items:
-                    return
-                last = items[-1]
-                if not last.created_at:
-                    raise PickerUnsupportedFilter(
-                        "candidate iteration is not supported over materials "
-                        "without created_at",
-                    )
-                position = (last.created_at, last.id)
+            yield from session.candidates(query, batch_size=batch_size)
 
     def get_many(
         self, project_id: str, image_ids: Sequence[str], *, verify_owner: bool = True,
@@ -1889,11 +1997,26 @@ class PickerReadSession:
     def candidates(
         self, query: PickerQuery, *, batch_size: int = 500,
     ) -> Iterator[tuple[PickerMaterial, ...]]:
-        """Bounded keyset iteration inside this session's snapshot."""
+        """Bounded keyset iteration inside this session's snapshot.
+
+        Accepts the same cursor as ``read_page`` (bound to the query fingerprint
+        and this snapshot id) and refuses page mode, exactly like
+        ``iter_candidates`` -- both entry points share this implementation.
+        """
         self._require(query.project_id)
+        if query.page is not None:
+            raise PickerUnsupportedFilter(
+                "candidate iteration does not support page mode",
+            )
+        _validate_query(replace(query, page=None))
         batch = max(1, min(int(batch_size), MAX_CANDIDATE_BATCH, MAX_PAGE_SIZE))
-        clauses, params = self._provider._where(query)
+        fingerprint = _query_fingerprint(query)
         position = None
+        if query.cursor:
+            position = decode_picker_cursor(
+                query.cursor, fingerprint=fingerprint, snapshot=self.snapshot_id,
+            )
+        clauses, params = self._provider._where(query)
         while True:
             items, more = self._candidate_batch(query, clauses, params, batch, position)
             if items:

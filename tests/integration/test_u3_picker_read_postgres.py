@@ -931,3 +931,53 @@ def test_read_session_reuses_one_mvcc_snapshot(pg, tmp_path):
     with pytest.raises(PickerProjectMismatch):
         with postgres_provider.read_session("p1") as session:
             session.page(PickerQuery(project_id="p2"))
+
+
+# ---------------------------------------------------------------------------
+# M. P2-0: session candidate cursor and confirmation cross-proofs
+# ---------------------------------------------------------------------------
+def test_read_session_candidates_consume_cursor_and_refuse_page(pg, tmp_path):
+    project = _build_project(tmp_path)
+    _, provider = _providers(pg, project)
+    expected = [item.id for item in _page(provider, page_size=100).items]
+    first = _page(provider, page_size=5)
+    with provider.read_session("p1") as session:
+        resumed = [
+            item.id for batch in session.candidates(
+                PickerQuery(project_id="p1", cursor=first.next_cursor),
+            ) for item in batch
+        ]
+    assert resumed == expected[5:]
+    with provider.read_session("p1") as session:
+        with pytest.raises(PickerUnsupportedFilter):
+            list(session.candidates(PickerQuery(project_id="p1", page=2)))
+        with pytest.raises(PickerCursorContextMismatch):
+            list(session.candidates(PickerQuery(project_id="p1", cursor="broken")))
+
+
+def test_confirmation_structure_must_agree_with_evidence_and_table_state(pg, tmp_path):
+    project = _build_project(tmp_path)
+    _providers(pg, project)
+    provider = _provider_for(pg, project)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"UPDATE {SCHEMA_NAME}.picker_snapshot_state SET revision_vector = "
+                    "jsonb_set(revision_vector, '{negative_confirmation,structure_generation}', "
+                    "to_jsonb((revision_vector#>>'{annotations_evidence,structure_generation}')"
+                    "::int + 1)) WHERE project_id='p1'"
+                )
+    with pytest.raises(PickerSnapshotStale):
+        _page(provider)
+    _providers(pg, project)
+    provider = _provider_for(pg, project)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"UPDATE {SCHEMA_NAME}.table_state SET present = NOT present "
+                    "WHERE project_id='p1' AND table_name='task_negative_confirmations'"
+                )
+    with pytest.raises(PickerSnapshotStale):
+        _page(provider)
