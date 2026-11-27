@@ -48,6 +48,15 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第十批：pending 前置门槛、来源信任边界与结构补强（2026-11-27，本批）
+
+- 起始 `5d2df928564c8fbca39abc0459eff9f9f586e1dd`。VERSION 42.24.592 未改。
+- P1-1：pending 项目的 full 导入此前先删后判，可能留下"标记还在、数据已被部分覆盖"。现在在 advisory lock 之后、任何 DELETE/INSERT/UPDATE 之前检查 `legacy_reference_pending_import`：若存在且 `pending_clear_eligible()` 不成立，抛 `U3_PENDING_IMPORT_INCOMPLETE`，事务内不修改该项目的业务行、`table_state`、revision、evidence（测试用前后 `read_target_snapshot` 全量对比 `stores/table_state/revisions/pending` 证明）。合格快照仍按原 full 语义导入并在同一事务清除标记；incremental 永不清除；非 pending 项目的 full 语义未变。
+- P1-2：明确区分"完整性"与"来源真实性"。`pending_clear_eligible()` 现已按数据内容核对 evidence（列表类型、counts、逐表 digest），不再只看键存在。CLI `command_import` 明确记录信任边界：文件按原样读取，import 只能证明结构完整与内容自洽，不能证明来源；该入口是内部受控运维路径，快照应来自 `u3_shadow_cli export`，本构建没有签名/密钥管理，也不宣称密码学保证。
+- P2 结构校验：`_assert_target_structure()` 增加 `annotation_label_reference` 主键列顺序必须为 `(project_id,image_id,label_code)`、`project_id` 列存在，以及 `negative_pool_link` 两个外键的**本地列→远端列映射**（member：project_id,material_id→project_id,material_id；category：project_id,category_id→project_id,id）与 `ON DELETE CASCADE`；不匹配即 `U3_SCHEMA_STRUCTURE_INVALID`。新增"缺主键"和"存在外键但列映射错误（NOT VALID 构造）"两种定向用例。
+- P2 测试数据：`test_u3_schema_upgrade_postgres.py` 的 `scope_ref=2` 改为业务语义允许的 `1`，全文仅 0/1。
+- 验证：`test_u3_schema_upgrade_postgres.py` 9 项 + `test_u3_material_gt_postgres.py` 11 项 = **20 passed**（真实 PostgreSQL，0 skip）。
+
 ## 第九批：pending 清除条件、历史错误结构识别与测试真实性（2026-11-27，本批）
 
 - 起始 `468636d8c64cbbcaf81876c5aa5425e1f630a816`。VERSION 42.24.592 未改。
