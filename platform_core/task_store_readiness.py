@@ -21,6 +21,37 @@ UNVERIFIED_STOP_STATUSES = ("CANCEL_REQUESTED", "cancelling_unverified")
 #: Statuses that indicate recovery could not prove the old owner is gone.
 RECOVERY_BLOCKED_PREFIX = "recovery_blocked"
 
+#: A future trusted stop proof must carry, at minimum: the nodes covered, the
+#: worker services/units that were stopped, the observed process identities, the
+#: observation time, an expiry, the evidence source and a verifier signature.
+#: Nothing in this repository can verify that today, so a caller-supplied mapping
+#: is never accepted as proof.
+STOP_PROOF_CONTRACT = (
+    "nodes",
+    "worker_services",
+    "process_identities",
+    "observed_at",
+    "expires_at",
+    "source",
+    "verifier_signature",
+)
+STOP_PROOF_MISSING = "MISSING"
+STOP_PROOF_UNVERIFIED = "UNVERIFIED"
+
+
+def stop_proof_status(proof: dict[str, Any] | None) -> str:
+    """Classify a stop proof. This build has no trusted verifier.
+
+    The repository only has per-task remote-agent stop evidence
+    (``node_agent_settlement.stop_proof_digests`` / ``STOP_VERIFIED`` in
+    ``agent_execution``), which proves one task's process stopped - not that every
+    Worker service on every node was drained. A mapping supplied by the caller
+    (including ``workers_stopped=True``) is therefore unverified, never accepted.
+    """
+    if not proof:
+        return STOP_PROOF_MISSING
+    return STOP_PROOF_UNVERIFIED
+
 
 class TaskStoreReadinessError(RuntimeError):
     """The readiness diagnostic could not read the store (fail closed)."""
@@ -72,13 +103,15 @@ def readiness(
     instant = now or datetime.now(timezone.utc).isoformat()
     root = Path(data_dir)
     path = root / "task_runtime" / "tasks.sqlite3"
-    proof = dict(stop_proof or {})
-    proof_ok = bool(proof.get("workers_stopped") is True and str(proof.get("evidence") or "").strip())
+    proof = dict(stop_proof or {}) if isinstance(stop_proof, dict) else {}
+    proof_status = stop_proof_status(proof or None)
     report: dict[str, Any] = {
         "provider": "sqlite",
         "worker_registration": "optional",
+        "stop_proof_status": proof_status,
+        "stop_proof_contract": list(STOP_PROOF_CONTRACT),
         "external_stop_proof": proof if proof else None,
-        "external_stop_proof_valid": proof_ok,
+        "external_stop_proof_valid": False,
         "authority": str(path),
         "present": path.is_file(),
         "schema_version": None,
@@ -205,8 +238,12 @@ def readiness(
     # to be registered, so an empty worker_instances table cannot prove that every
     # worker stopped. A cutover therefore needs an external stop proof (services
     # stopped/drained) in addition to the database evidence.
-    if not proof_ok:
+    # No trusted verifier exists in this build: a cutover is never admissible from
+    # a caller-supplied mapping, and a missing proof is blocked separately.
+    if proof_status == STOP_PROOF_MISSING:
         blockers.append("external_worker_stop_proof_required")
+    else:
+        blockers.append("external_worker_stop_proof_unverified")
     if report["worker_instances_expired"]:
         blockers.append("expired_worker_instances")
     report["blockers"] = blockers

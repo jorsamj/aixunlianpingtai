@@ -1,4 +1,4 @@
-"""U3 shadow schema: authentic v1/v2 -> v3 upgrades and checksum contracts."""
+"""U3 shadow schema: authentic v1/v2 -> v3 upgrades (data preserving)."""
 from __future__ import annotations
 
 import pathlib
@@ -72,8 +72,7 @@ def _exec(cursor, script: str) -> None:
         cursor.execute(part)
 
 
-def _seed(cursor) -> None:
-    """Data every historical version must preserve across the upgrade."""
+def _seed(cursor, *, v1_refs: bool, conflict: bool = False, orphan: bool = False) -> None:
     cursor.execute(
         f"INSERT INTO {SCHEMA_NAME}.material(project_id,id,filename,payload) "
         "VALUES ('p1','m-old','old.jpg','{}'::jsonb)"
@@ -94,13 +93,36 @@ def _seed(cursor) -> None:
         f"INSERT INTO {SCHEMA_NAME}.negative_pool_member(project_id,material_id,joined_at) "
         "VALUES ('p1','m-old','2026-01-01')"
     )
+    if v1_refs:
+        # Two source kinds on different identities, plus (optionally) one identity
+        # that v1 stored twice -- which cannot map to the v2 key.
+        for image_id, label, kind in (("m-old", "fire", "sqlite"), ("m-old", "smoke", "legacy")):
+            cursor.execute(
+                f"INSERT INTO {SCHEMA_NAME}.annotation_label_reference"
+                "(project_id,image_id,label_code,source_kind) VALUES ('p1',%s,%s,%s)",
+                (image_id, label, kind),
+            )
+        if conflict:
+            cursor.execute(
+                f"INSERT INTO {SCHEMA_NAME}.annotation_label_reference"
+                "(project_id,image_id,label_code,source_kind) VALUES ('p1','m-old','fire','legacy')"
+            )
+    else:
+        for label in ("fire", "smoke"):
+            cursor.execute(
+                f"INSERT INTO {SCHEMA_NAME}.annotation_label_reference"
+                "(project_id,image_id,label_code,box_count,scope_ref,annotation_state,source_kind) "
+                "VALUES ('p1','m-old',%s,1,0,'annotated','sqlite')",
+                (label,),
+            )
     cursor.execute(
         f"INSERT INTO {SCHEMA_NAME}.negative_pool_link(project_id,material_id,category_id) "
-        "VALUES ('p1','m-old','cat-1')"
+        "VALUES ('p1','m-old',%s)",
+        ("cat-missing" if orphan else "cat-1",),
     )
 
 
-def _build(connection, schema: str, versions: tuple[int, ...]) -> None:
+def _build(connection, schema: str, versions: tuple[int, ...], **seed) -> None:
     with connection.transaction():
         with connection.cursor() as cursor:
             cursor.execute(f"DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE")
@@ -111,7 +133,11 @@ def _build(connection, schema: str, versions: tuple[int, ...]) -> None:
                     "VALUES (%s,%s,%s,'test')",
                     (version, f"u3-material-gt-v{version}", schema_checksum_for(version)),
                 )
-            _seed(cursor)
+            _seed(cursor, v1_refs=version_uses_v1_refs(schema), **seed)
+
+
+def version_uses_v1_refs(schema: str) -> bool:
+    return "label_code, source_kind" in schema
 
 
 def _assert_upgraded(connection) -> None:
@@ -123,15 +149,27 @@ def _assert_upgraded(connection) -> None:
         assert [int(row[0]) for row in rows] == [1, 2, 3]
         for version, checksum in rows:
             assert str(checksum) == schema_checksum_for(int(version))
-        # All historical data survives.
         cursor.execute(f"SELECT id,filename FROM {SCHEMA_NAME}.material WHERE project_id='p1'")
         assert cursor.fetchone() == ("m-old", "old.jpg")
-        cursor.execute(f"SELECT label_code,box_count FROM {SCHEMA_NAME}.material_label WHERE project_id='p1'")
+        cursor.execute(
+            f"SELECT label_code,box_count FROM {SCHEMA_NAME}.material_label WHERE project_id='p1'"
+        )
         assert cursor.fetchone() == ("fire", 2)
         cursor.execute(f"SELECT version FROM {SCHEMA_NAME}.annotation WHERE project_id='p1'")
         assert cursor.fetchone() == (4,)
-        cursor.execute(f"SELECT count(*) FROM {SCHEMA_NAME}.negative_pool_link WHERE project_id='p1'")
+        cursor.execute(
+            f"SELECT count(*) FROM {SCHEMA_NAME}.negative_pool_link WHERE project_id='p1'"
+        )
         assert cursor.fetchone()[0] == 1
+        # Both pool-link foreign keys exist after the upgrade.
+        cursor.execute(
+            "SELECT conname,confupdtype,confdeltype FROM pg_constraint "
+            "WHERE conrelid = (%s)::regclass AND contype='f' ORDER BY conname",
+            (f"{SCHEMA_NAME}.negative_pool_link",),
+        )
+        fks = cursor.fetchall()
+        assert len(fks) == 2, fks
+        assert all(str(fk[2]) == "c" for fk in fks), fks  # ON DELETE CASCADE
         # v3 uniqueness uses the locale-independent ASCII fold.
         cursor.execute(
             "SELECT indexdef FROM pg_indexes WHERE schemaname=%s "
@@ -139,8 +177,7 @@ def _assert_upgraded(connection) -> None:
             (SCHEMA_NAME,),
         )
         indexdef = str(cursor.fetchone()[0])
-        assert "COLLATE \"C\"" in indexdef and "lower(" in indexdef, indexdef
-        # ASCII case conflict is rejected.
+        assert 'COLLATE "C"' in indexdef and "lower(" in indexdef, indexdef
         with pytest.raises(Exception):
             with connection.transaction():
                 with connection.cursor() as inner:
@@ -148,7 +185,6 @@ def _assert_upgraded(connection) -> None:
                         f"INSERT INTO {SCHEMA_NAME}.negative_pool_category"
                         "(project_id,id,name,enabled) VALUES ('p1','cat-2','fire',1)"
                     )
-        # Non-ASCII case is NOT folded, exactly like SQLite COLLATE NOCASE.
         with connection.transaction():
             with connection.cursor() as inner:
                 inner.execute(
@@ -159,18 +195,90 @@ def _assert_upgraded(connection) -> None:
                 )
 
 
-def test_v1_upgrades_to_v3(pg):
+def test_v1_upgrades_to_v3_preserving_reference_evidence(pg):
     with psycopg.connect(pg.get_uri()) as connection:
         _build(connection, _SCHEMA_V1, (1,))
         assert ensure_schema(connection)["version"] == SCHEMA_VERSION
         _assert_upgraded(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT image_id,label_code,source_kind FROM {SCHEMA_NAME}."
+                "annotation_label_reference_legacy ORDER BY label_code"
+            )
+            assert cursor.fetchall() == [("m-old", "fire", "sqlite"), ("m-old", "smoke", "legacy")]
+            cursor.execute(
+                f"SELECT image_id,label_code,box_count,scope_ref,annotation_state "
+                f"FROM {SCHEMA_NAME}.annotation_label_reference ORDER BY label_code"
+            )
+            # Counters keep the documented v1 default (0); the state comes from GT.
+            assert cursor.fetchall() == [
+                ("m-old", "fire", 0, 0, "annotated"),
+                ("m-old", "smoke", 0, 0, "annotated"),
+            ]
+        # Idempotent: a second run changes nothing.
+        assert ensure_schema(connection)["version"] == SCHEMA_VERSION
 
 
-def test_real_v2_upgrades_to_v3(pg):
+def test_v1_reference_conflict_is_refused_not_deduplicated(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V1, (1,), conflict=True)
+        with pytest.raises(U3MigrationError) as conflict:
+            ensure_schema(connection)
+        assert conflict.value.code == "U3_UPGRADE_REFERENCE_CONFLICT"
+        # Rolled back: the v1 table and both original rows are still there.
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT count(*) FROM {SCHEMA_NAME}.annotation_label_reference"
+            )
+            assert cursor.fetchone()[0] == 3
+            cursor.execute(
+                "SELECT count(*) FROM information_schema.columns WHERE table_schema=%s "
+                "AND table_name='annotation_label_reference' AND column_name='box_count'",
+                (SCHEMA_NAME,),
+            )
+            assert cursor.fetchone()[0] == 0
+
+
+def test_v1_pool_link_with_missing_category_is_refused(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V1, (1,), orphan=True)
+        with pytest.raises(U3MigrationError) as orphan:
+            ensure_schema(connection)
+        assert orphan.value.code == "U3_UPGRADE_LINK_ORPHAN"
+
+
+def test_real_v2_upgrades_to_v3_with_both_foreign_keys(pg):
     with psycopg.connect(pg.get_uri()) as connection:
         _build(connection, _SCHEMA_V2, (1, 2))
         assert ensure_schema(connection)["version"] == SCHEMA_VERSION
         _assert_upgraded(connection)
+        with connection.cursor() as cursor:
+            # Category deletion cascades the link...
+            with connection.transaction():
+                cursor.execute(
+                    f"DELETE FROM {SCHEMA_NAME}.negative_pool_category "
+                    "WHERE project_id='p1' AND id='cat-1'"
+                )
+            cursor.execute(
+                f"SELECT count(*) FROM {SCHEMA_NAME}.negative_pool_link WHERE project_id='p1'"
+            )
+            assert cursor.fetchone()[0] == 0
+            # ...and so does the material (member, link, algorithm membership).
+            with connection.transaction():
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.negative_pool_category"
+                    "(project_id,id,name,enabled) VALUES ('p1','cat-9','nine',1)"
+                )
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.negative_pool_link"
+                    "(project_id,material_id,category_id) VALUES ('p1','m-old','cat-9')"
+                )
+                cursor.execute(
+                    f"DELETE FROM {SCHEMA_NAME}.material WHERE project_id='p1' AND id='m-old'"
+                )
+            for table in ("negative_pool_member", "negative_pool_link", "material_label"):
+                cursor.execute(f"SELECT count(*) FROM {SCHEMA_NAME}.{table} WHERE project_id='p1'")
+                assert cursor.fetchone()[0] == 0, table
 
 
 def test_tampered_or_unknown_versions_are_refused(pg):

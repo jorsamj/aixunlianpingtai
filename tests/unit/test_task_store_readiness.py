@@ -186,12 +186,28 @@ def test_pragma_failure_is_an_error_not_a_missing_table(tmp_path):
         readiness(tmp_path, now=NOW, stop_proof=PROOF)
 
 
-def test_worker_stop_proof_is_required_even_without_registered_workers(tmp_path):
+def test_worker_stop_proof_is_never_accepted_from_the_caller(tmp_path):
+    """Even a completely empty store stays blocked: no trusted verifier exists."""
     repository, task = _store(tmp_path)
     _update(repository, "UPDATE tasks SET status='SUCCEEDED' WHERE task_id=?", (task.task_id,))
     without = readiness(tmp_path, now=NOW)
     assert "external_worker_stop_proof_required" in without["blockers"]
+    assert without["stop_proof_status"] == "MISSING"
     assert without["ready_for_cutover"] is False
-    with_proof = readiness(tmp_path, now=NOW, stop_proof=PROOF)
-    assert "external_worker_stop_proof_required" not in with_proof["blockers"]
-    assert with_proof["ready_for_cutover"] is True
+
+    self_asserted = readiness(tmp_path, now=NOW, stop_proof=PROOF)
+    assert self_asserted["stop_proof_status"] == "UNVERIFIED"
+    assert "external_worker_stop_proof_unverified" in self_asserted["blockers"]
+    assert self_asserted["external_stop_proof_valid"] is False
+    assert self_asserted["ready_for_cutover"] is False
+
+    # An arbitrary string (the previous "proof") is not a proof either.
+    text_proof = readiness(tmp_path, now=NOW, stop_proof={"evidence": "systemctl stop worker; nodes drained"})
+    assert text_proof["stop_proof_status"] == "UNVERIFIED"
+    assert text_proof["ready_for_cutover"] is False
+
+    # The future proof contract is explicit about what must be verified.
+    assert set(self_asserted["stop_proof_contract"]) == {
+        "nodes", "worker_services", "process_identities", "observed_at",
+        "expires_at", "source", "verifier_signature",
+    }

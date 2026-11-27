@@ -775,14 +775,66 @@ def schema_checksum_for(version: int) -> str:
 #: here). Version 2 corrects the reference-table key, adds the evidence/table
 #: state tables and restores the pool constraints.
 _SCHEMA_UPGRADES = {
-    # v1 -> v2: corrected reference key + evidence/table-state tables.
+    # v1 -> v2: the typed reference table gains box_count/scope_ref/
+    # annotation_state and drops source_kind from its key, so the original rows are
+    # first retained verbatim and then mapped; a key that v1 stored twice with
+    # different source_kind cannot be mapped losslessly and fails with
+    # U3_UPGRADE_REFERENCE_CONFLICT (the primary key rejects it) instead of being
+    # silently deduplicated. ``negative_pool_link`` is rebuilt with both foreign
+    # keys, so a dangling category reference fails with U3_UPGRADE_LINK_ORPHAN.
     2: (
-        "DROP TABLE IF EXISTS w3_material_gt.annotation_label_reference CASCADE",
+        """CREATE TABLE IF NOT EXISTS w3_material_gt.annotation_label_reference_legacy (
+            project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            PRIMARY KEY (project_id, image_id, label_code, source_kind))""",
+        """INSERT INTO w3_material_gt.annotation_label_reference_legacy
+            (project_id, image_id, label_code, source_kind)
+           SELECT project_id, image_id, label_code, source_kind
+             FROM w3_material_gt.annotation_label_reference
+           ON CONFLICT DO NOTHING""",
+        """CREATE TABLE w3_material_gt.annotation_label_reference_v2 (
+            project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
+            box_count INTEGER NOT NULL DEFAULT 0, scope_ref INTEGER NOT NULL DEFAULT 0,
+            annotation_state TEXT NOT NULL,
+            PRIMARY KEY (project_id, image_id, label_code))""",
+        # The counters never existed in v1, so they keep the historical default 0;
+        # the annotation state comes from the trusted formal GT row.
+        """INSERT INTO w3_material_gt.annotation_label_reference_v2
+            (project_id, image_id, label_code, box_count, scope_ref, annotation_state)
+           SELECT legacy.project_id, legacy.image_id, legacy.label_code, 0, 0,
+                  COALESCE(annotation.annotation_state, 'unannotated')
+             FROM w3_material_gt.annotation_label_reference_legacy AS legacy
+             LEFT JOIN w3_material_gt.annotation AS annotation
+               ON annotation.project_id = legacy.project_id
+              AND annotation.image_id = legacy.image_id""",
+        "DROP TABLE w3_material_gt.annotation_label_reference",
+        """ALTER TABLE w3_material_gt.annotation_label_reference_v2
+            RENAME TO annotation_label_reference""",
+        """CREATE TABLE w3_material_gt.negative_pool_link_v2 (
+            project_id TEXT NOT NULL, material_id TEXT NOT NULL, category_id TEXT NOT NULL,
+            PRIMARY KEY (project_id, material_id, category_id),
+            FOREIGN KEY (project_id, material_id)
+                REFERENCES w3_material_gt.negative_pool_member(project_id, material_id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (project_id, category_id)
+                REFERENCES w3_material_gt.negative_pool_category(project_id, id)
+                ON DELETE CASCADE)""",
+        """INSERT INTO w3_material_gt.negative_pool_link_v2
+            (project_id, material_id, category_id)
+           SELECT project_id, material_id, category_id
+             FROM w3_material_gt.negative_pool_link""",
+        "DROP TABLE w3_material_gt.negative_pool_link",
+        """ALTER TABLE w3_material_gt.negative_pool_link_v2 RENAME TO negative_pool_link""",
         _SCHEMA_V2,
     ),
     # v2 -> v3: the category uniqueness fold becomes locale independent (ASCII
-    # only, matching SQLite COLLATE NOCASE). Only the index changes.
+    # only, matching SQLite COLLATE NOCASE) and the legacy retention table exists
+    # for databases created directly at v2. Only the index is rebuilt.
     3: (
+        """CREATE TABLE IF NOT EXISTS w3_material_gt.annotation_label_reference_legacy (
+            project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
+            source_kind TEXT NOT NULL,
+            PRIMARY KEY (project_id, image_id, label_code, source_kind))""",
         "DROP INDEX IF EXISTS w3_material_gt.uq_negative_pool_category_name",
         """CREATE UNIQUE INDEX IF NOT EXISTS uq_negative_pool_category_name
     ON w3_material_gt.negative_pool_category(project_id, lower(name COLLATE "C"))""",
@@ -846,9 +898,36 @@ def ensure_schema(connection) -> dict[str, Any]:
                     [SCHEMA_VERSION] if version == 0
                     else list(range(version + 1, SCHEMA_VERSION + 1))
                 )
-                for statement in statements:
-                    for part in [piece for piece in statement.split(";") if piece.strip()]:
-                        cursor.execute(part)
+                import psycopg
+
+                try:
+                    for statement in statements:
+                        for part in [piece for piece in statement.split(";") if piece.strip()]:
+                            cursor.execute(part)
+                except psycopg.errors.UniqueViolation as error:
+                    raise U3MigrationError(
+                        "U3_UPGRADE_REFERENCE_CONFLICT",
+                        "a v1 reference key has several source kinds and cannot be mapped",
+                        detail=str(error),
+                    ) from error
+                except psycopg.errors.ForeignKeyViolation as error:
+                    raise U3MigrationError(
+                        "U3_UPGRADE_LINK_ORPHAN",
+                        "a v1 pool link references a missing member or category",
+                        detail=str(error),
+                    ) from error
+                if version == 1:
+                    cursor.execute(
+                        f"SELECT (SELECT count(*) FROM {SCHEMA_NAME}.annotation_label_reference_legacy) "
+                        f"AS legacy, (SELECT count(*) FROM {SCHEMA_NAME}.annotation_label_reference) AS typed"
+                    )
+                    migrated = cursor.fetchone()
+                    if int(migrated["legacy"]) != int(migrated["typed"]):
+                        raise U3MigrationError(
+                            "U3_UPGRADE_REFERENCE_LOSS",
+                            "the reference upgrade lost rows",
+                            detail=f"legacy={migrated['legacy']} typed={migrated['typed']}",
+                        )
                 for applied in applied_versions:
                     if applied == 0:
                         continue
