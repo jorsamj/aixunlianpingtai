@@ -7,6 +7,13 @@
 | 已完成代码 | U2 完整性（SIGKILL/回滚/删除证据） | 真实子进程终止三窗口；反向回滚含切后 create/update/delete；删除需完整跨域证据（收集器仅实现素材侧） |
 | 已完成代码 | 素材热点（C） | v12/v20/v44/video 改为 id 快照 + 500 批 GT/素材读取；合成 1201 行 v12 GT 快照 4271ms→15ms |
 | 已完成代码 | 转换 BMODEL 门禁（D） | BMODEL 交付要求 ONNX↔BMODEL 数值/检测均 consistent，否则 `BMODEL_EVIDENCE_NOT_ELIGIBLE`；L0–L5 矩阵文档 |
+| 已完成代码 | U3 影子迁移（核心） | `u3_shadow.py`：materials/GT/负样本池 Schema + 确定性快照 + 单事务幂等导入 + 对账 + CLI；真实 PG 3 项合同 |
+| 已完成代码 | U2 身份链 | finish/abort 全身份核验 + 条件化 UPDATE；删除证据绑定 scope/source/config/operation |
+| 已完成代码 | 素材缓存 | materialize 冷启动单次哈希；取消/中断不再遗留 .part 临时文件 |
+| 已完成代码 | Vue 原生 | 质量中心智能审计面板（真实 v62 接口）；深链带返回路径；`view=iteration`、`?back=` 生效 |
+| 未开发 | 转换（本轮） | 仅完成门禁调用者审计，未改代码；类别身份/硬件合同未实现 |
+| 未开发 | U5 前置 | 未实施 Provider 可观测/readiness 诊断 |
+| 未开发 | U3 ATTACH 替代 | 未实现 Picker 的 PG 等价读合同 |
 | 设计完成 | U5 ADR / U3 清单（F/B1） | 十问答案 + Owner 图 + 状态机 + 事务边界 + 迁移/回滚 + 测试矩阵；U3 逐表清单与三个 ATTACH 合同 |
 | 未开发 | U3 影子迁移工具（B2/B3） | 仅有清单与设计；未实现导出/导入/对账代码 |
 | 未开发 | Vue 业务补齐（E） | 本轮未开工；等待与后端接口能力一起排期 |
@@ -31,6 +38,19 @@
 | 真实环境待验证 | 20 万素材、2 万批选、NAS/OSS | 需生产级隔离环境，未执行 |
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
+
+## 第二批多工作流：U2 身份链、U3 影子迁移、缓存与 Vue（2026-11-27，本批）
+
+- 起始 `6a3d7463d1946cee7e74ee1b97e5cfdf383ec631`（31/31 CI SUCCESS）。VERSION 42.24.592 未改；未启用 PostgreSQL 生产 Provider、未迁移真实数据、未操作 NAS/OSS/S3、未连接 4070/A800。提交：`68faa189`（U2 身份链）、`2ae5f3ea`（缓存）、`397e1d7d`（Vue），U3 与本文档为后续提交。
+- U2 身份链：`finish_cutover` 不再只凭目标摘要恢复——marker 的 scope/operation_id/direction/previous_admission_id/generation、durable 行、准入记录形成可验证链；rollback 恢复必须同时满足"marker 属于该 durable 操作"且"本地记录是该操作的前驱或已发布结果"，否则 `STORAGE_SOURCE_CUTOVER_STATE_UNKNOWN`。所有 durable `UPDATE` 都带 `scope+admission_id+generation+phase` 条件并校验 rowcount；`abort` 按相位判定（已发布 forward 需 rollback；冻结 rollback 需连接恢复 `POSTGRES_ACTIVE`；未发布尝试直接释放 marker）。真实 PG 合同 22 项（新增错误 operation_id / 错误 scope / 错误前驱 / 错误 generation / 方向不符 / 重复 finish、abort / `SQLite→PG→SQLite→PG` 第二轮正向中断恢复）。
+- U2 删除证据身份：证据新增 `scope/source_id/config_digest/operation_id`，Provider 逐项比对当前行（含配置摘要），跨 scope/跨源证据一律 `EVIDENCE_STALE`；收集器拒绝空/不可证明的项目集合与不存在的项目目录。产物引用 Owner 与 NAS/OSS/S3 退役探测仍未实现 → 生产删除继续阻断。
+- U3（本轮主交付，`platform_core/u3_shadow.py` + `u3_shadow_cli.py`）：PostgreSQL schema `w3_material_gt`（material / material_label / material_annotation_scope / annotation / annotation_label_reference / negative_pool_* / store_revision，负样本成员对 material 为真实 `ON DELETE CASCADE`）；导出在**单个 SQLite 读事务**内按键集分页（复合键，页 ≤500），保留 NULL/''/0/false、JSON 原样、GT version 与 content_digest、素材与负池 revision 高水位；导入在**一个 PostgreSQL 事务**内 upsert（重放不改变任何行），失败整体回滚；对账比较表计数、ID 集合、逐表摘要、revision 高水位，并交叉检查（负池成员必须有素材、算法成员必须在池内；GT 无素材只报告不阻断，符合既有历史状态）。CLI：`status/export/import/report`。真实 PG 合同 3 项：确定性导出、导入+对账+重放、源变更检测、FK 级联、完整性失败整批回滚。**未实现** Picker 的 PG 等价读合同（ATTACH 替代）。
+- 素材缓存：`MaterialCache.materialize` 冷启动只做一次内容哈希（原子 rename 后只校验长度），取消/中断（`BaseException`）不再遗留 `.part-*.tmp`；新增 3 项单测。训练准备重复 materialize/Bundle 经审计未发现，`training_workspace_lifecycle` 未改，RKNN 校准快照与 v20 无 dataset 全表写保留（会改变选择/摘要或缺少原子仓库 API）。
+- Vue：质量中心新增"智能审计"面板，复用 `platform_core/smart_material_audit` 的真实 v62 接口（status/estimate/create/findings/review/retry，服务端分页 25，`request_id` 持久回执，无伪造进度）；问题行链接人工标注（`?back=`）与素材详情；训练行链接 FP/FN 真实样本子页与困难样本迭代面板；`NativeEvaluation` 支持 `?view=iteration`，`FormalAnnotations` 支持 `?back=`。`vue-tsc --noEmit` 0 错误，四个改动/新增 SFC 全部通过 `@vue/compiler-sfc` 编译；仅导航，不移动样本、不把 Test 样本送入训练。
+- 未完成：转换（只完成"门禁唯一执行路径 `model_artifacts.delivery_artifact_quality_preflight` 及其调用者"审计，未改代码；类别顺序 G1 与硬件证据合同仍未实现）；U5 前置（Provider 可观测/readiness 诊断）未实施；U3 ATTACH 替代未实施；母模型管理（E1）未实施；批量暂停/恢复/停止确认**无**服务端批量 API，未做前端假批量。
+- 验证：定向 46 项（U2 PG 22 + U2 unit 18 + U3 PG 3 + 缓存 3）；`vue-tsc` 0 错误 + 4 SFC 编译通过；`py_compile`、`git diff --check` 通过。未跑全仓 pytest/Playwright/完整构建/20 万压力测试。
+- CI：`storage-cache-governance.yml` 的 PostgreSQL Job 增加 U3 合同步骤（JUnit 守卫 ≥3、0 skip、0 failure），paths 增加 `platform_core/u3_*.py` 与该测试文件。
+- 真实环境待验证：20 万素材、2 万批选、缓存冷热与磁盘回收、NAS/OSS/S3、BM 系列/RKNN/昇腾实机、U2 生产切换与回滚演练、U3 真实项目数据对账。
 
 ## 多工作流批次：U2 完整性、素材热点、转换门禁、U3/U5 设计（2026-11-26/27，当前）
 
