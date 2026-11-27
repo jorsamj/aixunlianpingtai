@@ -1,5 +1,18 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P2 审计整改（667635b0）**：保留 P2 架构，仅做定向修复：
+> ① 显式 `BusinessReadProvider.read_session()` 统一候选流/GT/回执/快照，deferred 提前退出仍执行
+> 最终校验；② 新增 Task 状态证据摘要与逐 Task 前后比较，usage revision 不再是唯一依据；
+> ③ Task Owner 恢复为中央 `<DATA_DIR>/task_runtime/tasks.sqlite3`，禁止项目级第二任务库；
+> ④ 正式选择恢复原历史/Test 排除，浏览模式才展示 used/test_reserved，`include_history` 语义不变；
+> ⑤ 移除 partial-scope 无回执升正样本，回执校验外层字段+重算身份+当前 GT/素材，真实回执链路用
+> 原 `confirm_task_negatives` 隔离验证；⑥ 移除普通扫描 50k 上限，cursor+exact 显式拒绝，冻结等价
+> 对照原 `training_selection_reference` 的 ID/数量/摘要/手工排除。
+> 定向：真实 PostgreSQL 16 + SQLite **55 passed / 0 skipped**（P1 41 + P2 14）；CI 三阶段门禁不变。
+> 未切换生产、未改 VERSION 42.24.592、未启动 P3-B/P4/P5。
+> 合同见 [P2 业务读取](U3_PICKER_P2_BUSINESS_READ_CONTRACT.md)、
+> [P3-A 准备](U3_PICKER_P3_INCREMENTAL_SYNC_PREPARATION.md)。
+
 > **2026-11-28 / U3-P2 业务读取合同 + P3-A 前置准备（8650e203）**：新增
 > `platform_core/training_material_business_read.py`，在 P1 Read Provider 之上组合 SQLite 权威
 > 训练历史（`TrainingMaterialUsage.query_filter`）、样本角色（`training_material_role`）、
