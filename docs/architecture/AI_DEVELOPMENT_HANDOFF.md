@@ -1,5 +1,13 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P2 第三轮收口（952d559e）**：历史一致性改为 usage revision + 活跃 Task
+> 身份摘要（`(task_id,status)` 有界查询），不再用按状态计数、不累积候选事实、不逐素材查 Task；
+> `iter_candidates` 消费业务 cursor；浏览模式保留权威回执角色；`verify_owner=False` 仅诊断；
+> SQLite 回执同事务结构认证；`compare_candidate_sets` 证明两端共享 owner 版本/usage/Task 证据。
+> 定向 **19 passed / 0 skipped**（P2），P1 41 项未改未重跑。P3-A 文档补齐不可变事件与 READY
+> 原子发布边界。未切换生产、未改 VERSION、未启动 P3-B/P4/P5。
+> 合同见 [P2 业务读取](U3_PICKER_P2_BUSINESS_READ_CONTRACT.md)。
+
 > **2026-11-28 / U3-P2 审计整改（667635b0）**：保留 P2 架构，仅做定向修复：
 > ① 显式 `BusinessReadProvider.read_session()` 统一候选流/GT/回执/快照，deferred 提前退出仍执行
 > 最终校验；② 新增 Task 状态证据摘要与逐 Task 前后比较，usage revision 不再是唯一依据；
