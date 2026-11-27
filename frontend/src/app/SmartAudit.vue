@@ -82,6 +82,17 @@ function remember(packet:typeof pending.value){
   pending.value=packet;
   try{packet?sessionStorage.setItem(requestScope,JSON.stringify(packet)):sessionStorage.removeItem(requestScope)}catch{/* storage is advisory */}
 }
+// One write at a time, and the local lock is always released: every write goes
+// through this wrapper so a failure, an abort or an unknown result cannot leave
+// the page permanently busy. `after` runs only on success, after the lock is
+// free, which is what lets the review refresh the candidate page.
+function writeOnce<T>(busy:string,key:string,read:(signal:AbortSignal)=>Promise<T>,apply:(value:T)=>void,after?:()=>void){
+  if(writeBusy.value)return Promise.resolve();
+  writeBusy.value=busy;
+  let applied=false;
+  return reads.run(key,read,value=>{apply(value);applied=true})
+    .finally(()=>{writeBusy.value='';if(applied&&after)after()});
+}
 function createAudit(){
   const current=estimate.value;
   if(!current?.selection_spec||writeBusy.value)return;
@@ -90,8 +101,8 @@ function createAudit(){
     selection_spec:current.selection_spec,
     options:{...(model.value?{algorithm_id:model.value.split(':')[0],version_id:model.value.split(':')[1]}:{})}};
   remember(packet);
-  writeBusy.value='create';createError.value='';notice.value='';
-  void reads.run('create',signal=>request<AuditTask>(base,{method:'POST',signal,body:JSON.stringify(packet)}),value=>{
+  createError.value='';notice.value='';
+  void writeOnce('create','create',signal=>request<AuditTask>(base,{method:'POST',signal,body:JSON.stringify(packet)}),value=>{
     const id=String(value.id||'');
     if(value.project_id!==projectId||value.operation!=='SMART_AUDIT'||!/^smart_[a-f0-9]{32}$/.test(id))
       throw new Error('分析任务回执身份不完整');
@@ -137,14 +148,13 @@ function review(verdict:'confirmed_issue'|'no_issue'|'unknown'|'corrected'){
   const current=task.value,item=selected.value;
   if(!current||!item||writeBusy.value)return;
   if(!window.confirm(`记录人工复核结论「${verdictNames[verdict]}」？本操作只保存复核回执，不改写正式标注。`))return;
-  writeBusy.value='review';error.value='';notice.value='';
-  void reads.run('review',signal=>request<Finding>(
+  error.value='';notice.value='';
+  void writeOnce('review','review',signal=>request<Finding>(
     `${base}/${encodeURIComponent(current.id)}/findings/${encodeURIComponent(item.issue_id)}/review`,
     {method:'POST',signal,body:JSON.stringify({verdict,expected_generation:current.attempt??0,
       expected_review_token:item.review_token,note:note.value.slice(0,1000)})}),value=>{
     selected.value=value;notice.value='复核回执已记录；正式 GT 只在原标注入口保存。';note.value='';
-    void loadFindings();
-  });
+  },()=>{void loadFindings()});
 }
 const note=ref('');
 function loadModels(cursor=''){
@@ -159,8 +169,8 @@ function cancelTask(){
   const current=task.value;
   if(!current||writeBusy.value)return;
   if(!window.confirm('请求取消该只读智能分析任务？'))return;
-  writeBusy.value='cancel';error.value='';notice.value='';
-  void reads.run('cancel',signal=>manageMaterialBatch(projectId,current.id,'cancel',signal),value=>{
+  error.value='';notice.value='';
+  void writeOnce('cancel','cancel',signal=>manageMaterialBatch(projectId,current.id,'cancel',signal),value=>{
     if(value.id!==current.id)throw new Error('取消回执与当前任务不一致');
     task.value=value as AuditTask;notice.value='取消请求已受理，最终状态以服务端任务记录为准。';
   });
@@ -169,8 +179,8 @@ function retryTask(){
   const current=task.value;
   if(!current||writeBusy.value)return;
   if(!window.confirm('按原范围重试该只读智能分析任务？'))return;
-  writeBusy.value='retry';error.value='';notice.value='';
-  void reads.run('retry',signal=>request<AuditTask>(`${base}/${encodeURIComponent(current.id)}/retry`,{method:'POST',signal}),value=>{
+  error.value='';notice.value='';
+  void writeOnce('retry','retry',signal=>request<AuditTask>(`${base}/${encodeURIComponent(current.id)}/retry`,{method:'POST',signal}),value=>{
     if(value.id!==current.id)throw new Error('重试回执与当前任务不一致');
     task.value=value;notice.value='已按原任务身份重试；历史结果不会冒充本次结果。';
   });
@@ -200,7 +210,7 @@ loadStatus();
   <el-alert v-if="reads.errors.estimate" :title="reads.errors.estimate" type="warning" :closable="false"/>
   <p v-if="estimate" class="audit-note">本次范围 {{estimate.count??0}} 张（服务端上限 {{estimate.max_images??'未提供'}}）。分析范围由服务端按当前素材修订冻结。</p>
   <el-alert v-if="reads.errors.create||createError" :title="reads.errors.create||createError" type="error" :closable="false"/>
-  <el-alert v-if="error" :title="error" type="error" :closable="false"/>
+  <el-alert v-if="error||reads.errors.cancel||reads.errors.retry" :title="error||reads.errors.cancel||reads.errors.retry" type="error" :closable="false"/>
   <p v-if="notice" role="status" class="audit-note">{{notice}}</p>
 
   <section class="audit-panel">
