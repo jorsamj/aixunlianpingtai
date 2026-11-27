@@ -48,6 +48,17 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第六批：U5 readiness fail-closed、U3 Schema v3 与证据读取区分（2026-11-27，本批）
+
+- 起始 `cbf0bfb188705dea9375e3a7ef415598ee45718c`（25/25 CI 通过）。VERSION 42.24.592 未改。
+- P0-1 readiness fail-closed：删除 `_scalar()`/`_columns()` 把 `sqlite3.Error` 变成 0/空集合的兜底；任何 SQLite 查询或 PRAGMA 异常都向外传播并包装为 `TaskStoreReadinessError`。`tasks`、`worker_instances`、`gpu_reservations` 现在都是**必要表**（分别来自基础任务 Schema 与 `ensure_gpu_runtime_schema`），缺失或关键字段缺失返回结构阻断（`<table>_table_missing` / `<table>_incomplete:...`）并 `ready_for_cutover=false`；未知状态不再可能被报告为可切换。
+- Worker 注册合同（只读核实）：`TaskRepository.claim_next(worker_id, ...)` 只接受一个 `worker_id` 字符串，**不要求** `worker_instances` 中存在对应实例；因此"数据库里没有活动实例"不能证明所有 Worker 已停止。readiness 新增 `external_stop_proof` 入参（需 `{workers_stopped: true, evidence: <非空>}`），未提供即阻断 `external_worker_stop_proof_required`，并把切换前置条件明确为"外部服务停止/节点排空证明 + 无活动/未知租约 + 无未证明停止 + 无 GPU 预留"。
+- P0-2 Schema v3：`SCHEMA_VERSION=3`。v1/v2 的 DDL 现为**真实历史字面量**并各自保留 checksum：v1 取自 `9628234e`（3326 字符，`20eadb1b13ca…`）、v2 取自 `c6a94215`（4212 字符，`20f294c74be4…`）、v3 为当前含 `lower(name COLLATE "C")` 的唯一索引（4526 字符，`f7d563f684b3…`）。新增显式 v2→v3 迁移（仅重建唯一索引），v1→v3 按 v1→v2→v3 路径执行；每个已执行版本都以**自身** checksum 写入迁移行，历史行按各自版本校验（不再动态用当前 DDL 覆盖）。删除历史迁移行规避校验仍会被缺版本/校验失败拒绝。
+- P1-3 证据表读取异常：`_sqlite_columns()` 不再把 `sqlite3.Error` 当作空集合；表不存在仍由空列集合表示（PRAGMA 对缺失表不报错），元数据读取异常则经外层包装为 `U3_OWNER_UNREADABLE` 失败关闭，不会被误判为"表不存在→保留证据"。十张证据表的主键身份、摘要、重放与项目隔离合同未改。
+- 定向验证：`tests/integration/test_u3_material_gt_postgres.py` 10 项（含元数据异常 fail-closed）、`tests/integration/test_u3_schema_upgrade_postgres.py` 3 项（真实 v1→v3、真实 v2→v3、篡改 v1/v2/v3 与更高版本拒绝，升级后素材/标签/GT/负样本关联完整、索引为 C collation、ASCII 冲突拒绝而非 ASCII 不折叠）、`tests/unit/test_task_store_readiness.py` 12 项（含 tasks 查询失败、worker/gpu 表缺失与字段缺失、PRAGMA 异常、stop proof 缺失/存在）= **25 passed**。未跑全仓 pytest / Playwright。
+- 未完成（不在本轮范围）：U3 Picker PostgreSQL 等价读、模型转换 G1、Vue 母模型管理；真实环境验收均未执行。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改。
+
 ## 第五批：第四批交付的五项定向核验与最小修复（2026-11-27，本批）
 
 - 起始 `c6a942159fcb72f828a7385f2c5e0cf448270911`（CI_PASS）。VERSION 42.24.592 未改。本轮先只读核验，再只修真实缺陷。
