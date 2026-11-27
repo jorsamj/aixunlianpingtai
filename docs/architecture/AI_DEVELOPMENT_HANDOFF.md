@@ -48,6 +48,15 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第八批：v1 升级后 source_kind 合同修复（2026-11-27，本批）
+
+- 起始 `e078b451876c1b01ca1d6d87b02731a0d1ce2dfd`。VERSION 42.24.592 未改。
+- 根因：v1→v2 的临时表 `annotation_label_reference_v2` 漏了 `source_kind`，而 `_SCHEMA_V2`、`REQUIRED_COLUMNS`、`import_project_snapshot`、`read_target_snapshot` 都要求该字段；`CREATE TABLE IF NOT EXISTS` 无法修补已存在但缺列的表，于是升级后正式表无法导入/读取（测试只查行数，未走真实读写 SQL）。
+- 修复：临时表增加 `source_kind TEXT NOT NULL`，从 `annotation_label_reference_legacy` 原样复制；`source_kind` 不进入主键、不参与冲突去重，仍保留为正式业务字段；多 source_kind 冲突检测与 `U3_UPGRADE_REFERENCE_CONFLICT` 不变。迁移后新增 `information_schema.columns` 实际列校验（缺任一 REQUIRED_COLUMNS 即 `U3_UPGRADE_REFERENCE_SCHEMA_INVALID` 并回滚），不再依赖 DDL 的 IF NOT EXISTS。
+- P1 legacy JSON 语义：v1 的 `box_count/scope_ref=0` 与 `COALESCE(annotation_state,'unannotated')` 只能作为过渡默认值，不能声称等于 SQLite 真值。现升级后写入 `store_revision(project_id,'legacy_reference_pending_import')` 标记，`read_target_snapshot` 暴露 `legacy_reference_pending_import`，`reconcile` 将其列为阻断（目标未完成）；只有 authoritative 全量导入（`mode="full"`，来自 SQLite 导出，含 `_reference_rows()` 计算的正式/legacy JSON 投影）才清除标记并返回 `legacy_pending_cleared=1`。未新增第二套 legacy JSON 解析或迁移机制。
+- 验证：`test_u3_schema_upgrade_postgres.py` 6 项（真实 v1→v3 后 source_kind 列与值一致、升级后 `read_target_snapshot`/`import_project_snapshot` 走真实业务 SQL、导入前后 box_count/scope_ref/state/source_kind 一致、全量导入清除 pending 标记、重复 ensure_schema 幂等、原有冲突/悬空/双外键/级联/篡改/更高版本保留）；`test_u3_material_gt_postgres.py` 11 项（新增 legacy JSON 投影测试：正式 GT 优先、legacy JSON 有 boxes 计算 3/1、无 boxes 不伪造行；导入后逐字段一致且 reconcile same）。共 **17 passed**（真实 PostgreSQL，无跳过）。v1/v2/v3 checksum 未变。
+- 未完成（不在本轮范围）：U3 Picker PostgreSQL 等价读、U5 实际迁移、Vue、模型转换；U5 仍 DESIGN_ONLY / NOT_IMPLEMENTED / NOT_VERIFIED。
+
 ## 第七批：v1→v2 数据保真迁移与 stop_proof 可信性（2026-11-27，本批）
 
 - 起始 `933dfe8d34ba691736914bfa9fc050738c784c23`。VERSION 42.24.592 未改。
