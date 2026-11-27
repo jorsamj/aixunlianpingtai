@@ -844,7 +844,7 @@ def test_pending_import_refuses_snapshot_missing_an_evidence_table(pg, tmp_path)
         with pytest.raises(U3MigrationError) as unknown_refused:
             import_project_snapshot(connection, unknown, mode="full")
         assert unknown_refused.value.code == "U3_PENDING_IMPORT_INCOMPLETE"
-        assert "evidence_unknown" in unknown_refused.value.detail
+        assert "unknown_counts" in unknown_refused.value.detail
 
         cleared = import_project_snapshot(connection, snapshot, mode="full")
         assert cleared["legacy_pending_cleared"] == 1
@@ -979,3 +979,62 @@ def test_pending_import_rejects_invalid_evidence_state_shapes(pg, tmp_path):
             assert after["legacy_reference_pending_import"] is True, name
 
         assert import_project_snapshot(connection, snapshot, mode="full")["legacy_pending_cleared"] == 1
+
+def test_evidence_namespace_is_enforced_for_every_import_mode(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="p14")
+    _seed_evidence(project)
+    snapshot = export_project_snapshot(project, "p14")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+
+        def with_unknown_store(evidence):
+            damaged = copy.deepcopy(snapshot)
+            damaged["stores"]["other"] = {"evidence": evidence}
+            return _recompute_content_digest(damaged)
+
+        def with_non_dict_store():
+            damaged = copy.deepcopy(snapshot)
+            damaged["stores"]["other"] = []
+            return _recompute_content_digest(damaged)
+
+        cases = (
+            ("unknown_store_data", with_unknown_store({"unknown_table": []})),
+            ("unknown_store_empty_evidence", with_unknown_store({})),
+            ("non_dict_store", with_non_dict_store()),
+        )
+
+        # Pending project: every mode is refused before anything is written.
+        _pending_marker(connection, "p14")
+        baseline = read_target_snapshot(connection, "p14")
+        for mode in ("full", "incremental"):
+            for name, candidate in cases:
+                with pytest.raises(U3MigrationError) as refused:
+                    import_project_snapshot(connection, candidate, mode=mode)
+                assert refused.value.code == "U3_PENDING_IMPORT_INCOMPLETE", (mode, name)
+                after = read_target_snapshot(connection, "p14")
+                assert after["stores"] == baseline["stores"], (mode, name)
+                assert after["table_state"] == baseline["table_state"], (mode, name)
+                assert after["revisions"] == baseline["revisions"], (mode, name)
+                assert after["legacy_reference_pending_import"] is True, (mode, name)
+
+        # Non-pending project: a stable evidence-namespace code is used.
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"DELETE FROM {SCHEMA_NAME}.store_revision "
+                    "WHERE project_id='p14' AND store='legacy_reference_pending_import'"
+                )
+        baseline = read_target_snapshot(connection, "p14")
+        for mode in ("full", "incremental"):
+            for name, candidate in cases:
+                with pytest.raises(U3MigrationError) as refused:
+                    import_project_snapshot(connection, candidate, mode=mode)
+                assert refused.value.code == "U3_EVIDENCE_NAMESPACE_INVALID", (mode, name)
+                after = read_target_snapshot(connection, "p14")
+                assert after["stores"] == baseline["stores"], (mode, name)
+                assert after["table_state"] == baseline["table_state"], (mode, name)
+                assert after["revisions"] == baseline["revisions"], (mode, name)
+
+        # The legal snapshot is still accepted in both modes.
+        assert import_project_snapshot(connection, snapshot, mode="incremental")["evidence"] >= 10
+        assert reconcile(snapshot, read_target_snapshot(connection, "p14"))["same"] is True

@@ -1110,6 +1110,45 @@ def _delete_absent(cursor, schema: str, table: str, project_id: str,
                    (project_id,))
 
 
+def evidence_namespace_error(snapshot: Mapping[str, Any]) -> str | None:
+    """Reject any evidence structure outside the ten historical tables.
+
+    Used by both the import boundary (all modes, all projects) and the pending
+    completeness gate, so unknown evidence can never reach ``evidence_row``.
+    """
+    stores = snapshot.get("stores") or {}
+    counts = snapshot.get("counts") or {}
+    digests = snapshot.get("digests") or {}
+    allowed = {
+        f"{store}.evidence.{table}"
+        for store, tables in EVIDENCE_TABLES.items()
+        for table in tables
+    }
+    for source_name, source in (("counts", counts), ("digests", digests)):
+        stray = [
+            name for name in (source or {})
+            if ".evidence." in str(name) and name not in allowed
+        ]
+        if stray:
+            return f"unknown_{source_name}:{','.join(sorted(stray))}"
+    for store, payload in stores.items():
+        if not isinstance(payload, dict):
+            return f"store_payload:{store}"
+        if "evidence" not in payload:
+            continue
+        evidence = payload.get("evidence")
+        if store not in EVIDENCE_TABLES:
+            return f"unknown_store:{store}"
+        if not isinstance(evidence, dict):
+            return f"evidence_shape:{store}"
+        for table, rows in evidence.items():
+            if table not in EVIDENCE_TABLES[store]:
+                return f"unknown_table:{store}.{table}"
+            if not isinstance(rows, list):
+                return f"evidence_table_type:{store}.{table}"
+    return None
+
+
 def pending_clear_eligible(snapshot: Mapping[str, Any], project_id: str) -> tuple[bool, str]:
     """Only a provably complete, self-consistent export may clear the marker.
 
@@ -1146,31 +1185,9 @@ def pending_clear_eligible(snapshot: Mapping[str, Any], project_id: str) -> tupl
                 return False, f"count:{key}"
             if (digests or {}).get(key) != _digest(rows):
                 return False, f"digest:{key}"
-    allowed_evidence = {
-        f"{store}.evidence.{table}"
-        for store, tables in EVIDENCE_TABLES.items()
-        for table in tables
-    }
-    # Global namespace check: nothing outside the ten historical evidence tables
-    # may appear in counts/digests, and no unknown store may carry evidence data.
-    for source_name, source in (("counts", counts), ("digests", digests)):
-        stray = [
-            name for name in (source or {})
-            if ".evidence." in str(name) and name not in allowed_evidence
-        ]
-        if stray:
-            return False, f"evidence_unknown_{source_name}:{','.join(sorted(stray))}"
-    for store, payload in stores.items():
-        if not isinstance(payload, dict):
-            continue
-        evidence = payload.get("evidence")
-        if not evidence:
-            continue
-        if store not in EVIDENCE_TABLES:
-            return False, f"evidence_unknown_store:{store}"
-        unknown = [name for name in evidence if name not in EVIDENCE_TABLES[store]]
-        if unknown:
-            return False, f"evidence_unknown:{store}.{','.join(sorted(unknown))}"
+    namespace_error = evidence_namespace_error(snapshot)
+    if namespace_error:
+        return False, f"evidence_namespace:{namespace_error}"
     for store, tables in EVIDENCE_TABLES.items():
         evidence = (stores.get(store) or {}).get("evidence") or {}
         for table in tables:
@@ -1246,14 +1263,26 @@ def import_project_snapshot(
     with connection.transaction():
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"u3_import:{project_id}",))
-            if mode == "full":
-                cursor.execute(
-                    f"SELECT 1 AS pending FROM {SCHEMA_NAME}.store_revision "
-                    "WHERE project_id=%s AND store=%s",
-                    (project_id, LEGACY_REFERENCE_PENDING_STORE),
+            cursor.execute(
+                f"SELECT 1 AS pending FROM {SCHEMA_NAME}.store_revision "
+                "WHERE project_id=%s AND store=%s",
+                (project_id, LEGACY_REFERENCE_PENDING_STORE),
+            )
+            project_pending = cursor.fetchone() is not None
+            namespace_error = evidence_namespace_error(snapshot)
+            if namespace_error:
+                code = (
+                    "U3_PENDING_IMPORT_INCOMPLETE"
+                    if project_pending
+                    else "U3_EVIDENCE_NAMESPACE_INVALID"
                 )
-                pending = cursor.fetchone() is not None
-                if pending:
+                raise U3MigrationError(
+                    code,
+                    "the snapshot carries evidence outside the historical tables",
+                    detail=f"reason={namespace_error}",
+                )
+            if mode == "full":
+                if project_pending:
                     eligible, reason = pending_clear_eligible(snapshot, project_id)
                     if not eligible:
                         # No DELETE/INSERT/UPDATE has run yet, so the transaction
