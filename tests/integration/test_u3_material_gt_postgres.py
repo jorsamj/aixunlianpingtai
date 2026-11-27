@@ -24,6 +24,7 @@ def _require_or_skip(module_name: str, reason: str):
 psycopg = _require_or_skip("psycopg", "psycopg 3 is required for PostgreSQL contracts")
 _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 
+from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.u3_shadow import (
     SCHEMA_NAME,
@@ -708,23 +709,13 @@ def test_evidence_metadata_error_fails_closed_instead_of_retaining(tmp_path, mon
     # Nothing was produced, so no snapshot can later be treated as retained.
     assert not (project / "u3-snapshot.json").exists()
 
-def test_legacy_json_projection_survives_import_without_reconstruction(pg, tmp_path):
-    """The reference projection is authoritative; the upgrade never invents it.
-
-    Mirrors AnnotationRepository semantics: a formal annotation wins, a legacy
-    JSON file is read only when no formal row exists, box_count is the number of
-    boxes for the label and scope_ref says whether the label is in scope.
-    """
+def test_legacy_json_projection_comes_from_the_annotation_owner(pg, tmp_path):
+    """The projection is produced by AnnotationRepository, not asserted by hand."""
     project = _fixture(tmp_path, project_id="p9")
-    annotations = project / "annotations"
-    annotations.mkdir(parents=True, exist_ok=True)
-    # m1: formal annotation wins over its (stale) legacy JSON.
-    (annotations / "m1.json").write_text(
-        json.dumps({"boxes": [{"label": "smoke"}], "annotation_state": "annotated"}),
-        encoding="utf-8",
-    )
-    # m2: legacy JSON with boxes and no explicit scope.
-    (annotations / "m2.json").write_text(
+    repository = AnnotationRepository(project)
+    legacy = project / "annotations"
+    legacy.mkdir(parents=True, exist_ok=True)
+    (legacy / "m2.json").write_text(
         json.dumps({
             "boxes": [{"label": "fire"}, {"label": "fire"}, {"label": "fire"},
                       {"label": "smoke"}],
@@ -732,18 +723,10 @@ def test_legacy_json_projection_survives_import_without_reconstruction(pg, tmp_p
         }),
         encoding="utf-8",
     )
-    # m3: legacy JSON without boxes.
-    (annotations / "m3.json").write_text(json.dumps({}), encoding="utf-8")
-    with sqlite3.connect(project / "annotations.sqlite3") as database:
-        database.execute("DELETE FROM annotation_label_references")
-        database.executemany(
-            "INSERT INTO annotation_label_references VALUES (?,?,?,?,?,?)",
-            [
-                ("m1", "fire", 2, 1, "annotated", "sqlite"),
-                ("m2", "fire", 3, 1, "annotated", "legacy"),
-                ("m2", "smoke", 1, 1, "annotated", "legacy"),
-            ],
-        )
+    (legacy / "m3.json").write_text(json.dumps({}), encoding="utf-8")
+    rebuilt = repository.rebuild_reference_index()
+    assert rebuilt["legacy_records"] == 2
+
     snapshot = export_project_snapshot(project, "p9")
     exported = {
         (row["image_id"], row["label_code"]): (
@@ -751,13 +734,13 @@ def test_legacy_json_projection_survives_import_without_reconstruction(pg, tmp_p
         )
         for row in snapshot["stores"]["annotations"]["annotation_label_references"]
     }
-    assert exported == {
-        ("m1", "fire"): (2, 1, "annotated", "sqlite"),
-        ("m2", "fire"): (3, 1, "annotated", "legacy"),
-        ("m2", "smoke"): (1, 1, "annotated", "legacy"),
-    }
-    # Nothing is fabricated for the images without boxes (m3 stays absent).
+    # m1 has a formal annotation (SQLite wins); m2 is legacy JSON with boxes and no
+    # explicit scope (owner derives scope from the boxed labels); m3 has no boxes.
+    assert exported[("m1", "fire")] == (1, 1, "annotated", "sqlite")
+    assert exported[("m2", "fire")] == (3, 1, "annotated", "legacy")
+    assert exported[("m2", "smoke")] == (1, 1, "annotated", "legacy")
     assert not any(image == "m3" for image, _ in exported)
+    assert all(value[1] in (0, 1) for value in exported.values())
 
     with psycopg.connect(pg.get_uri()) as connection:
         import_project_snapshot(connection, snapshot)
@@ -772,3 +755,30 @@ def test_legacy_json_projection_survives_import_without_reconstruction(pg, tmp_p
         assert stored == exported
         assert target["legacy_reference_pending_import"] is False
         assert reconcile(snapshot, target)["same"] is True
+
+        # A v1-upgraded project is explicitly incomplete until a complete export
+        # arrives: reconcile refuses it and an incomplete full import keeps it.
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.store_revision(project_id,store,revision) "
+                    "VALUES ('p9','legacy_reference_pending_import',0) "
+                    "ON CONFLICT (project_id,store) DO NOTHING"
+                )
+        pending = read_target_snapshot(connection, "p9")
+        assert pending["legacy_reference_pending_import"] is True
+        report = reconcile(snapshot, pending)
+        assert report["same"] is False
+        assert "legacy_reference_pending_import" in report["blocking_findings"]
+
+        incomplete = dict(snapshot)
+        incomplete["table_state"] = {}
+        retained = import_project_snapshot(connection, incomplete, mode="full")
+        assert retained["legacy_pending_cleared"] == 0
+        assert read_target_snapshot(connection, "p9")["legacy_reference_pending_import"] is True
+
+        cleared = import_project_snapshot(connection, snapshot, mode="full")
+        assert cleared["legacy_pending_cleared"] == 1
+        final = read_target_snapshot(connection, "p9")
+        assert final["legacy_reference_pending_import"] is False
+        assert reconcile(snapshot, final)["same"] is True

@@ -390,21 +390,51 @@ def test_v1_upgrade_keeps_source_kind_and_supports_real_read_write(pg):
         }
         assert after["legacy_reference_pending_import"] is True
 
-        # A full authoritative import clears the provisional marker.
+        # A hand-built mapping cannot prove completeness, so it must NOT clear the
+        # provisional marker even in full mode.
         snapshot = _snapshot(references, materials=[{"id": "m-old", "filename": "old.jpg"}])
-        result = import_project_snapshot(connection, snapshot, mode="full")
-        assert result["legacy_pending_cleared"] == 1
-        cleared = read_target_snapshot(connection, "p1")
-        assert cleared["legacy_reference_pending_import"] is False
-        stored = {
-            row["label_code"]: (row["source_kind"], row["box_count"], row["scope_ref"],
-                                row["annotation_state"])
-            for row in cleared["stores"]["annotations"]["annotation_label_references"]
-        }
-        assert stored == {
-            "fire": ("sqlite", 3, 2, "annotated"),
-            "smoke": ("legacy", 0, 0, "unannotated"),
-        }
-        # Re-running the migration is a no-op and keeps the proven data.
+        blocked = import_project_snapshot(connection, snapshot, mode="full")
+        assert blocked["legacy_pending_cleared"] == 0
+        assert blocked["legacy_pending_retained"]
+        assert read_target_snapshot(connection, "p1")["legacy_reference_pending_import"] is True
+        # Re-running the migration is a no-op and keeps the marker.
         ensure_schema(connection)
-        assert read_target_snapshot(connection, "p1")["legacy_reference_pending_import"] is False
+        assert read_target_snapshot(connection, "p1")["legacy_reference_pending_import"] is True
+
+def test_recorded_v3_with_missing_structure_is_refused(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V1, (1,))
+        ensure_schema(connection)
+        # Simulate the earlier defect: v3 recorded, source_kind missing.
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"ALTER TABLE {SCHEMA_NAME}.annotation_label_reference DROP COLUMN source_kind"
+                )
+        with pytest.raises(U3MigrationError) as missing_column:
+            ensure_schema(connection)
+        assert missing_column.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
+        assert "source_kind" in missing_column.value.detail
+
+
+def test_recorded_v3_without_category_foreign_key_is_refused(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V1, (1,))
+        ensure_schema(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = (%s)::regclass "
+                    "AND contype='f'",
+                    (f"{SCHEMA_NAME}.negative_pool_link",),
+                )
+                names = [str(row[0]) for row in cursor.fetchall()]
+                for name in names:
+                    cursor.execute(
+                        f"ALTER TABLE {SCHEMA_NAME}.negative_pool_link "
+                        f"DROP CONSTRAINT {name}"
+                    )
+        with pytest.raises(U3MigrationError) as missing_fk:
+            ensure_schema(connection)
+        assert missing_fk.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
+        assert "negative_pool_category" in missing_fk.value.detail

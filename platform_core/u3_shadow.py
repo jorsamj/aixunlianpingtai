@@ -846,6 +846,49 @@ _SCHEMA_UPGRADES = {
 }
 
 
+def _assert_target_structure(cursor) -> None:
+    """Verify the real PostgreSQL shape, not only the recorded checksums.
+
+    A database upgraded by an earlier build can record v3 while still missing
+    ``source_kind`` or the category foreign key. Those states are refused with a
+    controlled instruction to rebuild the shadow schema from an authoritative
+    SQLite export; nothing is repaired or deleted automatically.
+    """
+    cursor.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema=%s AND table_name='annotation_label_reference'",
+        (SCHEMA_NAME,),
+    )
+    columns = {str(row["column_name"]) for row in cursor.fetchall()}
+    missing = [
+        name for name in REQUIRED_COLUMNS["annotation_label_references"]
+        if name not in columns
+    ]
+    cursor.execute(
+        "SELECT confrelid::regclass::text AS target, confdeltype FROM pg_constraint "
+        "WHERE conrelid = (%s)::regclass AND contype='f'",
+        (f"{SCHEMA_NAME}.negative_pool_link",),
+    )
+    foreign_keys = {
+        (str(row["target"]), str(row["confdeltype"])) for row in cursor.fetchall()
+    }
+    expected = {
+        (f"{SCHEMA_NAME}.negative_pool_member", "c"),
+        (f"{SCHEMA_NAME}.negative_pool_category", "c"),
+    }
+    absent = sorted(expected - foreign_keys)
+    if missing or absent:
+        raise U3MigrationError(
+            "U3_SCHEMA_STRUCTURE_INVALID",
+            "the shadow schema was recorded but its real structure is incomplete",
+            detail=(
+                f"missing_columns={missing} missing_foreign_keys={absent}; "
+                "rebuild w3_material_gt from an authoritative SQLite export "
+                "(u3_shadow_cli export then import); no automatic repair is attempted"
+            ),
+        )
+
+
 def ensure_schema(connection) -> dict[str, Any]:
     from psycopg.rows import dict_row
 
@@ -973,6 +1016,7 @@ def ensure_schema(connection) -> dict[str, Any]:
                             "u3-shadow",
                         ),
                     )
+            _assert_target_structure(cursor)
 
     return {"schema": SCHEMA_NAME, "version": SCHEMA_VERSION}
 
@@ -1022,6 +1066,58 @@ def _delete_absent(cursor, schema: str, table: str, project_id: str,
                      "AND k.k2=t.%s::text)") % (key_columns[0], key_columns[1])
     cursor.execute(f"DELETE FROM {schema}.{table} AS t WHERE t.project_id=%s AND {condition}",
                    (project_id,))
+
+
+def pending_clear_eligible(snapshot: Mapping[str, Any], project_id: str) -> tuple[bool, str]:
+    """Only a provably complete, self-consistent export may clear the marker.
+
+    The trust chain is: ``export_project_snapshot`` (SQLite owners read inside the
+    lifecycle fence with a revision re-check) produces the snapshot, and this
+    module's import applies it. A hand-built mapping can fake the fields, so the
+    import cannot prove provenance by itself - it only proves completeness and
+    content consistency. Callers that clear the marker must come through the
+    documented export -> import path.
+    """
+    if str(snapshot.get("contract_version") or "") != CONTRACT_VERSION:
+        return False, "contract_version"
+    if str(snapshot.get("project_id") or "") != str(project_id):
+        return False, "project_id"
+    consistency = str(snapshot.get("consistency") or "")
+    if not consistency.startswith("MATERIAL_ANNOTATION_LIFECYCLE_FENCE"):
+        return False, "consistency"
+    stores = snapshot.get("stores") or {}
+    state = snapshot.get("table_state") or {}
+    counts = snapshot.get("counts") or {}
+    digests = snapshot.get("digests") or {}
+    for store, tables in REQUIRED_TABLES.items():
+        for table in tables:
+            entry = state.get(f"{store}.{table}")
+            if not entry or entry.get("present") is not True:
+                return False, f"table_state:{store}.{table}"
+    for store, mapping in (("materials", _MATERIAL_TABLES), ("annotations", _ANNOTATION_TABLES)):
+        for name in mapping:
+            rows = (stores.get(store) or {}).get(name)
+            if not isinstance(rows, list):
+                return False, f"data:{store}.{name}"
+            key = f"{store}.{name}"
+            if int((counts or {}).get(key, -1)) != len(rows):
+                return False, f"count:{key}"
+            if (digests or {}).get(key) != _digest(rows):
+                return False, f"digest:{key}"
+    for store in ("materials", "annotations"):
+        for table in (stores.get(store) or {}).get("evidence") or {}:
+            key = f"{store}.evidence.{table}"
+            if key not in counts or key not in digests:
+                return False, f"evidence:{key}"
+    expected_content = _digest(
+        [{"table": name, "digest": value} for name, value in sorted(digests.items())]
+    )
+    if str(snapshot.get("content_digest") or "") != expected_content:
+        return False, "content_digest"
+    revisions = snapshot.get("revisions") or {}
+    if not {"materials", "annotations"} <= set(revisions):
+        return False, "revisions"
+    return True, "complete"
 
 
 def import_project_snapshot(
@@ -1238,14 +1334,20 @@ def import_project_snapshot(
                     (project_id, str(store), revision),
                 )
             if mode == "full":
-                # A full import comes from the authoritative SQLite owner, so the
-                # provisional v1-upgrade rows (zero counters / default state) are
-                # replaced by proven data and the target is complete again.
-                cursor.execute(
-                    f"DELETE FROM {SCHEMA_NAME}.store_revision WHERE project_id=%s AND store=%s",
-                    (project_id, LEGACY_REFERENCE_PENDING_STORE),
-                )
-                counters["legacy_pending_cleared"] = int(cursor.rowcount == 1)
+                # Only a provably complete snapshot may replace the provisional v1
+                # rows. An incomplete/hand-built mapping keeps the marker so the
+                # target stays explicitly "not complete".
+                eligible, reason = pending_clear_eligible(snapshot, project_id)
+                if eligible:
+                    cursor.execute(
+                        f"DELETE FROM {SCHEMA_NAME}.store_revision "
+                        "WHERE project_id=%s AND store=%s",
+                        (project_id, LEGACY_REFERENCE_PENDING_STORE),
+                    )
+                    counters["legacy_pending_cleared"] = int(cursor.rowcount == 1)
+                else:
+                    counters["legacy_pending_cleared"] = 0
+                    counters["legacy_pending_retained"] = reason
     return counters
 
 
