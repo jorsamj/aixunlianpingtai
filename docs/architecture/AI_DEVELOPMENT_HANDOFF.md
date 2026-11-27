@@ -1,5 +1,17 @@
 # AI 开发接续入口
 
+> **2026-11-27 / U3 P0 负样本池证据版本收口（e0de1c83）**：只修两个问题，不重写 U3、
+> 不新增 V5、不改历史 DDL/checksum、VERSION 仍 42.24.592。
+> ① `negative_pool_operations` 纳入 materials evidence generation 触发器覆盖：两次合法
+> `NegativePool.members()` 回执操作会产生不同回执但结构不变，generation 必须前进，否则会被
+> “同结构、同 generation、不同摘要”误判为 `U3_SNAPSHOT_REVISION_DIVERGED`；懒建表在
+> `negative_pool._mutate` 同一事务安装触发器，已有库由快速探针“现有证据表是否都已有 insert
+> 触发器”强制进入 `_initialize` 补装；`negative_pool_meta.revision` 语义不变。
+> ② 导出结束复核补齐 **materials** structure generation（此前只比较 annotations 的版本）。
+> 定向用例：真实 PostgreSQL **57 passed / 0 skipped**（schema 17 + material/GT 40），
+> 另有 negative_pool/schema5 定向 40、w10 定向 22 passed。P1 Provider 未启动。
+> 合同见 [U3 Picker P0 Schema V4](U3_PICKER_P0_SCHEMA_V4_20261127.md)。
+
 > **2026-11-27 / U3 P0 结构生命周期整改（d72153a5）**：只修独立审计发现的“结构变化后旧快照
 > 回放”漏洞，不新增 Schema V5、不改历史 DDL/checksum、VERSION 仍 42.24.592。
 > Owner 侧新增持久化结构版本（`annotation_meta`/`material_meta` 的 `evidence_structure` +
