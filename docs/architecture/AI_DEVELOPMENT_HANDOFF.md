@@ -48,6 +48,16 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第七批：v1→v2 数据保真迁移与 stop_proof 可信性（2026-11-27，本批）
+
+- 起始 `933dfe8d34ba691736914bfa9fc050738c784c23`。VERSION 42.24.592 未改。
+- P0-1A annotation_label_reference：原 v1→v2 直接 `DROP TABLE ... CASCADE` 后重建，v1 的 (project,image,label,source_kind) 行被整体丢弃。现迁移为：①把 v1 行原样写入 `annotation_label_reference_legacy`（保留 source_kind 与完整主键）；②建立 v2 typed 表；③按 (project,image) 关联正式 `annotation` 取可信 `annotation_state`（无 GT 时用 `unannotated`，为明文历史兼容规则），`box_count/scope_ref` 取 v1 从未持久化的历史默认 0；④同一 (image,label) 在 v1 存了多个 source_kind 时，唯一主键冲突被转换为稳定错误码 `U3_UPGRADE_REFERENCE_CONFLICT` 并整体回滚（不静默去重/丢弃）；⑤迁移后比对 legacy 与 typed 行数，不一致即 `U3_UPGRADE_REFERENCE_LOSS`。
+- P0-1B negative_pool_link：原迁移仅 `CREATE TABLE IF NOT EXISTS`，旧表的外键不会被修改。现 v1→v2 建立 `negative_pool_link_v2`（成员 + 分类两组外键，均 ON DELETE CASCADE），复制旧关联，校验通过后替换旧表；存在悬空分类引用时外键冲突转为 `U3_UPGRADE_LINK_ORPHAN` 并回滚，不静默删除关联。v2→v3 保持 v3 唯一索引（`lower(name COLLATE "C")`）并为 v2 直建库补建 legacy 表。
+- 版本与 checksum 不变：v1 `20eadb1b13ca742a5f2665975156d46812f27f66509f78dfd5ed3d971604b1ed`（9628234e）、v2 `20f294c74be4a2aeaf4ab8ff6046034a49dcd564bcd6e19b62d6404cde2e6923`（c6a94215）、v3 `f7d563f684b3b3c5b26b2fdb3183c8377f7455db6fe2b0f8145bc48a07344735`（当前 DDL，未因本轮改动而变化，legacy 表仅由迁移创建）。
+- P0-2 stop_proof：仓库只有**按任务**的远端 Agent 停止证明（`node_agent_settlement.stop_proof_digests` / `STOP_VERIFIED`），不能证明所有 Worker 服务与节点已排空；`claim_next` 只收 worker_id，未登记 Worker 仍可领取。因此 readiness 不再接受调用者传入的任意字典/字符串（原先 `workers_stopped=true` + 任意文本即可放行）：`stop_proof_status` 只有 `MISSING` / `UNVERIFIED` 两种，分别阻断 `external_worker_stop_proof_required` / `external_worker_stop_proof_unverified`；本轮**没有**可信验证器，所以即使 tasks/租约/GPU/Worker 全空，`ready_for_cutover` 也恒为 false。未来证明合同已写入常量：nodes、worker_services、process_identities、observed_at、expires_at、source、verifier_signature。
+- 定向验证：`test_u3_schema_upgrade_postgres.py` 5 项（真实 v1→v3 保真：legacy 保留两种 source_kind、typed 计数为零默认值+GT 状态；v1 冲突/悬空分类分别拒绝并回滚；真实 v2→v3 两组外键、删分类/删素材级联；v1/v2/v3 篡改与更高版本拒绝；重复执行幂等）、`test_u3_material_gt_postgres.py` 10 项、`test_task_store_readiness.py` 12 项 = **27 passed**。未跑全仓 pytest / Playwright。
+- 未完成（不在本轮范围）：U3 Picker PostgreSQL 等价读、U5 实际迁移、Vue、模型转换；U5 ADR 仍为 DESIGN_ONLY / NOT_IMPLEMENTED / NOT_VERIFIED，readiness 通过不等于具备真实切换条件。
+
 ## 第六批：U5 readiness fail-closed、U3 Schema v3 与证据读取区分（2026-11-27，本批）
 
 - 起始 `cbf0bfb188705dea9375e3a7ef415598ee45718c`（25/25 CI 通过）。VERSION 42.24.592 未改。
