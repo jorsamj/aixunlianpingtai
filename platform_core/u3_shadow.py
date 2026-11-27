@@ -867,6 +867,7 @@ def _assert_target_structure(cursor) -> None:
     cursor.execute(
         """
         SELECT c.confrelid::regclass::text AS target, c.confdeltype AS delete_action,
+               c.convalidated AS validated,
                ARRAY(
                    SELECT a.attname FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
                    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum
@@ -888,14 +889,15 @@ def _assert_target_structure(cursor) -> None:
             str(row["delete_action"]),
             tuple(str(name) for name in row["local_columns"]),
             tuple(str(name) for name in row["remote_columns"]),
+            bool(row["validated"]),
         )
         for row in cursor.fetchall()
     }
     expected = {
         (f"{SCHEMA_NAME}.negative_pool_member", "c",
-         ("project_id", "material_id"), ("project_id", "material_id")),
+         ("project_id", "material_id"), ("project_id", "material_id"), True),
         (f"{SCHEMA_NAME}.negative_pool_category", "c",
-         ("project_id", "category_id"), ("project_id", "id")),
+         ("project_id", "category_id"), ("project_id", "id"), True),
     }
     absent = sorted(expected - foreign_keys)
     cursor.execute(
@@ -1144,23 +1146,42 @@ def pending_clear_eligible(snapshot: Mapping[str, Any], project_id: str) -> tupl
                 return False, f"count:{key}"
             if (digests or {}).get(key) != _digest(rows):
                 return False, f"digest:{key}"
-    for store in ("materials", "annotations"):
-        for table, rows in ((stores.get(store) or {}).get("evidence") or {}).items():
+    for store, tables in EVIDENCE_TABLES.items():
+        evidence = (stores.get(store) or {}).get("evidence") or {}
+        unknown = [name for name in evidence if name not in tables]
+        if unknown:
+            return False, f"evidence_unknown:{store}.{','.join(sorted(unknown))}"
+        for table in tables:
+            name = f"{store}.{table}"
             key = f"{store}.evidence.{table}"
-            if not isinstance(rows, list):
-                return False, f"evidence:{key}"
-            if int((counts or {}).get(key, -1)) != len(rows):
-                return False, f"evidence_count:{key}"
-            if (digests or {}).get(key) != _digest(rows):
-                return False, f"evidence_digest:{key}"
+            entry = state.get(name)
+            if not entry or "present" not in entry:
+                return False, f"evidence_state:{name}"
+            rows = evidence.get(table)
+            if entry.get("present") is True:
+                if not isinstance(rows, list):
+                    return False, f"evidence_missing:{key}"
+                if int((counts or {}).get(key, -1)) != len(rows):
+                    return False, f"evidence_count:{key}"
+                if (digests or {}).get(key) != _digest(rows):
+                    return False, f"evidence_digest:{key}"
+                if int(entry.get("row_count") if entry.get("row_count") is not None else -1) != len(rows):
+                    return False, f"evidence_row_count:{key}"
+            else:
+                if int(entry.get("row_count") or 0) != 0:
+                    return False, f"evidence_absent_row_count:{name}"
+                if rows is not None or key in (counts or {}) or key in (digests or {}):
+                    return False, f"evidence_absent_fabricated:{key}"
     expected_content = _digest(
         [{"table": name, "digest": value} for name, value in sorted(digests.items())]
     )
     if str(snapshot.get("content_digest") or "") != expected_content:
         return False, "content_digest"
     revisions = snapshot.get("revisions") or {}
-    if not {"materials", "annotations"} <= set(revisions):
-        return False, "revisions"
+    for store in ("materials", "annotations", "negative_pool"):
+        value = revisions.get(store)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return False, f"revision:{store}"
     return True, "complete"
 
 

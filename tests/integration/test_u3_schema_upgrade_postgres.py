@@ -494,3 +494,33 @@ def test_wrong_primary_key_or_column_mapping_is_refused(pg):
             ensure_schema(connection)
         assert wrong_mapping.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
         assert "negative_pool_category" in wrong_mapping.value.detail
+
+def test_not_valid_foreign_key_is_refused(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V1, (1,))
+        ensure_schema(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = (%s)::regclass "
+                    "AND contype='f' AND confrelid = (%s)::regclass",
+                    (f"{SCHEMA_NAME}.negative_pool_link",
+                     f"{SCHEMA_NAME}.negative_pool_category"),
+                )
+                category_fk = str(cursor.fetchone()[0])
+                cursor.execute(
+                    f"ALTER TABLE {SCHEMA_NAME}.negative_pool_link "
+                    f"DROP CONSTRAINT {category_fk}"
+                )
+                # Correct mapping and CASCADE, but not validated: still refused.
+                cursor.execute(
+                    f"ALTER TABLE {SCHEMA_NAME}.negative_pool_link "
+                    "ADD CONSTRAINT negative_pool_link_unvalidated "
+                    "FOREIGN KEY (project_id, category_id) "
+                    f"REFERENCES {SCHEMA_NAME}.negative_pool_category(project_id, id) "
+                    "ON DELETE CASCADE NOT VALID"
+                )
+        with pytest.raises(U3MigrationError) as unvalidated:
+            ensure_schema(connection)
+        assert unvalidated.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
+        assert "negative_pool_category" in unvalidated.value.detail

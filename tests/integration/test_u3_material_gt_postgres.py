@@ -1,6 +1,7 @@
 """U3 shadow migration against a real PostgreSQL (isolated; never production)."""
 from __future__ import annotations
 
+import copy
 import json
 import pathlib
 import sqlite3
@@ -27,6 +28,7 @@ _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.u3_shadow import (
+    _digest,
     U3MigrationError,
     SCHEMA_NAME,
     export_project_snapshot,
@@ -789,3 +791,102 @@ def test_legacy_json_projection_comes_from_the_annotation_owner(pg, tmp_path):
         final = read_target_snapshot(connection, "p9")
         assert final["legacy_reference_pending_import"] is False
         assert reconcile(snapshot, final)["same"] is True
+
+def _pending_marker(connection, project_id):
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"INSERT INTO {SCHEMA_NAME}.store_revision(project_id,store,revision) "
+                "VALUES (%s,'legacy_reference_pending_import',0) "
+                "ON CONFLICT (project_id,store) DO NOTHING",
+                (project_id,),
+            )
+
+
+def _recompute_content_digest(snapshot):
+    snapshot["content_digest"] = _digest(
+        [{"table": name, "digest": value} for name, value in sorted(snapshot["digests"].items())]
+    )
+    return snapshot
+
+
+def test_pending_import_refuses_snapshot_missing_an_evidence_table(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="p10")
+    _seed_evidence(project)
+    snapshot = export_project_snapshot(project, "p10")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        _pending_marker(connection, "p10")
+        before = read_target_snapshot(connection, "p10")
+        assert before["counts"]["materials.evidence.material_storage_audit"] == 2
+
+        damaged = _recompute_content_digest(copy.deepcopy(snapshot))
+        table = "material_storage_audit"
+        damaged["stores"]["materials"]["evidence"].pop(table)
+        damaged["table_state"].pop(f"materials.{table}")
+        damaged["counts"].pop(f"materials.evidence.{table}")
+        damaged["digests"].pop(f"materials.evidence.{table}")
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, damaged, mode="full")
+        assert refused.value.code == "U3_PENDING_IMPORT_INCOMPLETE"
+        after = read_target_snapshot(connection, "p10")
+        assert after["stores"] == before["stores"]
+        assert after["table_state"] == before["table_state"]
+        assert after["revisions"] == before["revisions"]
+        assert after["legacy_reference_pending_import"] is True
+
+        # An unknown evidence table is also refused instead of being smuggled in.
+        unknown = _recompute_content_digest(copy.deepcopy(snapshot))
+        unknown["stores"]["materials"]["evidence"]["material_unknown_table"] = []
+        unknown["counts"]["materials.evidence.material_unknown_table"] = 0
+        unknown["digests"]["materials.evidence.material_unknown_table"] = _digest([])
+        unknown = _recompute_content_digest(unknown)
+        with pytest.raises(U3MigrationError) as unknown_refused:
+            import_project_snapshot(connection, unknown, mode="full")
+        assert unknown_refused.value.code == "U3_PENDING_IMPORT_INCOMPLETE"
+        assert "evidence_unknown" in unknown_refused.value.detail
+
+        cleared = import_project_snapshot(connection, snapshot, mode="full")
+        assert cleared["legacy_pending_cleared"] == 1
+        final = read_target_snapshot(connection, "p10")
+        assert final["legacy_reference_pending_import"] is False
+        assert reconcile(snapshot, final)["same"] is True
+
+
+def test_pending_import_rejects_a_missing_negative_pool_revision(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="p11")
+    snapshot = export_project_snapshot(project, "p11")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        _pending_marker(connection, "p11")
+        damaged = copy.deepcopy(snapshot)
+        damaged["revisions"].pop("negative_pool")
+        damaged = _recompute_content_digest(damaged)
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, damaged, mode="full")
+        assert refused.value.code == "U3_PENDING_IMPORT_INCOMPLETE"
+        assert "negative_pool" in refused.value.detail
+        assert read_target_snapshot(connection, "p11")["legacy_reference_pending_import"] is True
+
+
+def test_pending_import_keeps_retained_evidence_for_an_absent_source_table(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="p12")
+    _seed_evidence(project)
+    snapshot = export_project_snapshot(project, "p12")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        _pending_marker(connection, "p12")
+    with sqlite3.connect(project / "materials.sqlite3") as database:
+        database.execute("DROP TABLE material_cleanup_deferred")
+    absent = export_project_snapshot(project, "p12")
+    assert absent["table_state"]["materials.material_cleanup_deferred"]["present"] is False
+    with psycopg.connect(pg.get_uri()) as connection:
+        cleared = import_project_snapshot(connection, absent, mode="full")
+        assert cleared["legacy_pending_cleared"] == 1
+        final = read_target_snapshot(connection, "p12")
+        assert final["legacy_reference_pending_import"] is False
+        # The target keeps the historical rows of the missing source table.
+        assert final["counts"]["materials.evidence.material_cleanup_deferred"] == 2
+        report = reconcile(absent, final)
+        assert report["same"] is True
+        assert "materials.evidence.material_cleanup_deferred" in report["retained_target_evidence"]
