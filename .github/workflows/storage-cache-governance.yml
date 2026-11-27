@@ -166,11 +166,13 @@ jobs:
           # platform_core/storage/__init__.py, which imports the remote provider
           # (platform_core/storage/remote.py) that imports requests at module
           # level. The OSS/S3 SDKs stay lazy, so only requests is needed here.
-          # Pillow/starlette: the P1 SQLite picker baseline reuses
-          # training_material_picker_api, which imports both at module level
-          # (FastAPI itself stays a lazy import inside the router factory).
+          # Pillow/starlette/psutil: the P1 SQLite picker baseline reuses
+          # training_material_picker_api, whose import chain pulls Pillow,
+          # starlette.requests and (through training_label_tasks -> task_runtime)
+          # psutil at module level. FastAPI itself stays a lazy import inside the
+          # router factory.
           python -m pip install --disable-pip-version-check \
-            pytest "psycopg[binary]" filelock requests Pillow starlette
+            pytest "psycopg[binary]" filelock requests Pillow starlette psutil
 
       - name: Prove the service container is the real server
         run: |
@@ -196,13 +198,19 @@ jobs:
             --junitxml=storage-source-postgres.xml \
             tests/integration/test_storage_source_postgres.py
 
-      - name: U3 shadow contracts and P1 picker read provider
+      - name: U3 P0 shadow contracts
         run: |
           python -m pytest -q -p no:cacheprovider -rs \
             --confcutdir=tests/integration \
-            --junitxml=u3-material-gt-postgres.xml \
+            --junitxml=u3-p0-postgres.xml \
             tests/integration/test_u3_material_gt_postgres.py \
-            tests/integration/test_u3_schema_upgrade_postgres.py \
+            tests/integration/test_u3_schema_upgrade_postgres.py
+
+      - name: U3 P1 picker read provider contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=u3-p1-postgres.xml \
             tests/integration/test_u3_picker_read_postgres.py
 
       - name: Refuse a run that skipped a U3 contract
@@ -212,21 +220,28 @@ jobs:
           import xml.etree.ElementTree as ET
           from pathlib import Path
 
-          report = Path("u3-material-gt-postgres.xml")
-          if not report.is_file():
-              raise SystemExit("no JUnit report: the U3 contracts did not run")
-          root = ET.parse(report).getroot()
-          suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
-          tests = sum(int(suite.get("tests") or 0) for suite in suites)
-          skipped = sum(int(suite.get("skipped") or 0) for suite in suites)
-          failures = sum(
-              int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
-              for suite in suites
-          )
-          print(f"u3 suites={len(suites)} tests={tests} skipped={skipped} failures={failures}")
-          # P0 (57) + P1 (23) contracts; a lower total means a file was not collected.
-          if skipped or failures or tests < 70:
-              raise SystemExit("a U3 shadow contract was skipped, failed or missing")
+          # Each stage must prove its own execution: a combined count could hide a
+          # whole file that never ran (or ran entirely as skip).
+          stages = {
+              "u3-p0-postgres.xml": 50,   # P0 = 57 contracts
+              "u3-p1-postgres.xml": 20,   # P1 = 39 contracts
+          }
+          for name, minimum in stages.items():
+              report = Path(name)
+              if not report.is_file():
+                  raise SystemExit(f"no JUnit report for {name}: the stage did not run")
+              root = ET.parse(report).getroot()
+              suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+              tests = sum(int(suite.get("tests") or 0) for suite in suites)
+              skipped = sum(int(suite.get("skipped") or 0) for suite in suites)
+              failures = sum(
+                  int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
+                  for suite in suites
+              )
+              print(f"{name}: suites={len(suites)} tests={tests} "
+                    f"skipped={skipped} failures={failures}")
+              if skipped or failures or tests < minimum:
+                  raise SystemExit(f"{name}: a contract was skipped, failed or missing")
           PY
 
       - name: Refuse a run that skipped a PostgreSQL contract

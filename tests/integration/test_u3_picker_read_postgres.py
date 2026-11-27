@@ -39,10 +39,13 @@ from platform_core.training_material_picker_read import (
     PickerFilter,
     PickerOwnerUnverifiable,
     PickerProjectionUnavailable,
+    PickerProjectMismatch,
     PickerQuery,
     PickerSnapshotNotReady,
     PickerSnapshotStale,
     PickerUnsupportedFilter,
+    MAX_BATCH_IDS,
+    MAX_PAGE_SIZE,
     SQLitePickerReadProvider,
     sqlite_owner_revision_source,
 )
@@ -91,10 +94,10 @@ def pg():
 # ---------------------------------------------------------------------------
 # Fixtures: one owner project exported into PostgreSQL
 # ---------------------------------------------------------------------------
-def _material(index: int, *, source: str, created_at: str) -> dict:
+def _material(index: int, *, source: str, created_at: str, tag: str = "Material") -> dict:
     return {
         "id": f"m{index:03d}",
-        "filename": f"Material-{index:03d}.jpg",
+        "filename": f"{tag}-{index:03d}.jpg",
         "storage_source_id": source,
         "storage_type": "local",
         "object_key": f"uploads/m{index:03d}.jpg",
@@ -108,20 +111,24 @@ def _material(index: int, *, source: str, created_at: str) -> dict:
     }
 
 
-def _build_project(tmp_path, project_id: str = "p1", *, confirmations: bool = False):
+def _build_project(
+    tmp_path, project_id: str = "p1", *, confirmations: bool = False,
+    tag: str = "Material", count: int = 12,
+):
     project = tmp_path / "projects" / project_id
     project.mkdir(parents=True)
     repository = MaterialRepository(project)
     # m000-m003 share a created_at on purpose: ordering must fall back to id.
     records = []
-    for index in range(12):
-        created_at = (
-            "2026-09-15T12:00:00+00:00" if index < 4
-            else f"2026-09-15T12:00:{index - 3:02d}+00:00"
-        )
+    for index in range(count):
+        if index < 4:
+            created_at = "2026-09-15T12:00:00+00:00"
+        else:
+            minutes, seconds = divmod(index - 3, 60)
+            created_at = f"2026-09-15T12:{minutes:02d}:{seconds:02d}+00:00"
         records.append(_material(
             index, source="nas-1" if index in {0, 3, 6, 9} else "default_local",
-            created_at=created_at,
+            created_at=created_at, tag=tag,
         ))
     repository.upsert_many(records)
     with sqlite3.connect(repository.path) as database:
@@ -201,9 +208,10 @@ def _publish(pg, project, project_id: str = "p1"):
 def _providers(pg, project, project_id: str = "p1"):
     _reset(pg, project_id)
     _publish(pg, project, project_id)
-    sqlite_provider = SQLitePickerReadProvider(project)
+    sqlite_provider = SQLitePickerReadProvider(project, project_id=project_id)
     postgres_provider = PostgresPickerReadProvider.from_dsn(
-        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project),
+        pg.get_uri(),
+        owner_revisions=sqlite_owner_revision_source(project, project_id),
     )
     return sqlite_provider, postgres_provider
 
@@ -397,35 +405,66 @@ def test_legacy_references_are_reported_as_unproven(pg, tmp_path):
         )
     _publish(pg, project, "legacy")
     provider = PostgresPickerReadProvider.from_dsn(
-        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project),
+        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project, "legacy"),
     )
     annotations = provider.get_annotations("legacy", ["m010", "m009"])
     assert "m010" in annotations.unproven_legacy_ids
     assert "m010" not in annotations.annotations
     # The reference is still usable for filtering in BOTH providers (same contract).
-    sqlite_provider = SQLitePickerReadProvider(project)
+    sqlite_provider = SQLitePickerReadProvider(project, project_id="legacy")
     filters = PickerFilter(labels=("smoke",))
     assert [item.id for item in _page(sqlite_provider, project_id="legacy", filters=filters).items] == [
         item.id for item in _page(provider, project_id="legacy", filters=filters).items
     ]
 
 
-def test_projects_are_isolated(pg, tmp_path):
-    first = _build_project(tmp_path / "a", "p1")
-    second = _build_project(tmp_path / "b", "p2")
+def test_project_identity_binding_prevents_cross_project_reads(pg, tmp_path):
+    """Same ids and identical numeric revisions must never identify a project."""
+    first = _build_project(tmp_path / "a", "p1", tag="Alpha")
+    second = _build_project(tmp_path / "b", "p2", tag="Beta")
     _reset(pg, "p1")
     _reset(pg, "p2")
     _publish(pg, first, "p1")
     _publish(pg, second, "p2")
-    provider = PostgresPickerReadProvider.from_dsn(
-        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(first),
-    )
-    page = _page(provider, project_id="p1")
-    assert page.total == 12
-    assert all(item.id.startswith("m") for item in page.items)
-    other = _page(provider, project_id="p2")
-    assert other.total == 12
-    assert provider.get_many("p1", ["m000"])["m000"].id == "m000"
+
+    owner_a = sqlite_owner_revision_source(first, "p1")
+    owner_b = sqlite_owner_revision_source(second, "p2")
+    assert owner_a("p1").material_revision == owner_b("p2").material_revision
+    with pytest.raises(PickerProjectMismatch):
+        owner_a("p2")
+    with pytest.raises(PickerProjectMismatch):
+        owner_b("p1")
+
+    provider_a = PostgresPickerReadProvider.from_dsn(pg.get_uri(), owner_revisions=owner_a)
+    provider_b = PostgresPickerReadProvider.from_dsn(pg.get_uri(), owner_revisions=owner_b)
+    assert _page(provider_a, project_id="p1").items[0].filename.startswith("Alpha-")
+    assert _page(provider_b, project_id="p2").items[0].filename.startswith("Beta-")
+    # A's source cannot prove B's projection, and vice versa.
+    with pytest.raises(PickerProjectMismatch):
+        _page(provider_a, project_id="p2")
+    with pytest.raises(PickerProjectMismatch):
+        _page(provider_b, project_id="p1")
+
+    sqlite_a = SQLitePickerReadProvider(first, project_id="p1")
+    sqlite_b = SQLitePickerReadProvider(second, project_id="p2")
+    for method, args in (
+        ("read_page", ()),
+        ("get_many", (["m000"],)),
+        ("get_annotations", (["m000"],)),
+        ("get_pool_relations", (["m002"],)),
+        ("get_task_negative_receipts", ("ctx-a", ["m000"])),
+    ):
+        with pytest.raises(PickerProjectMismatch):
+            if method == "read_page":
+                _page(sqlite_a, project_id="p2")
+            else:
+                getattr(sqlite_a, method)("p2", *args)
+        if method != "read_page":
+            getattr(sqlite_b, method)("p2", *args)
+    # Cross-project data never leaks through a correctly bound provider.
+    assert all(item.filename.startswith("Alpha-") for item in _page(sqlite_a, project_id="p1").items)
+    assert all(item.filename.startswith("Beta-") for item in _page(sqlite_b, project_id="p2").items)
+    assert "m000" in sqlite_a.get_many("p1", ["m000"])
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +488,7 @@ def test_stale_and_non_ready_snapshots_are_refused(pg, tmp_path):
     with psycopg.connect(pg.get_uri()) as connection:
         import_project_snapshot(connection, snapshot, mode="incremental")
     provider = PostgresPickerReadProvider.from_dsn(
-        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project),
+        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project, "p1"),
     )
     with pytest.raises(PickerSnapshotNotReady):
         _page(provider)
@@ -477,7 +516,7 @@ def test_owner_structure_change_is_stale_and_unverifiable_without_source(pg, tmp
     MaterialRepository(project).reconcile_evidence_structure()
     _publish(pg, project)
     provider = PostgresPickerReadProvider.from_dsn(
-        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project),
+        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project, "p1"),
     )
     # Certified structure transition is accepted by the snapshot itself...
     page = _page(provider)
@@ -493,13 +532,13 @@ def test_projection_and_query_failures_are_not_empty_results(pg, tmp_path):
     _providers(pg, project)
     provider = PostgresPickerReadProvider.from_dsn(
         "postgresql://postgres:postgres@127.0.0.1:1/does_not_exist",
-        owner_revisions=sqlite_owner_revision_source(project),
+        owner_revisions=sqlite_owner_revision_source(project, "p1"),
     )
     with pytest.raises(PickerProjectionUnavailable):
         _page(provider)
     # Missing snapshot row for a project that was never imported.
     other = PostgresPickerReadProvider.from_dsn(
-        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project),
+        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project, "p1"),
     )
     with pytest.raises(Exception) as missing:
         _page(other, project_id="never-imported")
@@ -538,11 +577,14 @@ def test_negative_confirmation_projection_authority(pg, tmp_path):
     project = _build_project(tmp_path, confirmations=True)
     _providers(pg, project)
     provider = PostgresPickerReadProvider.from_dsn(
-        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project),
+        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project, "p1"),
     )
     current = provider.get_task_negative_receipts("p1", "ctx-a", ["m000"])
+    assert current.state == "present"
     assert current.authoritative is True
+    assert current.owner_equivalent is True
     assert len(current.receipts) == 2
+    assert {receipt.receipt_id for receipt in current.receipts} == {"r-1", "r-2"}
     # Remove the source table: retained projection rows are history, not current
     # confirmations. Evidence rows stay untouched.
     with sqlite3.connect(project / "annotations.sqlite3") as database:
@@ -550,9 +592,10 @@ def test_negative_confirmation_projection_authority(pg, tmp_path):
     AnnotationRepository(project).reconcile_evidence_structure()
     _publish(pg, project)
     provider = PostgresPickerReadProvider.from_dsn(
-        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project),
+        pg.get_uri(), owner_revisions=sqlite_owner_revision_source(project, "p1"),
     )
     historic = provider.get_task_negative_receipts("p1", "ctx-a", ["m000"])
+    assert historic.state == "absent"
     assert historic.authoritative is False
     assert historic.receipts == ()
     with psycopg.connect(pg.get_uri()) as connection:
@@ -596,7 +639,7 @@ def test_sqlite_provider_delegates_to_the_existing_picker_engine(tmp_path, monke
 
     monkeypatch.setattr(api, "_gt_material_filter_page", wrapper)
     project = _build_project(tmp_path)
-    provider = SQLitePickerReadProvider(project)
+    provider = SQLitePickerReadProvider(project, project_id="p1")
     page = _page(provider, page_size=5)
     assert calls["count"] == 1
     direct = _gt_material_filter_page(
@@ -607,3 +650,284 @@ def test_sqlite_provider_delegates_to_the_existing_picker_engine(tmp_path, monke
     )
     assert [item.id for item in page.items] == [str(row["id"]) for row in direct["items"]]
     assert page.total == direct["total"]
+
+
+# ---------------------------------------------------------------------------
+# H. Owner equivalence fails closed on missing/invalid versions
+# ---------------------------------------------------------------------------
+def _provider_for(pg, project, project_id="p1"):
+    return PostgresPickerReadProvider.from_dsn(
+        pg.get_uri(),
+        owner_revisions=sqlite_owner_revision_source(project, project_id),
+    )
+
+
+@pytest.mark.parametrize("case,code", [
+    ("baseline", None),
+    ("owner_missing_version", "PICKER_OWNER_UNVERIFIABLE"),
+    ("owner_invalid_version", "PICKER_OWNER_UNVERIFIABLE"),
+    ("owner_non_integer", "PICKER_OWNER_UNVERIFIABLE"),
+    ("owner_uncertified_structure", "PICKER_OWNER_UNVERIFIABLE"),
+    ("pg_missing_stream", "PICKER_SNAPSHOT_STALE"),
+    ("pg_empty_vector", "PICKER_SNAPSHOT_STALE"),
+    ("pg_uncertified_structure", "PICKER_SNAPSHOT_STALE"),
+    ("pg_column_mismatch", "PICKER_SNAPSHOT_STALE"),
+])
+def test_owner_equivalence_fails_closed(pg, tmp_path, case, code):
+    project = _build_project(tmp_path, "p1")
+    _providers(pg, project)
+    if case.startswith("owner_"):
+        with sqlite3.connect(project / ("annotations.sqlite3" if "structure" in case else "materials.sqlite3")) as database:
+            if case == "owner_missing_version":
+                database.execute("DELETE FROM material_meta WHERE key='evidence_generation'")
+            elif case == "owner_invalid_version":
+                database.execute("UPDATE material_meta SET value='-1' WHERE key='revision'")
+            elif case == "owner_non_integer":
+                database.execute("UPDATE material_meta SET value='twelve' WHERE key='revision'")
+            elif case == "owner_uncertified_structure":
+                database.execute("DELETE FROM annotation_meta WHERE key='evidence_structure'")
+    elif case.startswith("pg_"):
+        with psycopg.connect(pg.get_uri()) as connection:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    if case == "pg_missing_stream":
+                        cursor.execute(
+                            f"UPDATE {SCHEMA_NAME}.picker_snapshot_state "
+                            "SET revision_vector = revision_vector - 'annotations' "
+                            "WHERE project_id='p1'"
+                        )
+                    elif case == "pg_empty_vector":
+                        cursor.execute(
+                            f"UPDATE {SCHEMA_NAME}.picker_snapshot_state "
+                            "SET revision_vector = '{}'::jsonb WHERE project_id='p1'"
+                        )
+                    elif case == "pg_uncertified_structure":
+                        cursor.execute(
+                            f"UPDATE {SCHEMA_NAME}.picker_snapshot_state SET revision_vector = "
+                            "jsonb_set(revision_vector, '{materials_evidence,structure_certified}', "
+                            "'false') WHERE project_id='p1'"
+                        )
+                    elif case == "pg_column_mismatch":
+                        cursor.execute(
+                            f"UPDATE {SCHEMA_NAME}.picker_snapshot_state "
+                            "SET material_revision = material_revision + 1 WHERE project_id='p1'"
+                        )
+    provider = _provider_for(pg, project)
+    if code is None:
+        page = _page(provider, page_size=5)
+        assert page.total == 12
+        assert page.snapshot.owner_equivalent is True
+        assert provider.snapshot_context("p1").owner_equivalent is True
+        return
+    with pytest.raises(Exception) as refused:
+        _page(provider)
+    assert getattr(refused.value, "code", "") == code, case
+
+
+def test_verify_owner_false_reads_the_imported_snapshot_only(pg, tmp_path):
+    project = _build_project(tmp_path, "p1")
+    _providers(pg, project)
+    provider = PostgresPickerReadProvider.from_dsn(pg.get_uri())  # no owner source
+    page = _page(provider, page_size=5, verify_owner=False)
+    assert page.total == 12
+    assert page.snapshot.owner_equivalent is False
+    with pytest.raises(PickerOwnerUnverifiable):
+        _page(provider, page_size=5)  # default verify_owner=True
+    # Diagnostic reads of another project are allowed, but only for its own
+    # projection and never as current-owner authority.
+    other_project = _build_project(tmp_path / "other", "p2")
+    _reset(pg, "p2")
+    _publish(pg, other_project, "p2")
+    other = _page(provider, project_id="p2", verify_owner=False)
+    assert other.total == 12
+    assert other.snapshot.owner_equivalent is False
+
+
+# ---------------------------------------------------------------------------
+# I. Candidate stream: default batch, cursor resume, explicit refusal
+# ---------------------------------------------------------------------------
+def test_candidate_stream_default_batch_and_cursor_resume(pg, tmp_path):
+    project = _build_project(tmp_path, "p1", count=150)
+    sqlite_provider, postgres_provider = _providers(pg, project)
+    expected = [
+        item.id for batch in postgres_provider.iter_candidates(
+            PickerQuery(project_id="p1"),
+        ) for item in batch
+    ]
+    assert len(expected) == 150
+    assert len(set(expected)) == 150
+    for provider in (sqlite_provider, postgres_provider):
+        batches = list(provider.iter_candidates(PickerQuery(project_id="p1")))
+        assert [item.id for batch in batches for item in batch] == expected
+        # Never exceeds the public page cap even with the default 500 batch.
+        assert all(len(batch) <= MAX_PAGE_SIZE for batch in batches)
+    first = _page(postgres_provider, page_size=100)
+    assert first.has_more is True and first.next_cursor
+    resumed = [
+        item.id for batch in postgres_provider.iter_candidates(
+            PickerQuery(project_id="p1", cursor=first.next_cursor),
+        ) for item in batch
+    ]
+    assert resumed == expected[100:]
+    for provider in (sqlite_provider, postgres_provider):
+        with pytest.raises(PickerUnsupportedFilter):
+            list(provider.iter_candidates(PickerQuery(project_id="p1", page=1)))
+        with pytest.raises(PickerCursorContextMismatch):
+            list(provider.iter_candidates(PickerQuery(project_id="p1", cursor="broken")))
+
+
+# ---------------------------------------------------------------------------
+# J. DTO / batch / receipt contracts
+# ---------------------------------------------------------------------------
+def test_payload_and_receipt_dto_contract(pg, tmp_path):
+    project = _build_project(tmp_path, "p1", confirmations=True)
+    sqlite_provider, postgres_provider = _providers(pg, project)
+    for provider in (sqlite_provider, postgres_provider):
+        without = _page(provider, page_size=5, include_payload=False)
+        assert without.items and all(item.payload is None for item in without.items)
+        with_payload = _page(provider, page_size=5, include_payload=True)
+        assert all(isinstance(item.payload, dict) for item in with_payload.items)
+        assert all(item.payload is None for item in provider.get_many("p1", ["m000", "m001"]).values())
+        receipts = provider.get_task_negative_receipts("p1", "ctx-a", ["m000"])
+        assert receipts.state == "present"
+        assert receipts.authoritative is True
+        assert receipts.owner_equivalent is True
+        assert {receipt.receipt_id for receipt in receipts.receipts} == {"r-1", "r-2"}
+        receipt = receipts.receipts[0]
+        assert receipt.context_key == "ctx-a"
+        assert receipt.evidence.get("receipt_id") == receipt.receipt_id
+        assert receipt.image_id == "m000"
+        # Unbounded receipt reads are refused instead of returning the whole table.
+        with pytest.raises(PickerUnsupportedFilter):
+            provider.get_task_negative_receipts("p1", "ctx-a", None)
+        with pytest.raises(PickerUnsupportedFilter):
+            provider.get_task_negative_receipts("p1", "ctx-a", [])
+    with pytest.raises(PickerUnsupportedFilter):
+        postgres_provider.get_many("p1", [f"m{i:05d}" for i in range(MAX_BATCH_IDS + 1)])
+
+
+def test_receipt_absent_and_present_empty_states(pg, tmp_path):
+    # present_empty: the table exists but has no receipts.
+    empty = _build_project(tmp_path / "empty", "p1")
+    with sqlite3.connect(empty / "annotations.sqlite3") as database:
+        database.execute(
+            "CREATE TABLE IF NOT EXISTS task_negative_confirmations "
+            "(receipt_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, evidence_json TEXT NOT NULL)"
+        )
+    AnnotationRepository(empty).reconcile_evidence_structure()
+    _reset(pg, "p1")
+    _publish(pg, empty, "p1")
+    provider = _provider_for(pg, empty)
+    receipts = provider.get_task_negative_receipts("p1", "ctx-a", ["m000"])
+    assert receipts.state == "present_empty"
+    assert receipts.authoritative is True
+    assert receipts.receipts == ()
+
+    # absent: the source table does not exist.
+    absent = _build_project(tmp_path / "absent", "p1")
+    _reset(pg, "p1")
+    _publish(pg, absent, "p1")
+    provider = _provider_for(pg, absent)
+    receipts = provider.get_task_negative_receipts("p1", "ctx-a", ["m000"])
+    assert receipts.state == "absent"
+    assert receipts.authoritative is False
+    assert receipts.receipts == ()
+
+
+# ---------------------------------------------------------------------------
+# K. JSONB lifecycle null semantics and filter normalisation
+# ---------------------------------------------------------------------------
+def test_pool_lifecycle_payload_variants_match_sqlite(pg, tmp_path):
+    project = tmp_path / "projects" / "p1"
+    project.mkdir(parents=True)
+    repository = MaterialRepository(project)
+    variants = (
+        ("m000", {}),
+        ("m001", {"_dataset_delete_claim": None}),
+        ("m002", {"deleted": False}),
+        ("m003", {"deleted": 0}),
+        ("m004", {"deleted": True}),
+        ("m005", {"_dataset_delete_claim": "claim-1"}),
+        ("m006", {"deleted_at": "2026-01-01T00:00:00+00:00"}),
+    )
+    records = []
+    for index, (image_id, extra) in enumerate(variants):
+        record = _material(
+            index, source="default_local",
+            created_at=f"2026-09-15T12:00:{index:02d}+00:00", tag="Pool",
+        )
+        record["id"] = image_id
+        record.update(extra)
+        records.append(record)
+    repository.upsert_many(records)
+    with sqlite3.connect(repository.path) as database:
+        for statement in POOL_DDL:
+            database.execute(statement)
+        for image_id, _extra in variants:
+            database.execute(
+                "INSERT INTO negative_pool_members VALUES (?, '2026-09-16T00:00:00+00:00')",
+                (image_id,),
+            )
+    AnnotationRepository(project)  # formal GT store is required by the exporter
+    sqlite_provider, postgres_provider = _providers(pg, project)
+    filters = PickerFilter(negative_pool_only=True)
+    baseline = _page(sqlite_provider, filters=filters, page_size=100)
+    candidate = _page(postgres_provider, filters=filters, page_size=100)
+    baseline_ids = {item.id for item in baseline.items}
+    assert [item.id for item in candidate.items] == [item.id for item in baseline.items]
+    # Absent / JSON null / false / 0 stay live; true / claim / deleted_at do not.
+    assert {"m000", "m001", "m002", "m003"} <= baseline_ids
+    assert not ({"m004", "m005", "m006"} & baseline_ids)
+
+
+def test_filter_normalisation_and_date_errors_match(pg, tmp_path):
+    sqlite_provider, postgres_provider = _providers(pg, _build_project(tmp_path))
+    for filters in (
+        PickerFilter(storage_source_ids=("nas-1", "nas-1", "default_local")),
+        PickerFilter(negative_category_ids=("cat-2", "cat-2")),
+        PickerFilter(image_ids=("m002", "m002", "m005")),
+        PickerFilter(labels=("smoke", "smoke", "person")),
+    ):
+        baseline = _page(sqlite_provider, filters=filters, page_size=100)
+        candidate = _page(postgres_provider, filters=filters, page_size=100)
+        assert [item.id for item in candidate.items] == [item.id for item in baseline.items], filters
+    for bad in (
+        PickerFilter(created_from="not-a-date"),
+        PickerFilter(created_to="2026-13-40"),
+        PickerFilter(processing_status="ready"),
+    ):
+        for provider in (sqlite_provider, postgres_provider):
+            with pytest.raises(PickerUnsupportedFilter):
+                _page(provider, filters=bad)
+
+
+# ---------------------------------------------------------------------------
+# L. Composable read session: one MVCC snapshot across calls
+# ---------------------------------------------------------------------------
+def test_read_session_reuses_one_mvcc_snapshot(pg, tmp_path):
+    project = _build_project(tmp_path)
+    _, postgres_provider = _providers(pg, project)
+    query = PickerQuery(project_id="p1", page_size=100)
+    with postgres_provider.read_session("p1") as session:
+        assert session.owner_equivalent is True
+        assert session.snapshot.isolation == "REPEATABLE READ"
+        assert session.page(query).total == 12
+        with psycopg.connect(pg.get_uri()) as writer:
+            with writer.transaction():
+                with writer.cursor() as cursor:
+                    cursor.execute(
+                        f"INSERT INTO {SCHEMA_NAME}.material"
+                        "(project_id,id,filename,processing_status,created_at,payload) "
+                        "VALUES ('p1','m999','late.jpg','processed',"
+                        "'2026-09-30T00:00:00+00:00','{}'::jsonb)"
+                    )
+        # The same session keeps its MVCC snapshot for page, count and batches.
+        assert session.page(query).total == 12
+        assert session.count(query) == 12
+        assert len(session.get_many(["m000"])) == 1
+    # A new session sees the committed projection row.
+    with postgres_provider.read_session("p1") as session:
+        assert session.page(query).total == 13
+    with pytest.raises(PickerProjectMismatch):
+        with postgres_provider.read_session("p1") as session:
+            session.page(PickerQuery(project_id="p2"))

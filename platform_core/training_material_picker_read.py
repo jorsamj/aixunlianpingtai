@@ -29,6 +29,7 @@ import json
 import sqlite3
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
@@ -89,6 +90,10 @@ class PickerSnapshotStale(PickerReadError):
 
 class PickerOwnerUnverifiable(PickerReadError):
     code = "PICKER_OWNER_UNVERIFIABLE"
+
+
+class PickerProjectMismatch(PickerReadError):
+    code = "PICKER_PROJECT_MISMATCH"
 
 
 class PickerCursorContextMismatch(PickerReadError):
@@ -182,13 +187,27 @@ class PickerPoolRelation:
 
 
 @dataclass(frozen=True)
+class PickerNegativeReceipt:
+    receipt_id: str
+    context_key: str
+    image_id: str | None
+    evidence: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
 class PickerNegativeReceipts:
     context_key: str
     generation: int
+    #: ``absent`` | ``present_empty`` | ``present`` -- the source table state that
+    #: the published snapshot observed.
+    state: str
     #: ``False`` means the source table is absent from the current owner snapshot:
     #: retained PostgreSQL rows are history, not current confirmations.
     authoritative: bool
-    receipts: tuple[Mapping[str, Any], ...]
+    #: ``False`` when the caller read the imported snapshot without proving the
+    #: current owner; such receipts are snapshot data, not current confirmations.
+    owner_equivalent: bool
+    receipts: tuple[PickerNegativeReceipt, ...]
 
 
 @dataclass(frozen=True)
@@ -202,6 +221,8 @@ class PickerSnapshotInfo:
     isolation: str = ""
     read_only: bool = False
     read_identity: str = ""
+    #: Why current-owner equivalence could not be proven (informational only).
+    detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -219,8 +240,13 @@ class PickerPage:
 
 @dataclass(frozen=True)
 class OwnerRevisionVector:
-    """Versions the SQLite owner can prove without exporting any row."""
+    """Versions the SQLite owner can prove without exporting any row.
 
+    ``project_id`` is part of the proof: two projects may legally have the same
+    numeric revisions, so versions alone never identify a project.
+    """
+
+    project_id: str
     material_revision: int
     annotation_revision: int
     negative_pool_revision: int
@@ -238,16 +264,34 @@ class OwnerRevisionVector:
 # ---------------------------------------------------------------------------
 # Owner version source (read-only, never initializes or writes the owners)
 # ---------------------------------------------------------------------------
+def _legal_version(value: Any, label: str) -> int:
+    """A persisted version must be a non-negative integer, never ``bool`` or text."""
+    if isinstance(value, bool):
+        raise PickerOwnerUnverifiable(
+            "an owner version is not an integer", detail=f"{label}={value!r}",
+        )
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as error:
+        raise PickerOwnerUnverifiable(
+            "an owner version is not an integer", detail=f"{label}={value!r}",
+        ) from error
+    if str(value).strip() != str(number) or number < 0:
+        raise PickerOwnerUnverifiable(
+            "an owner version is not a legal non-negative integer",
+            detail=f"{label}={value!r}",
+        )
+    return number
+
+
 def _read_meta(database: sqlite3.Connection, table: str, key: str) -> int | None:
+    """``None`` means the key is ABSENT; an illegal value is a hard failure."""
     row = database.execute(
         f"SELECT value FROM {table} WHERE key=?", (str(key),)
     ).fetchone()
     if row is None:
         return None
-    try:
-        return int(row[0])
-    except (TypeError, ValueError):
-        return None
+    return _legal_version(row[0], f"{table}.{key}")
 
 
 def _table_presence(database: sqlite3.Connection) -> set[str]:
@@ -275,96 +319,149 @@ def _recorded_structure(database: sqlite3.Connection, table: str, key: str) -> l
 
 
 @dataclass(frozen=True)
-class _StoreEvidence:
-    generation: int
-    structure_generation: int
+class _OwnerStore:
+    revision: int | None
+    generation: int | None
+    structure_generation: int | None
     tables: tuple[str, ...]
-    certified: bool
+    recorded: list[str] | None
+    pool_revision: int | None = None
+    confirmation_generation: int | None = None
 
 
-def _read_store_evidence(
-    path: Path, meta_table: str, tables: Sequence[str], *, include_generation: bool = True,
-) -> _StoreEvidence:
+def _read_owner_store(
+    path: Path, meta_table: str, tables: Sequence[str], *, with_pool: bool = False,
+    with_confirmation: bool = False,
+) -> _OwnerStore:
+    """Read revision, generations, structure and table presence in ONE transaction."""
     with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as database:
         database.row_factory = sqlite3.Row
-        present = _table_presence(database)
-        generation = _read_meta(database, meta_table, "evidence_generation")
-        structure_generation = _read_meta(database, meta_table, "evidence_structure_generation")
-        recorded = _recorded_structure(database, meta_table, "evidence_structure")
+        database.execute("BEGIN")
+        try:
+            revision = _read_meta(database, meta_table, "revision")
+            generation = _read_meta(database, meta_table, "evidence_generation")
+            structure_generation = _read_meta(
+                database, meta_table, "evidence_structure_generation",
+            )
+            recorded = _recorded_structure(database, meta_table, "evidence_structure")
+            confirmation_generation = (
+                _read_meta(database, meta_table, "task_negative_confirmation_generation")
+                if with_confirmation else None
+            )
+            present = _table_presence(database)
+            pool_revision = None
+            if with_pool:
+                if "negative_pool_meta" not in present:
+                    raise PickerOwnerUnverifiable(
+                        "the SQLite negative-pool revision table is missing",
+                        detail=str(path),
+                    )
+                row = database.execute(
+                    "SELECT revision FROM negative_pool_meta WHERE id=1"
+                ).fetchone()
+                if row is None:
+                    raise PickerOwnerUnverifiable(
+                        "the SQLite negative-pool revision row is missing",
+                        detail=str(path),
+                    )
+                pool_revision = _legal_version(row[0], "negative_pool_meta.revision")
+        finally:
+            database.execute("COMMIT")
     observed = tuple(sorted(table for table in tables if table in present))
-    certified = recorded is not None and tuple(recorded) == observed
-    return _StoreEvidence(
-        generation=int(generation or 0),
-        structure_generation=int(structure_generation or 0),
-        tables=observed,
-        certified=bool(certified),
+    return _OwnerStore(
+        revision=revision, generation=generation,
+        structure_generation=structure_generation, tables=observed,
+        recorded=recorded, pool_revision=pool_revision,
+        confirmation_generation=confirmation_generation,
     )
 
 
-def sqlite_owner_revision_source(project_path: str | Path) -> Callable[[], OwnerRevisionVector]:
-    """Build a read-only Owner version source for current-equivalence checks.
+def sqlite_owner_revision_source(
+    project_path: str | Path, project_id: str,
+) -> Callable[[str], OwnerRevisionVector]:
+    """Build a read-only, project-bound Owner version source.
 
-    Only revision/generation counters and evidence-table presence are read: no
-    row export, no content digest, no evidence-table count, and no write.
+    The returned callable refuses any project id other than the bound one, and
+    the vector itself carries that project id so a caller can never pair one
+    project's versions with another project's projection. Each owner database is
+    read inside ONE read-only transaction; nothing is exported or counted.
     """
     project = Path(project_path)
+    bound_project = str(project_id or "")
+    if not bound_project:
+        raise ValueError("an owner revision source requires an explicit project id")
 
-    def read() -> OwnerRevisionVector:
+    def read(requested_project_id: str) -> OwnerRevisionVector:
+        if str(requested_project_id) != bound_project:
+            raise PickerProjectMismatch(
+                "the owner revision source is bound to another project",
+                detail=f"requested={requested_project_id} bound={bound_project}",
+            )
         materials_db = project / "materials.sqlite3"
         annotations_db = project / "annotations.sqlite3"
         if not materials_db.is_file() or not annotations_db.is_file():
             raise PickerOwnerUnverifiable(
-                "the SQLite owners are not readable",
-                detail=f"project={project.name}",
+                "the SQLite owners are not readable", detail=f"project={bound_project}",
             )
         try:
-            with closing(sqlite3.connect(f"{materials_db.resolve().as_uri()}?mode=ro", uri=True)) as database:
-                database.row_factory = sqlite3.Row
-                material_revision = _read_meta(database, "material_meta", "revision")
-                pool_present = "negative_pool_meta" in _table_presence(database)
-                pool_revision = (
-                    int(database.execute(
-                        "SELECT revision FROM negative_pool_meta WHERE id=1"
-                    ).fetchone()[0])
-                    if pool_present else 0
-                )
-            materials_evidence = _read_store_evidence(
+            materials = _read_owner_store(
                 materials_db, "material_meta", EVIDENCE_TABLES["materials"],
+                with_pool=True,
             )
-            with closing(sqlite3.connect(f"{annotations_db.resolve().as_uri()}?mode=ro", uri=True)) as database:
-                database.row_factory = sqlite3.Row
-                annotation_revision = _read_meta(database, "annotation_meta", "revision")
-                confirmation_generation = _read_meta(
-                    database, "annotation_meta", "task_negative_confirmation_generation",
-                )
-            annotations_evidence = _read_store_evidence(
+            annotations = _read_owner_store(
                 annotations_db, "annotation_meta", EVIDENCE_TABLES["annotations"],
+                with_confirmation=True,
             )
         except PickerReadError:
             raise
         except sqlite3.Error as error:
             raise PickerOwnerUnverifiable(
-                "the SQLite owner versions could not be read",
-                detail=str(error),
+                "the SQLite owner versions could not be read", detail=str(error),
             ) from error
-        if material_revision is None or annotation_revision is None or pool_revision is None:
+        confirmation_generation = annotations.confirmation_generation
+        if confirmation_generation is None:
+            # P0 compatibility, only with reliable absent evidence: a project that
+            # never created the confirmation table has no counter and exports 0.
+            if "task_negative_confirmations" in annotations.tables:
+                raise PickerOwnerUnverifiable(
+                    "the task negative confirmation counter is missing",
+                    detail=f"project={bound_project}",
+                )
+            confirmation_generation = 0
+        required = (
+            ("material_meta.revision", materials.revision),
+            ("negative_pool_meta.revision", materials.pool_revision),
+            ("material_meta.evidence_generation", materials.generation),
+            ("material_meta.evidence_structure_generation", materials.structure_generation),
+            ("annotation_meta.revision", annotations.revision),
+            ("annotation_meta.evidence_generation", annotations.generation),
+            ("annotation_meta.evidence_structure_generation", annotations.structure_generation),
+        )
+        missing = [label for label, value in required if value is None]
+        if missing:
             raise PickerOwnerUnverifiable(
-                "the SQLite owner revision markers are missing",
-                detail=f"materials={material_revision} annotations={annotation_revision} pool={pool_revision}",
+                "the SQLite owner does not expose every required version",
+                detail="missing=" + ",".join(missing),
+            )
+        if materials.recorded is None or annotations.recorded is None:
+            raise PickerOwnerUnverifiable(
+                "the SQLite evidence-table structure was never certified",
+                detail=f"project={bound_project}",
             )
         return OwnerRevisionVector(
-            material_revision=int(material_revision),
-            annotation_revision=int(annotation_revision),
-            negative_pool_revision=int(pool_revision),
-            materials_evidence_generation=materials_evidence.generation,
-            annotations_evidence_generation=annotations_evidence.generation,
-            negative_confirmation_generation=int(confirmation_generation or 0),
-            materials_structure_generation=materials_evidence.structure_generation,
-            annotations_structure_generation=annotations_evidence.structure_generation,
-            materials_tables=materials_evidence.tables,
-            annotations_tables=annotations_evidence.tables,
-            materials_structure_certified=materials_evidence.certified,
-            annotations_structure_certified=annotations_evidence.certified,
+            project_id=bound_project,
+            material_revision=int(materials.revision),
+            annotation_revision=int(annotations.revision),
+            negative_pool_revision=int(materials.pool_revision),
+            materials_evidence_generation=int(materials.generation),
+            annotations_evidence_generation=int(annotations.generation),
+            negative_confirmation_generation=int(confirmation_generation),
+            materials_structure_generation=int(materials.structure_generation),
+            annotations_structure_generation=int(annotations.structure_generation),
+            materials_tables=materials.tables,
+            annotations_tables=annotations.tables,
+            materials_structure_certified=tuple(materials.recorded) == materials.tables,
+            annotations_structure_certified=tuple(annotations.recorded) == annotations.tables,
         )
 
     return read
@@ -473,6 +570,21 @@ def _validate_query(query: PickerQuery) -> tuple[int, int | None]:
     state = str(query.filters.annotation_state or "")
     if state and state not in {"annotated", "confirmed_empty", "unannotated"}:
         raise PickerUnsupportedFilter("invalid annotation_state", detail=state)
+    for label, value in (
+        ("created_from", query.filters.created_from),
+        ("created_to", query.filters.created_to),
+    ):
+        text_value = str(value or "").strip()
+        if not text_value:
+            continue
+        try:
+            # Same parser and failure behaviour as the SQLite baseline; only
+            # ISO-8601 is claimed equivalent (documented limitation).
+            datetime.fromisoformat(text_value.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise PickerUnsupportedFilter(
+                f"{label} is not an ISO-8601 timestamp", detail=text_value,
+            ) from error
     page = None
     if query.page is not None:
         try:
@@ -482,6 +594,30 @@ def _validate_query(query: PickerQuery) -> tuple[int, int | None]:
         if page < 1:
             raise PickerUnsupportedFilter("page must be a positive integer")
     return size, page
+
+
+def _bounded_ids(image_ids: Sequence[str], *, label: str = "image_ids") -> list[str]:
+    ids = _normalize_ids(image_ids) or []
+    if len(ids) > MAX_BATCH_IDS:
+        raise PickerUnsupportedFilter(
+            f"at most {MAX_BATCH_IDS} {label} may be read at once",
+        )
+    return ids
+
+
+def _receipt_ids(image_ids: Sequence[str] | None) -> list[str]:
+    ids = _normalize_ids(image_ids)
+    if ids is None or not ids:
+        # The existing SQLite helper returns every receipt for a context when no
+        # ids are given; P1 refuses that unbounded read instead of guessing.
+        raise PickerUnsupportedFilter(
+            "task negative receipt reads require explicit image ids",
+        )
+    if len(ids) > MAX_BATCH_IDS:
+        raise PickerUnsupportedFilter(
+            f"at most {MAX_BATCH_IDS} receipts may be read at once",
+        )
+    return ids
 
 
 def _normalize_created_to(value: str) -> str:
@@ -535,14 +671,29 @@ class SQLitePickerReadProvider(PickerReadProvider):
 
     name = "sqlite-owner"
 
-    def __init__(self, project_path: str | Path, *, repository=None, annotations=None):
+    def __init__(
+        self, project_path: str | Path, *, project_id: str,
+        repository=None, annotations=None,
+    ):
         from .annotation_repository import AnnotationRepository
         from .material_repository import MaterialRepository
 
+        bound_project = str(project_id or "")
+        if not bound_project:
+            raise ValueError("the SQLite picker provider requires an explicit project id")
+        self.project_id = bound_project
         self.project_path = Path(project_path)
         self.repository = repository or MaterialRepository(self.project_path)
         self.annotations = annotations or AnnotationRepository(self.project_path)
-        self._owner = sqlite_owner_revision_source(self.project_path)
+        self._owner = sqlite_owner_revision_source(self.project_path, self.project_id)
+
+    def _require_project(self, project_id: str) -> str:
+        if str(project_id) != self.project_id:
+            raise PickerProjectMismatch(
+                "the SQLite picker provider is bound to another project",
+                detail=f"requested={project_id} bound={self.project_id}",
+            )
+        return self.project_id
 
     # -- helpers ---------------------------------------------------------
     @staticmethod
@@ -594,7 +745,9 @@ class SQLitePickerReadProvider(PickerReadProvider):
         }
 
     @staticmethod
-    def _material_from_payload(payload: Mapping[str, Any]) -> PickerMaterial:
+    def _material_from_payload(
+        payload: Mapping[str, Any], *, include_payload: bool = True,
+    ) -> PickerMaterial:
         return PickerMaterial(
             id=str(payload.get("id") or ""),
             filename=str(payload.get("filename") or ""),
@@ -606,7 +759,7 @@ class SQLitePickerReadProvider(PickerReadProvider):
             annotated=payload.get("annotated"),
             created_at=str(payload.get("created_at") or ""),
             updated_at=str(payload.get("updated_at") or ""),
-            payload=payload,
+            payload=payload if include_payload else None,
         )
 
     @staticmethod
@@ -622,38 +775,14 @@ class SQLitePickerReadProvider(PickerReadProvider):
             and not (record.get("annotation_scope") or [])
         )
 
-    def _annotation_dto(self, project_id: str, image_ids: Sequence[str]) -> PickerAnnotations:
-        ids = [str(value) for value in image_ids if str(value)]
-        records = self.annotations.get_many(ids) if ids else {}
-        annotations: dict[str, PickerAnnotation] = {}
-        missing: list[str] = []
-        for image_id in ids:
-            record = records.get(image_id)
-            if record is None or self._is_synthesized_empty(record):
-                missing.append(image_id)
-                continue
-            boxes = record.get("boxes") or []
-            scope = record.get("annotation_scope") or []
-            annotations[image_id] = PickerAnnotation(
-                image_id=image_id,
-                annotation_state=str(record.get("annotation_state") or "unannotated"),
-                version=int(record.get("version") or 0),
-                content_digest=str(record.get("content_digest") or ""),
-                box_count=len(boxes),
-                scope_labels=tuple(str(value) for value in scope),
-                legacy_unproven=False,
-            )
-        return PickerAnnotations(
-            annotations=annotations, missing_ids=tuple(missing), unproven_legacy_ids=(),
-        )
-
     # -- contract --------------------------------------------------------
     def read_page(self, query: PickerQuery) -> PickerPage:
         from .training_material_picker_api import _gt_material_filter_page
 
+        project_id = self._require_project(query.project_id)
         size, page = _validate_query(query)
         fingerprint = _query_fingerprint(query)
-        before = self._owner()
+        before = self._owner(project_id)
         before_dict = self._vector_dict(before)
         token = self._snapshot_token(before_dict)
         legacy_cursor = None
@@ -671,6 +800,8 @@ class SQLitePickerReadProvider(PickerReadProvider):
                 query=str(query.filters.query or ""),
                 labels=_normalize_labels(query.filters.labels),
                 require_ground_truth=bool(query.filters.require_ground_truth),
+                # The row payload is the DTO source in SQLite; it is only EXPOSED
+                # when the caller asked for it.
                 include_payload=True,
                 sort_order=query.sort_order,
                 filters=self._filter_body(query.filters),
@@ -678,12 +809,15 @@ class SQLitePickerReadProvider(PickerReadProvider):
             )
         except ValueError as error:
             raise PickerUnsupportedFilter(str(error)) from error
-        items = tuple(self._material_from_payload(row) for row in result["items"])
+        items = tuple(
+            self._material_from_payload(row, include_payload=query.include_payload)
+            for row in result["items"]
+        )
         annotations = (
-            self._annotation_dto(query.project_id, [item.id for item in items])
+            self.get_annotations(project_id, [item.id for item in items])
             if query.include_annotations else PickerAnnotations({})
         )
-        after = self._owner()
+        after = self._owner(project_id)
         after_dict = self._vector_dict(after)
         if after_dict != before_dict:
             raise PickerSnapshotStale(
@@ -709,13 +843,19 @@ class SQLitePickerReadProvider(PickerReadProvider):
         )
 
     def iter_candidates(self, query: PickerQuery, *, batch_size: int = 500):
-        size, _page = _validate_query(query)
-        batch = max(1, min(int(batch_size), MAX_CANDIDATE_BATCH))
+        if query.page is not None:
+            raise PickerUnsupportedFilter(
+                "candidate iteration does not support page mode",
+            )
+        self._require_project(query.project_id)
+        _validate_query(replace(query, page=None))
+        internal = max(1, min(int(batch_size), MAX_CANDIDATE_BATCH, MAX_PAGE_SIZE))
         cursor = query.cursor
         while True:
             page = self.read_page(replace(
-                query, page=None, page_size=batch, cursor=cursor,
-                include_payload=False,
+                query, page=None, page_size=internal, cursor=cursor,
+                include_payload=False, include_annotations=False,
+                count_mode="deferred",
             ))
             if page.items:
                 yield page.items
@@ -724,49 +864,74 @@ class SQLitePickerReadProvider(PickerReadProvider):
             cursor = page.next_cursor
 
     def get_many(self, project_id: str, image_ids: Sequence[str]) -> dict[str, PickerMaterial]:
-        ids = _normalize_ids(image_ids) or []
-        if len(ids) > MAX_BATCH_IDS:
-            raise PickerUnsupportedFilter(
-                f"at most {MAX_BATCH_IDS} ids may be read at once",
-            )
-        rows = self.repository.get_many(ids)
-        by_id = {str(row.get("id")): row for row in rows}
+        project_id = self._require_project(project_id)
+        ids = _bounded_ids(image_ids)
+        rows: dict[str, Mapping[str, Any]] = {}
+        for chunk in _chunks(ids):
+            for row in self.repository.get_many(chunk):
+                rows[str(row.get("id"))] = row
         return {
-            image_id: self._material_from_payload(by_id[image_id])
-            for image_id in ids if image_id in by_id
+            image_id: self._material_from_payload(rows[image_id], include_payload=False)
+            for image_id in ids if image_id in rows
         }
 
     def get_annotations(self, project_id: str, image_ids: Sequence[str]) -> PickerAnnotations:
-        ids = _normalize_ids(image_ids) or []
-        return self._annotation_dto(project_id, ids)
+        project_id = self._require_project(project_id)
+        ids = _bounded_ids(image_ids)
+        records: dict[str, Mapping[str, Any]] = {}
+        for chunk in _chunks(ids):
+            records.update(self.annotations.get_many(chunk))
+        annotations: dict[str, PickerAnnotation] = {}
+        missing: list[str] = []
+        for image_id in ids:
+            record = records.get(image_id)
+            if record is None or self._is_synthesized_empty(record):
+                missing.append(image_id)
+                continue
+            boxes = record.get("boxes") or []
+            scope = record.get("annotation_scope") or []
+            annotations[image_id] = PickerAnnotation(
+                image_id=image_id,
+                annotation_state=str(record.get("annotation_state") or "unannotated"),
+                version=int(record.get("version") or 0),
+                content_digest=str(record.get("content_digest") or ""),
+                box_count=len(boxes),
+                scope_labels=tuple(str(value) for value in scope),
+                legacy_unproven=False,
+            )
+        return PickerAnnotations(
+            annotations=annotations, missing_ids=tuple(missing), unproven_legacy_ids=(),
+        )
 
     def get_pool_relations(self, project_id: str, image_ids: Sequence[str]) -> dict[str, PickerPoolRelation]:
-        ids = _normalize_ids(image_ids) or []
-        result = {
+        project_id = self._require_project(project_id)
+        ids = _bounded_ids(image_ids)
+        state: dict[str, dict[str, Any]] = {
             image_id: {"member": False, "joined_at": None, "categories": set(), "algorithms": set()}
             for image_id in ids
         }
         if not ids:
             return {}
         with closing(self.repository._connect()) as database:
-            placeholders = ",".join("?" for _ in ids)
-            for row in database.execute(
-                "SELECT material_id, joined_at FROM negative_pool_members "
-                f"WHERE material_id IN ({placeholders})", ids,
-            ):
-                entry = result[str(row[0])]
-                entry["member"] = True
-                entry["joined_at"] = row[1]
-            for row in database.execute(
-                "SELECT material_id, category_id FROM negative_pool_links "
-                f"WHERE material_id IN ({placeholders})", ids,
-            ):
-                result[str(row[0])]["categories"].add(str(row[1]))
-            for row in database.execute(
-                "SELECT material_id, algorithm_id FROM negative_pool_algorithm_members "
-                f"WHERE material_id IN ({placeholders})", ids,
-            ):
-                result[str(row[0])]["algorithms"].add(str(row[1]))
+            for chunk in _chunks(ids):
+                placeholders = ",".join("?" for _ in chunk)
+                for row in database.execute(
+                    "SELECT material_id, joined_at FROM negative_pool_members "
+                    f"WHERE material_id IN ({placeholders})", chunk,
+                ):
+                    entry = state[str(row[0])]
+                    entry["member"] = True
+                    entry["joined_at"] = row[1]
+                for row in database.execute(
+                    "SELECT material_id, category_id FROM negative_pool_links "
+                    f"WHERE material_id IN ({placeholders})", chunk,
+                ):
+                    state[str(row[0])]["categories"].add(str(row[1]))
+                for row in database.execute(
+                    "SELECT material_id, algorithm_id FROM negative_pool_algorithm_members "
+                    f"WHERE material_id IN ({placeholders})", chunk,
+                ):
+                    state[str(row[0])]["algorithms"].add(str(row[1]))
         return {
             image_id: PickerPoolRelation(
                 image_id=image_id, member=bool(entry["member"]),
@@ -774,25 +939,58 @@ class SQLitePickerReadProvider(PickerReadProvider):
                 category_ids=tuple(sorted(entry["categories"])),
                 algorithm_ids=tuple(sorted(entry["algorithms"])),
             )
-            for image_id, entry in result.items()
+            for image_id, entry in state.items()
         }
+
+    def _confirmation_state(self) -> tuple[str, bool]:
+        with closing(self.annotations._connect()) as database:
+            table = database.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='task_negative_confirmations'"
+            ).fetchone()
+            if table is None:
+                return "absent", False
+            if database.execute(
+                "SELECT 1 FROM task_negative_confirmations LIMIT 1"
+            ).fetchone() is None:
+                return "present_empty", True
+            return "present", True
 
     def get_task_negative_receipts(
         self, project_id: str, context_key: str, image_ids: Sequence[str] | None = None,
+        *, verify_owner: bool = True,
     ) -> PickerNegativeReceipts:
-        ids = _normalize_ids(image_ids)
-        receipts = self.annotations.task_negative_receipts(context_key, ids)
+        project_id = self._require_project(project_id)
+        ids = _receipt_ids(image_ids)
+        state, authoritative = self._confirmation_state()
         generation = self.annotations.task_negative_confirmation_generation()
+        if not authoritative:
+            return PickerNegativeReceipts(
+                context_key=str(context_key), generation=int(generation),
+                state=state, authoritative=False, owner_equivalent=True, receipts=(),
+            )
+        rows = self.annotations.task_negative_receipts(context_key, ids)
+        receipts = tuple(
+            PickerNegativeReceipt(
+                receipt_id=str(row.get("receipt_id") or ""),
+                context_key=str(row.get("context_key") or context_key),
+                image_id=None if row.get("image_id") is None else str(row.get("image_id")),
+                evidence=dict(row),
+            )
+            for row in rows
+        )
         return PickerNegativeReceipts(
             context_key=str(context_key), generation=int(generation),
-            authoritative=True, receipts=tuple(receipts),
+            state=state, authoritative=True, owner_equivalent=True, receipts=receipts,
         )
 
     def revision_vector(self, project_id: str) -> Mapping[str, Any]:
-        return self._vector_dict(self._owner())
+        project_id = self._require_project(project_id)
+        return self._vector_dict(self._owner(project_id))
 
     def snapshot_context(self, project_id: str) -> PickerSnapshotInfo:
-        vector = self._vector_dict(self._owner())
+        project_id = self._require_project(project_id)
+        vector = self._vector_dict(self._owner(project_id))
         return PickerSnapshotInfo(
             project_id=project_id, source=self.name, status="OWNER",
             snapshot_id=self._snapshot_token(vector), revision_vector=vector,
@@ -845,11 +1043,20 @@ _POOL_ALGORITHM = (
 #: SQLite ``negative_pool._LIVE`` in PostgreSQL JSONB terms (deleted/claimed rows
 #: are not live pool members). Only applied when the pool filter is active.
 _PG_LIVE = (
-    "(m.payload -> '_dataset_delete_claim') IS NULL "
-    "AND (m.payload -> '_material_batch_delete_claim') IS NULL "
-    "AND (m.payload -> 'deleted_at') IS NULL "
-    "AND ((m.payload -> 'deleted') IS NULL "
-    "     OR (m.payload -> 'deleted') IN ('false'::jsonb, '0'::jsonb))"
+    "(m.payload -> '_dataset_delete_claim' IS NULL "
+    "OR jsonb_typeof(m.payload -> '_dataset_delete_claim') = 'null') "
+    "AND (m.payload -> '_material_batch_delete_claim' IS NULL "
+    "OR jsonb_typeof(m.payload -> '_material_batch_delete_claim') = 'null') "
+    "AND (m.payload -> 'deleted_at' IS NULL "
+    "OR jsonb_typeof(m.payload -> 'deleted_at') = 'null') "
+    "AND CASE "
+    "WHEN m.payload -> 'deleted' IS NULL THEN TRUE "
+    "WHEN jsonb_typeof(m.payload -> 'deleted') = 'null' THEN TRUE "
+    "WHEN jsonb_typeof(m.payload -> 'deleted') = 'boolean' "
+    "THEN (m.payload ->> 'deleted') = 'false' "
+    "WHEN jsonb_typeof(m.payload -> 'deleted') = 'number' "
+    "THEN (m.payload ->> 'deleted')::numeric = 0 "
+    "ELSE FALSE END"
 )
 _MATERIAL_SELECT = (
     "m.id, m.filename, m.storage_source_id, m.processing_status, m.content_sha256, "
@@ -871,18 +1078,18 @@ class PostgresPickerReadProvider(PickerReadProvider):
         self,
         connect: Callable[[], Any],
         *,
-        owner_revisions: Callable[[], OwnerRevisionVector] | None = None,
+        owner_revisions: Callable[[str], OwnerRevisionVector] | None = None,
         statement_timeout_ms: int = 15000,
-        schema: str = SCHEMA_NAME,
     ):
         self._connect = connect
         self._owner_revisions = owner_revisions
         self._statement_timeout_ms = int(statement_timeout_ms)
-        self._schema = schema
+        # The U3 read projection schema is fixed by the frozen P0 contract.
+        self._schema = SCHEMA_NAME
 
     @classmethod
     def from_dsn(
-        cls, dsn: str, *, owner_revisions: Callable[[], OwnerRevisionVector] | None = None,
+        cls, dsn: str, *, owner_revisions: Callable[[str], OwnerRevisionVector] | None = None,
         statement_timeout_ms: int = 15000,
     ) -> "PostgresPickerReadProvider":
         import psycopg
@@ -922,6 +1129,7 @@ class PostgresPickerReadProvider(PickerReadProvider):
                         cursor.execute(
                             "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
                         )
+                        # Fixed offset: no tzdata dependency and no DST ambiguity.
                         cursor.execute("SET LOCAL TIME ZONE '+00:00'")
                         cursor.execute(
                             f"SET LOCAL statement_timeout = {int(self._statement_timeout_ms)}"
@@ -931,11 +1139,11 @@ class PostgresPickerReadProvider(PickerReadProvider):
                         state = self._state(cursor, project_id)
                         owner_before = None
                         if verify_owner:
-                            owner_before = self._owner_vector()
+                            owner_before = self._owner_vector(project_id)
                             self._assert_owner_matches(state, owner_before)
                         yield cursor, state, identity, owner_before
                         if verify_owner and owner_before is not None:
-                            owner_after = self._owner_vector()
+                            owner_after = self._owner_vector(project_id)
                             if owner_after != owner_before:
                                 raise PickerSnapshotStale(
                                     "the SQLite owner changed during the picker read",
@@ -956,44 +1164,191 @@ class PostgresPickerReadProvider(PickerReadProvider):
             except Exception:  # noqa: BLE001 - closing must not mask the result
                 pass
 
-    def _owner_vector(self) -> OwnerRevisionVector:
+    def _owner_vector(self, project_id: str) -> OwnerRevisionVector:
         if self._owner_revisions is None:
             raise PickerOwnerUnverifiable(
                 "no SQLite owner version source is configured for this provider",
             )
-        return self._owner_revisions()
+        vector = self._owner_revisions(str(project_id))
+        if str(getattr(vector, "project_id", "")) != str(project_id):
+            raise PickerProjectMismatch(
+                "the owner revision source returned another project",
+                detail=f"requested={project_id} owner={getattr(vector, 'project_id', '')}",
+            )
+        return vector
 
     @staticmethod
-    def _assert_owner_matches(state: Mapping[str, Any], owner: OwnerRevisionVector) -> None:
-        vector = state.get("revision_vector") or {}
-        if not isinstance(vector, Mapping):
-            raise PickerSnapshotStale("the published snapshot has no revision vector")
-        mismatches: list[str] = []
-        expected = (
-            ("materials", "revision", owner.material_revision),
-            ("annotations", "revision", owner.annotation_revision),
-            ("negative_pool", "revision", owner.negative_pool_revision),
-            ("materials_evidence", "generation", owner.materials_evidence_generation),
-            ("materials_evidence", "structure_generation", owner.materials_structure_generation),
-            ("annotations_evidence", "generation", owner.annotations_evidence_generation),
-            ("annotations_evidence", "structure_generation", owner.annotations_structure_generation),
-            ("negative_confirmation", "generation", owner.negative_confirmation_generation),
-        )
-        for stream, key, value in expected:
-            actual = (vector.get(stream) or {}).get(key)
-            if actual is not None and actual != value:
-                mismatches.append(f"{stream}.{key}={actual} owner={value}")
-        for stream, tables in (
-            ("materials_evidence", owner.materials_tables),
-            ("annotations_evidence", owner.annotations_tables),
+    def _version(value: Any, label: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise PickerSnapshotStale(
+                "the published snapshot carries an invalid version",
+                detail=f"{label}={value!r}",
+            )
+        return value
+
+    @classmethod
+    def _snapshot_versions(cls, state: Mapping[str, Any]) -> dict[str, Any]:
+        """Validate every published version; a missing/invalid field never passes."""
+        vector = state.get("revision_vector")
+        if not isinstance(vector, Mapping) or not vector:
+            raise PickerSnapshotStale(
+                "the published snapshot has no revision vector",
+            )
+
+        def stream(name: str) -> Mapping[str, Any]:
+            value = vector.get(name)
+            if not isinstance(value, Mapping):
+                raise PickerSnapshotStale(
+                    "the published snapshot is missing a version stream",
+                    detail=f"stream={name}",
+                )
+            return value
+
+        materials = stream("materials")
+        annotations = stream("annotations")
+        negative_pool = stream("negative_pool")
+        materials_evidence = stream("materials_evidence")
+        annotations_evidence = stream("annotations_evidence")
+        confirmation = stream("negative_confirmation")
+
+        versions: dict[str, Any] = {
+            "materials": cls._version(materials.get("revision"), "materials.revision"),
+            "annotations": cls._version(
+                annotations.get("revision"), "annotations.revision",
+            ),
+            "negative_pool": cls._version(
+                negative_pool.get("revision"), "negative_pool.revision",
+            ),
+            "materials_evidence": {
+                "generation": cls._version(
+                    materials_evidence.get("generation"), "materials_evidence.generation",
+                ),
+                "structure_generation": cls._version(
+                    materials_evidence.get("structure_generation"),
+                    "materials_evidence.structure_generation",
+                ),
+                "tables": cls._tables(
+                    materials_evidence.get("tables"), "materials_evidence.tables",
+                ),
+                "structure_certified": cls._certified(
+                    materials_evidence.get("structure_certified"),
+                    "materials_evidence.structure_certified",
+                ),
+            },
+            "annotations_evidence": {
+                "generation": cls._version(
+                    annotations_evidence.get("generation"),
+                    "annotations_evidence.generation",
+                ),
+                "structure_generation": cls._version(
+                    annotations_evidence.get("structure_generation"),
+                    "annotations_evidence.structure_generation",
+                ),
+                "tables": cls._tables(
+                    annotations_evidence.get("tables"), "annotations_evidence.tables",
+                ),
+                "structure_certified": cls._certified(
+                    annotations_evidence.get("structure_certified"),
+                    "annotations_evidence.structure_certified",
+                ),
+            },
+            "negative_confirmation": {
+                "generation": cls._version(
+                    confirmation.get("generation"),
+                    "negative_confirmation.generation",
+                ),
+                "tables": cls._tables(
+                    confirmation.get("tables"), "negative_confirmation.tables",
+                ),
+            },
+        }
+        for column, expected in (
+            ("material_revision", versions["materials"]),
+            ("annotation_revision", versions["annotations"]),
+            ("negative_pool_revision", versions["negative_pool"]),
+            (
+                "negative_confirmation_generation",
+                versions["negative_confirmation"]["generation"],
+            ),
         ):
-            published = (vector.get(stream) or {}).get("tables")
-            if published is not None and sorted(published) != sorted(tables):
-                mismatches.append(f"{stream}.tables changed")
+            actual = state.get(column)
+            if actual is not None and cls._version(actual, column) != expected:
+                raise PickerSnapshotStale(
+                    "the published snapshot columns disagree with its revision vector",
+                    detail=f"{column}={actual} vector={expected}",
+                )
+        return versions
+
+    @staticmethod
+    def _tables(value: Any, label: str) -> list[str]:
+        if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+            raise PickerSnapshotStale(
+                "the published snapshot carries an invalid evidence-table list",
+                detail=f"{label}={value!r}",
+            )
+        return sorted(value)
+
+    @staticmethod
+    def _certified(value: Any, label: str) -> bool:
+        if value is not True:
+            raise PickerSnapshotStale(
+                "the published snapshot evidence structure is not certified",
+                detail=f"{label}={value!r}",
+            )
+        return True
+
+    @classmethod
+    def _assert_owner_matches(
+        cls, state: Mapping[str, Any], owner: OwnerRevisionVector,
+    ) -> None:
+        versions = cls._snapshot_versions(state)
         if not owner.materials_structure_certified or not owner.annotations_structure_certified:
             raise PickerOwnerUnverifiable(
                 "the SQLite evidence-table structure is not certified",
+                detail=f"project={owner.project_id}",
             )
+        mismatches: list[str] = []
+        expected = (
+            ("materials.revision", versions["materials"], owner.material_revision),
+            ("annotations.revision", versions["annotations"], owner.annotation_revision),
+            ("negative_pool.revision", versions["negative_pool"], owner.negative_pool_revision),
+            (
+                "materials_evidence.generation",
+                versions["materials_evidence"]["generation"],
+                owner.materials_evidence_generation,
+            ),
+            (
+                "materials_evidence.structure_generation",
+                versions["materials_evidence"]["structure_generation"],
+                owner.materials_structure_generation,
+            ),
+            (
+                "annotations_evidence.generation",
+                versions["annotations_evidence"]["generation"],
+                owner.annotations_evidence_generation,
+            ),
+            (
+                "annotations_evidence.structure_generation",
+                versions["annotations_evidence"]["structure_generation"],
+                owner.annotations_structure_generation,
+            ),
+            (
+                "negative_confirmation.generation",
+                versions["negative_confirmation"]["generation"],
+                owner.negative_confirmation_generation,
+            ),
+        )
+        for label, published, current in expected:
+            if published != current:
+                mismatches.append(f"{label}={published} owner={current}")
+        for label, published, current in (
+            ("materials_evidence.tables", versions["materials_evidence"]["tables"],
+             owner.materials_tables),
+            ("annotations_evidence.tables", versions["annotations_evidence"]["tables"],
+             owner.annotations_tables),
+        ):
+            if published != sorted(current):
+                mismatches.append(f"{label} changed")
         if mismatches:
             raise PickerSnapshotStale(
                 "the published PostgreSQL snapshot does not match the current owner",
@@ -1002,7 +1357,7 @@ class PostgresPickerReadProvider(PickerReadProvider):
 
     def _state(self, cursor, project_id: str) -> dict[str, Any]:
         cursor.execute(
-            "SELECT snapshot_id, content_digest, revision_vector, status, "
+            "SELECT project_id, snapshot_id, content_digest, revision_vector, status, "
             "material_revision, annotation_revision, negative_pool_revision, "
             "negative_confirmation_revision, negative_confirmation_generation "
             f"FROM {self._schema}.picker_snapshot_state WHERE project_id=%s",
@@ -1015,6 +1370,11 @@ class PostgresPickerReadProvider(PickerReadProvider):
                 detail=str(project_id),
             )
         state = dict(row)
+        if str(state.get("project_id") or "") != str(project_id):
+            raise PickerProjectMismatch(
+                "the published snapshot belongs to another project",
+                detail=f"requested={project_id} snapshot={state.get('project_id')}",
+            )
         if str(state.get("status") or "") != "READY":
             raise PickerSnapshotNotReady(
                 "the picker snapshot is not READY",
@@ -1101,7 +1461,7 @@ class PostgresPickerReadProvider(PickerReadProvider):
         )
 
     @staticmethod
-    def _material(row: Mapping[str, Any], *, payload: bool = False) -> PickerMaterial:
+    def _material(row: Mapping[str, Any], *, include_payload: bool = False) -> PickerMaterial:
         return PickerMaterial(
             id=str(row["id"]),
             filename=str(row.get("filename") or ""),
@@ -1113,84 +1473,196 @@ class PostgresPickerReadProvider(PickerReadProvider):
             annotated=None if row.get("annotated") is None else bool(row.get("annotated")),
             created_at=str(row.get("created_at") or ""),
             updated_at=str(row.get("updated_at") or ""),
-            payload=row.get("payload") if payload else None,
+            payload=row.get("payload") if include_payload else None,
         )
+
+    def _count_on(self, session: "PickerReadSession", clauses: list[str], params: list[Any]) -> int:
+        session._cursor.execute(
+            f"SELECT COUNT(*) AS total FROM {self._schema}.material m WHERE "
+            + " AND ".join(clauses),
+            params,
+        )
+        return int(session._cursor.fetchone()["total"])
+
+    # -- read session ----------------------------------------------------
+    @contextmanager
+    def read_session(
+        self, project_id: str, *, verify_owner: bool = True,
+    ) -> Iterator["PickerReadSession"]:
+        """Composable reads inside ONE repeatable-read, read-only transaction.
+
+        The Owner post-check runs when the session closes normally; an abandoned
+        session still closes its transaction and never returns partial official
+        results on its own.
+        """
+        with self._read(project_id, verify_owner=verify_owner) as (
+            cursor, state, identity, owner,
+        ):
+            yield PickerReadSession(self, cursor, state, identity, owner)
 
     # -- contract --------------------------------------------------------
     def read_page(self, query: PickerQuery) -> PickerPage:
+        _validate_query(query)
+        with self.read_session(
+            query.project_id, verify_owner=query.verify_owner,
+        ) as session:
+            return session.page(query)
+
+    def iter_candidates(self, query: PickerQuery, *, batch_size: int = 500):
+        if query.page is not None:
+            raise PickerUnsupportedFilter(
+                "candidate iteration does not support page mode",
+            )
+        _validate_query(replace(query, page=None))
+        batch = max(1, min(int(batch_size), MAX_CANDIDATE_BATCH, MAX_PAGE_SIZE))
+        fingerprint = _query_fingerprint(query)
+        with self.read_session(
+            query.project_id, verify_owner=query.verify_owner,
+        ) as session:
+            position = None
+            if query.cursor:
+                position = decode_picker_cursor(
+                    query.cursor, fingerprint=fingerprint,
+                    snapshot=session.snapshot_id,
+                )
+            clauses, params = self._where(query)
+            while True:
+                items, more = session._candidate_batch(query, clauses, params, batch, position)
+                if items:
+                    yield items
+                if not more or not items:
+                    return
+                last = items[-1]
+                if not last.created_at:
+                    raise PickerUnsupportedFilter(
+                        "candidate iteration is not supported over materials "
+                        "without created_at",
+                    )
+                position = (last.created_at, last.id)
+
+    def get_many(
+        self, project_id: str, image_ids: Sequence[str], *, verify_owner: bool = True,
+    ) -> dict[str, PickerMaterial]:
+        ids = _bounded_ids(image_ids)
+        if not ids:
+            return {}
+        with self.read_session(project_id, verify_owner=verify_owner) as session:
+            return session.get_many(ids)
+
+    def get_annotations(
+        self, project_id: str, image_ids: Sequence[str], *, verify_owner: bool = True,
+    ) -> PickerAnnotations:
+        ids = _bounded_ids(image_ids)
+        if not ids:
+            return PickerAnnotations({})
+        with self.read_session(project_id, verify_owner=verify_owner) as session:
+            return session.get_annotations(ids)
+
+    def get_pool_relations(
+        self, project_id: str, image_ids: Sequence[str], *, verify_owner: bool = True,
+    ) -> dict[str, PickerPoolRelation]:
+        ids = _bounded_ids(image_ids)
+        if not ids:
+            return {}
+        with self.read_session(project_id, verify_owner=verify_owner) as session:
+            return session.get_pool_relations(ids)
+
+    def get_task_negative_receipts(
+        self, project_id: str, context_key: str, image_ids: Sequence[str] | None = None,
+        *, verify_owner: bool = True,
+    ) -> PickerNegativeReceipts:
+        with self.read_session(project_id, verify_owner=verify_owner) as session:
+            return session.receipts(context_key, image_ids)
+
+    def revision_vector(self, project_id: str) -> Mapping[str, Any]:
+        with self._read(project_id, verify_owner=False) as (_cursor, state, _identity, _owner):
+            return dict(state.get("revision_vector") or {})
+
+    def snapshot_context(self, project_id: str) -> PickerSnapshotInfo:
+        with self._read(project_id, verify_owner=False) as (cursor, state, identity, _owner):
+            cursor.execute("SHOW transaction_isolation")
+            isolation = str(cursor.fetchone()["transaction_isolation"]).upper()
+            cursor.execute("SHOW transaction_read_only")
+            read_only = str(cursor.fetchone()["transaction_read_only"]).lower() == "on"
+            owner_equivalent = False
+            detail = ""
+            if self._owner_revisions is not None:
+                try:
+                    owner = self._owner_vector(project_id)
+                    self._assert_owner_matches(state, owner)
+                    owner_equivalent = True
+                except PickerReadError as error:
+                    detail = f"{error.code}: {error.detail or str(error)}"
+            return PickerSnapshotInfo(
+                project_id=project_id, source=self.name, status="READY",
+                snapshot_id=str(state.get("snapshot_id") or ""),
+                revision_vector=dict(state.get("revision_vector") or {}),
+                owner_equivalent=owner_equivalent, isolation=isolation,
+                read_only=read_only, read_identity=identity, detail=detail,
+            )
+
+
+    def _page_on(self, session: "PickerReadSession", query: PickerQuery) -> PickerPage:
         size, page = _validate_query(query)
         fingerprint = _query_fingerprint(query)
-        with self._read(query.project_id, verify_owner=query.verify_owner) as (
-            cursor, state, identity, _owner,
-        ):
-            snapshot_id = str(state.get("snapshot_id") or "")
-            clauses, params = self._where(query)
-            where = " WHERE " + " AND ".join(clauses)
-            total = None
-            if query.count_mode == "exact":
-                cursor.execute(
-                    f"SELECT COUNT(*) AS total FROM {self._schema}.material m{where}",
-                    params,
-                )
-                total = int(cursor.fetchone()["total"])
-            order, operator = self._order(query)
-            page_params = list(params)
-            offset = None
-            if query.cursor:
-                created_at, image_id = decode_picker_cursor(
-                    query.cursor, fingerprint=fingerprint, snapshot=snapshot_id,
-                )
-                clauses.append(
-                    f'(m.created_at COLLATE "C" {operator} %s OR '
-                    f'(m.created_at = %s AND m.id COLLATE "C" {operator} %s))'
-                )
-                page_params.extend((created_at, created_at, image_id))
-                where = " WHERE " + " AND ".join(clauses)
-            elif page is not None:
-                if total is not None and page > max(1, (total + size - 1) // size):
-                    raise PickerUnsupportedFilter(
-                        f"page {page} exceeds total_pages {max(1, (total + size - 1) // size)}"
-                    )
-                offset = (page - 1) * size
-            sql = (
-                f"SELECT {_MATERIAL_SELECT}, "
-                f"(m.payload) AS payload FROM {self._schema}.material m{where} {order} "
-                "LIMIT %s" + (" OFFSET %s" if offset is not None else "")
+        snapshot_id = session.snapshot_id
+        clauses, params = self._where(query)
+        total = None
+        if query.count_mode == "exact":
+            total = self._count_on(session, clauses, params)
+        order, operator = self._order(query)
+        page_params = list(params)
+        offset = None
+        if query.cursor:
+            created_at, image_id = decode_picker_cursor(
+                query.cursor, fingerprint=fingerprint, snapshot=snapshot_id,
             )
-            page_params.append(size + 1)
-            if offset is not None:
-                page_params.append(offset)
-            cursor.execute(sql, page_params)
-            rows = cursor.fetchall()
-            visible = rows[:size]
-            items = tuple(self._material(row, payload=True) for row in visible)
-            next_cursor = None
-            if len(rows) > size and visible:
-                last = visible[-1]
-                created_at = str(last.get("created_at") or "")
-                if not created_at:
-                    raise PickerUnsupportedFilter(
-                        "cursor pagination is not supported over materials without created_at",
-                    )
-                next_cursor = encode_picker_cursor(
-                    created_at, str(last["id"]),
-                    fingerprint=fingerprint, snapshot=snapshot_id,
+            clauses = list(clauses) + [
+                f'(m.created_at COLLATE "C" {operator} %s OR '
+                f'(m.created_at = %s AND m.id COLLATE "C" {operator} %s))'
+            ]
+            page_params.extend((created_at, created_at, image_id))
+        elif page is not None:
+            if total is not None and page > max(1, (total + size - 1) // size):
+                raise PickerUnsupportedFilter(
+                    f"page {page} exceeds total_pages {max(1, (total + size - 1) // size)}"
                 )
-            annotations = (
-                self._annotations_on(cursor, query.project_id, [item.id for item in items])
-                if query.include_annotations else PickerAnnotations({})
+            offset = (page - 1) * size
+        payload = ", m.payload AS payload" if query.include_payload else ""
+        sql = (
+            f"SELECT {_MATERIAL_SELECT}{payload} FROM {self._schema}.material m WHERE "
+            + " AND ".join(clauses) + f" {order} LIMIT %s"
+            + (" OFFSET %s" if offset is not None else "")
+        )
+        page_params.append(size + 1)
+        if offset is not None:
+            page_params.append(offset)
+        session._cursor.execute(sql, page_params)
+        rows = session._cursor.fetchall()
+        visible = rows[:size]
+        items = tuple(
+            self._material(row, include_payload=query.include_payload) for row in visible
+        )
+        next_cursor = None
+        if len(rows) > size and visible:
+            last = visible[-1]
+            created_at = str(last.get("created_at") or "")
+            if not created_at:
+                raise PickerUnsupportedFilter(
+                    "cursor pagination is not supported over materials without created_at",
+                )
+            next_cursor = encode_picker_cursor(
+                created_at, str(last["id"]),
+                fingerprint=fingerprint, snapshot=snapshot_id,
             )
-            info = PickerSnapshotInfo(
-                project_id=query.project_id, source=self.name, status="READY",
-                snapshot_id=snapshot_id,
-                revision_vector=dict(state.get("revision_vector") or {}),
-                owner_equivalent=query.verify_owner,
-                isolation="REPEATABLE READ", read_only=True, read_identity=identity,
-            )
+        annotations = (
+            self._annotations_on(session._cursor, session.project_id, [item.id for item in items])
+            if query.include_annotations else PickerAnnotations({})
+        )
         return PickerPage(
             items=items, annotations=annotations, total=total,
             has_more=len(rows) > size, next_cursor=next_cursor, page=page,
-            page_size=size, count_mode=query.count_mode, snapshot=info,
+            page_size=size, count_mode=query.count_mode, snapshot=session.snapshot,
         )
 
     def _annotations_on(self, cursor, project_id: str, image_ids: Sequence[str]) -> PickerAnnotations:
@@ -1247,107 +1719,38 @@ class PostgresPickerReadProvider(PickerReadProvider):
             unproven_legacy_ids=tuple(unproven),
         )
 
-    def iter_candidates(self, query: PickerQuery, *, batch_size: int = 500):
-        size, _page = _validate_query(query)
-        batch = max(1, min(int(batch_size), MAX_CANDIDATE_BATCH))
-        with self._read(query.project_id, verify_owner=query.verify_owner) as (
-            cursor, state, _identity, _owner,
-        ):
-            snapshot_id = str(state.get("snapshot_id") or "")
-            clauses, params = self._where(query)
-            order, operator = self._order(query)
-            cursor_position: tuple[str, str] | None = None
-            while True:
-                page_clauses = list(clauses)
-                page_params = list(params)
-                if cursor_position is not None:
-                    created_at, image_id = cursor_position
-                    page_clauses.append(
-                        f'(m.created_at COLLATE "C" {operator} %s OR '
-                        f'(m.created_at = %s AND m.id COLLATE "C" {operator} %s))'
-                    )
-                    page_params.extend((created_at, created_at, image_id))
-                cursor.execute(
-                    f"SELECT {_MATERIAL_SELECT} FROM {self._schema}.material m WHERE "
-                    + " AND ".join(page_clauses) + f" {order} LIMIT %s",
-                    [*page_params, batch + 1],
-                )
-                rows = cursor.fetchall()
-                visible = rows[:batch]
-                if visible:
-                    yield tuple(self._material(row) for row in visible)
-                if len(rows) <= batch:
-                    return
-                last = visible[-1]
-                created_at = str(last.get("created_at") or "")
-                if not created_at:
-                    raise PickerUnsupportedFilter(
-                        "candidate iteration is not supported over materials without created_at",
-                    )
-                cursor_position = (created_at, str(last["id"]))
-
-    def get_many(self, project_id: str, image_ids: Sequence[str], *, verify_owner: bool = True) -> dict[str, PickerMaterial]:
-        ids = _normalize_ids(image_ids) or []
-        if len(ids) > MAX_BATCH_IDS:
-            raise PickerUnsupportedFilter(f"at most {MAX_BATCH_IDS} ids may be read at once")
-        result: dict[str, PickerMaterial] = {}
-        if not ids:
-            return result
-        with self._read(project_id, verify_owner=verify_owner) as (cursor, _state, _identity, _owner):
-            for chunk in _chunks(ids):
-                cursor.execute(
-                    f"SELECT {_MATERIAL_SELECT} FROM {self._schema}.material m "
-                    "WHERE m.project_id=%s AND m.id = ANY(%s)",
-                    (str(project_id), chunk),
-                )
-                for row in cursor.fetchall():
-                    material = self._material(row)
-                    result[material.id] = material
-        return {image_id: result[image_id] for image_id in ids if image_id in result}
-
-    def get_annotations(self, project_id: str, image_ids: Sequence[str], *, verify_owner: bool = True) -> PickerAnnotations:
-        ids = _normalize_ids(image_ids) or []
-        if len(ids) > MAX_BATCH_IDS:
-            raise PickerUnsupportedFilter(f"at most {MAX_BATCH_IDS} ids may be read at once")
-        if not ids:
-            return PickerAnnotations({})
-        with self._read(project_id, verify_owner=verify_owner) as (cursor, _state, _identity, _owner):
-            return self._annotations_on(cursor, project_id, ids)
-
-    def get_pool_relations(self, project_id: str, image_ids: Sequence[str], *, verify_owner: bool = True) -> dict[str, PickerPoolRelation]:
-        ids = _normalize_ids(image_ids) or []
-        if not ids:
-            return {}
+    def _pool_on(self, cursor, project_id: str, image_ids: Sequence[str]) -> dict[str, PickerPoolRelation]:
         state: dict[str, dict[str, Any]] = {
             image_id: {"member": False, "joined_at": None, "categories": set(), "algorithms": set()}
-            for image_id in ids
+            for image_id in image_ids
         }
-        with self._read(project_id, verify_owner=verify_owner) as (cursor, _state, _identity, _owner):
-            for chunk in _chunks(ids):
-                cursor.execute(
-                    "SELECT material_id, joined_at FROM "
-                    f"{self._schema}.negative_pool_member WHERE project_id=%s AND material_id = ANY(%s)",
-                    (str(project_id), chunk),
-                )
-                for row in cursor.fetchall():
-                    entry = state[str(row["material_id"])]
-                    entry["member"] = True
-                    entry["joined_at"] = row["joined_at"]
-                cursor.execute(
-                    "SELECT material_id, category_id FROM "
-                    f"{self._schema}.negative_pool_link WHERE project_id=%s AND material_id = ANY(%s)",
-                    (str(project_id), chunk),
-                )
-                for row in cursor.fetchall():
-                    state[str(row["material_id"])]["categories"].add(str(row["category_id"]))
-                cursor.execute(
-                    "SELECT material_id, algorithm_id FROM "
-                    f"{self._schema}.negative_pool_algorithm_member "
-                    "WHERE project_id=%s AND material_id = ANY(%s)",
-                    (str(project_id), chunk),
-                )
-                for row in cursor.fetchall():
-                    state[str(row["material_id"])]["algorithms"].add(str(row["algorithm_id"]))
+        if not state:
+            return {}
+        for chunk in _chunks(list(state)):
+            cursor.execute(
+                "SELECT material_id, joined_at FROM "
+                f"{SCHEMA_NAME}.negative_pool_member WHERE project_id=%s AND material_id = ANY(%s)",
+                (str(project_id), chunk),
+            )
+            for row in cursor.fetchall():
+                entry = state[str(row["material_id"])]
+                entry["member"] = True
+                entry["joined_at"] = row["joined_at"]
+            cursor.execute(
+                "SELECT material_id, category_id FROM "
+                f"{SCHEMA_NAME}.negative_pool_link WHERE project_id=%s AND material_id = ANY(%s)",
+                (str(project_id), chunk),
+            )
+            for row in cursor.fetchall():
+                state[str(row["material_id"])]["categories"].add(str(row["category_id"]))
+            cursor.execute(
+                "SELECT material_id, algorithm_id FROM "
+                f"{SCHEMA_NAME}.negative_pool_algorithm_member "
+                "WHERE project_id=%s AND material_id = ANY(%s)",
+                (str(project_id), chunk),
+            )
+            for row in cursor.fetchall():
+                state[str(row["material_id"])]["algorithms"].add(str(row["algorithm_id"]))
         return {
             image_id: PickerPoolRelation(
                 image_id=image_id, member=bool(entry["member"]),
@@ -1358,55 +1761,175 @@ class PostgresPickerReadProvider(PickerReadProvider):
             for image_id, entry in state.items()
         }
 
-    def get_task_negative_receipts(
-        self, project_id: str, context_key: str, image_ids: Sequence[str] | None = None,
-        *, verify_owner: bool = True,
+    def _receipts_on(
+        self, session: "PickerReadSession", context_key: str,
+        image_ids: Sequence[str] | None,
     ) -> PickerNegativeReceipts:
-        ids = _normalize_ids(image_ids)
-        with self._read(project_id, verify_owner=verify_owner) as (cursor, state, _identity, _owner):
-            vector = state.get("revision_vector") or {}
-            tables = ((vector.get("negative_confirmation") or {}).get("tables") or [])
-            generation = int(state.get("negative_confirmation_generation") or 0)
-            if "task_negative_confirmations" not in tables:
-                # The source table is absent: retained projections are history, not
-                # current confirmations. Nothing is deleted and nothing is implied.
-                return PickerNegativeReceipts(
-                    context_key=str(context_key), generation=generation,
-                    authoritative=False, receipts=(),
-                )
-            receipts: list[Mapping[str, Any]] = []
-            chunks = _chunks(ids) if ids else [[]]
-            for chunk in chunks:
-                sql = (
-                    "SELECT receipt_id, context_key, image_id, evidence FROM "
-                    f"{self._schema}.task_negative_confirmation "
-                    "WHERE project_id=%s AND context_key=%s"
-                )
-                params: list[Any] = [str(project_id), str(context_key)]
-                if chunk:
-                    sql += " AND image_id = ANY(%s)"
-                    params.append(chunk)
-                cursor.execute(sql, params)
-                receipts.extend(dict(row) for row in cursor.fetchall())
+        ids = _receipt_ids(image_ids)
+        versions = session.versions["negative_confirmation"]
+        tables = versions["tables"]
+        generation = int(versions["generation"])
+        project_id = session.project_id
+        if "task_negative_confirmations" not in tables:
+            # Source table absent: retained projections are history, not current
+            # confirmations. Nothing is deleted and nothing is implied.
+            return PickerNegativeReceipts(
+                context_key=str(context_key), generation=generation,
+                state="absent", authoritative=False,
+                owner_equivalent=session.owner_equivalent, receipts=(),
+            )
+        session._cursor.execute(
+            f"SELECT 1 FROM {SCHEMA_NAME}.task_negative_confirmation "
+            "WHERE project_id=%s LIMIT 1",
+            (project_id,),
+        )
+        state = "present" if session._cursor.fetchone() else "present_empty"
+        receipts: list[PickerNegativeReceipt] = []
+        for chunk in _chunks(ids):
+            session._cursor.execute(
+                "SELECT receipt_id, context_key, image_id, evidence FROM "
+                f"{SCHEMA_NAME}.task_negative_confirmation "
+                "WHERE project_id=%s AND context_key=%s AND image_id = ANY(%s)",
+                (project_id, str(context_key), chunk),
+            )
+            for row in session._cursor.fetchall():
+                evidence = row.get("evidence")
+                if isinstance(evidence, str):
+                    evidence = json.loads(evidence)
+                receipts.append(PickerNegativeReceipt(
+                    receipt_id=str(row.get("receipt_id") or ""),
+                    context_key=str(row.get("context_key") or context_key),
+                    image_id=None if row.get("image_id") is None else str(row["image_id"]),
+                    evidence=dict(evidence or {}),
+                ))
         return PickerNegativeReceipts(
-            context_key=str(context_key), generation=generation,
-            authoritative=True, receipts=tuple(receipts),
+            context_key=str(context_key), generation=generation, state=state,
+            authoritative=True, owner_equivalent=session.owner_equivalent,
+            receipts=tuple(receipts),
         )
 
-    def revision_vector(self, project_id: str) -> Mapping[str, Any]:
-        with self._read(project_id, verify_owner=False) as (_cursor, state, _identity, _owner):
-            return dict(state.get("revision_vector") or {})
 
-    def snapshot_context(self, project_id: str) -> PickerSnapshotInfo:
-        with self._read(project_id, verify_owner=False) as (cursor, state, identity, _owner):
-            cursor.execute("SHOW transaction_isolation")
-            isolation = str(cursor.fetchone()["transaction_isolation"]).upper()
-            cursor.execute("SHOW transaction_read_only")
-            read_only = str(cursor.fetchone()["transaction_read_only"]).lower() == "on"
-            return PickerSnapshotInfo(
-                project_id=project_id, source=self.name, status="READY",
-                snapshot_id=str(state.get("snapshot_id") or ""),
-                revision_vector=dict(state.get("revision_vector") or {}),
-                owner_equivalent=False, isolation=isolation,
-                read_only=read_only, read_identity=identity,
+class PickerReadSession:
+    """Composable reads over ONE PostgreSQL MVCC snapshot.
+
+    Every method validates the requested project against the snapshot's project,
+    so a session can never mix two projects. ``owner_equivalent`` reports whether
+    the session was opened with a proven current-owner check; when it is false the
+    data is the imported snapshot only and must not be described as current.
+    """
+
+    def __init__(self, provider: PostgresPickerReadProvider, cursor, state, identity, owner):
+        self._provider = provider
+        self._cursor = cursor
+        self._state = state
+        self.identity = identity
+        self.owner = owner
+        self.project_id = str(state.get("project_id") or "")
+        self.snapshot_id = str(state.get("snapshot_id") or "")
+        self.versions = provider._snapshot_versions(state)
+        self.revision_vector = dict(state.get("revision_vector") or {})
+        self.owner_equivalent = owner is not None
+
+    def _require(self, project_id: str) -> str:
+        if str(project_id) != self.project_id:
+            raise PickerProjectMismatch(
+                "the read session is bound to another project",
+                detail=f"requested={project_id} session={self.project_id}",
             )
+        return self.project_id
+
+    @property
+    def snapshot(self) -> PickerSnapshotInfo:
+        return PickerSnapshotInfo(
+            project_id=self.project_id, source=self._provider.name,
+            status="READY", snapshot_id=self.snapshot_id,
+            revision_vector=self.revision_vector,
+            owner_equivalent=self.owner_equivalent,
+            isolation="REPEATABLE READ", read_only=True,
+            read_identity=self.identity,
+        )
+
+    def count(self, query: PickerQuery) -> int | None:
+        self._require(query.project_id)
+        _validate_query(query)
+        if query.count_mode == "deferred":
+            return None
+        clauses, params = self._provider._where(query)
+        return self._provider._count_on(self, clauses, params)
+
+    def page(self, query: PickerQuery) -> PickerPage:
+        self._require(query.project_id)
+        return self._provider._page_on(self, query)
+
+    def get_many(self, image_ids: Sequence[str]) -> dict[str, PickerMaterial]:
+        ids = _bounded_ids(image_ids)
+        result: dict[str, PickerMaterial] = {}
+        for chunk in _chunks(ids):
+            self._cursor.execute(
+                f"SELECT {_MATERIAL_SELECT} FROM {SCHEMA_NAME}.material m "
+                "WHERE m.project_id=%s AND m.id = ANY(%s)",
+                (self.project_id, chunk),
+            )
+            for row in self._cursor.fetchall():
+                material = self._provider._material(row)
+                result[material.id] = material
+        return {image_id: result[image_id] for image_id in ids if image_id in result}
+
+    def get_annotations(self, image_ids: Sequence[str]) -> PickerAnnotations:
+        return self._provider._annotations_on(self._cursor, self.project_id, _bounded_ids(image_ids))
+
+    def get_pool_relations(self, image_ids: Sequence[str]) -> dict[str, PickerPoolRelation]:
+        return self._provider._pool_on(self._cursor, self.project_id, _bounded_ids(image_ids))
+
+    def receipts(
+        self, context_key: str, image_ids: Sequence[str] | None,
+    ) -> PickerNegativeReceipts:
+        return self._provider._receipts_on(self, context_key, image_ids)
+
+    def candidates(
+        self, query: PickerQuery, *, batch_size: int = 500,
+    ) -> Iterator[tuple[PickerMaterial, ...]]:
+        """Bounded keyset iteration inside this session's snapshot."""
+        self._require(query.project_id)
+        batch = max(1, min(int(batch_size), MAX_CANDIDATE_BATCH, MAX_PAGE_SIZE))
+        clauses, params = self._provider._where(query)
+        position = None
+        while True:
+            items, more = self._candidate_batch(query, clauses, params, batch, position)
+            if items:
+                yield items
+            if not more or not items:
+                return
+            last = items[-1]
+            if not last.created_at:
+                raise PickerUnsupportedFilter(
+                    "candidate iteration is not supported over materials "
+                    "without created_at",
+                )
+            position = (last.created_at, last.id)
+
+    def _candidate_batch(
+        self, query: PickerQuery, clauses: list[str], params: list[Any],
+        batch: int, position: tuple[str, str] | None,
+    ) -> tuple[tuple[PickerMaterial, ...], bool]:
+        page_clauses = list(clauses)
+        page_params = list(params)
+        order, operator = self._provider._order(query)
+        if position is not None:
+            created_at, image_id = position
+            page_clauses.append(
+                f'(m.created_at COLLATE "C" {operator} %s OR '
+                f'(m.created_at = %s AND m.id COLLATE "C" {operator} %s))'
+            )
+            page_params.extend((created_at, created_at, image_id))
+        self._cursor.execute(
+            f"SELECT {_MATERIAL_SELECT} FROM {SCHEMA_NAME}.material m WHERE "
+            + " AND ".join(page_clauses) + f" {order} LIMIT %s",
+            [*page_params, batch + 1],
+        )
+        rows = self._cursor.fetchall()
+        visible = rows[:batch]
+        return (
+            tuple(self._provider._material(row) for row in visible),
+            len(rows) > batch,
+        )
