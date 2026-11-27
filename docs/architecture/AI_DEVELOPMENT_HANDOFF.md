@@ -48,6 +48,13 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第十二批：evidence absent 状态严格校验（2026-11-27，本批）
+
+- 起始 `f3e08978119f5ab3a9e9661cc2dc5ef3f1384859`。VERSION 42.24.592 未改。
+- `pending_clear_eligible()` 收紧 evidence 合同：`table_state.present` 必须严格为 bool（`None`/`1` 拒绝）；absent 时 `row_count` 必须实际存在、为 int（非 bool）、值为 0；`stores.evidence` 中不得出现该表键（即使值为 `None`），`counts`/`digests` 也不得出现该表键；未知 evidence 表除 `stores.evidence` 外，还覆盖 `counts`/`digests` 中 `*.evidence.*` 的未知键。absent 保留历史、empty 清空的既有语义不变。
+- 新增真实 PostgreSQL 用例：10 种非法快照（present=None/int、absent 缺 row_count、row_count=bool/1、evidence 值为 None、counts/digests 残留键、counts/digests 未知 evidence 键）在 pending 项目上全部 `U3_PENDING_IMPORT_INCOMPLETE` 拒绝，且每次拒绝后 `stores`/`table_state`/`revisions`/pending 标记与拒绝前完全一致；随后原始完整快照正常清除标记。
+- 验证：`test_u3_schema_upgrade_postgres.py` 10 项 + `test_u3_material_gt_postgres.py` 15 项 = **25 passed**（真实 PostgreSQL，0 skip）。
+
 ## 第十一批：证据表逐表校验、revision 完整性与外键有效性（2026-11-27，本批）
 
 - 起始 `5a6a5e5ab02173a93f0ce44d871d58ce708b8a0c`。VERSION 42.24.592 未改。
