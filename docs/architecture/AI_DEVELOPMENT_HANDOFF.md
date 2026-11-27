@@ -1,6 +1,21 @@
 # AI 开发接续入口
 
-> **2026-11-28 / U3-P1 收口：项目身份、Owner 等价失败关闭、候选流与会话（1877c768）**：
+> **2026-11-28 / U3-P2 业务读取合同 + P3-A 前置准备（8650e203）**：新增
+> `platform_core/training_material_business_read.py`，在 P1 Read Provider 之上组合 SQLite 权威
+> 训练历史（`TrainingMaterialUsage.query_filter`）、样本角色（`training_material_role`）、
+> 训练用途（`usage_role`/`eval_only`/`test_reserved`）与任务级确认回执，形成可执行的业务读取
+> 合同：候选流有界、最终分页/计数在全部业务条件之后、exact 全流累计不重复 COUNT、
+> deferred `total=None`、cursor 绑定查询指纹+P1 快照+usage revision。
+> P2-0 收口：`PickerReadSession.candidates` 消费 cursor 并拒绝 page；确认结构版本/认证/表集合
+> 与 `annotations_evidence`、`table_state.present`、顶层 revision/generation 交叉核验；
+> SQLite 回执 generation/存在/行单事务读取；CI paths 覆盖 Picker/P2 模块。
+> 定向：真实 PostgreSQL 16 + SQLite Owner **48 passed / 0 skipped**（P1 41 + P2 7）；
+> CI 拆 P0/P1/P2 三个步骤并分别设 JUnit 门槛。未切换生产、未改 VERSION 42.24.592、
+> 未新增 Schema V5、未启动 P3-B。
+> 合同见 [P2 业务读取合同](U3_PICKER_P2_BUSINESS_READ_CONTRACT.md) 与
+> [P3-A 增量同步准备](U3_PICKER_P3_INCREMENTAL_SYNC_PREPARATION.md)。
+
+> **2026-11-28 / U3-P1 收口：项目身份、Owner 等价失败关闭、候选流与会话（1877c768）**：：项目身份、Owner 等价失败关闭、候选流与会话（1877c768）**：
 > 只修 P1 合同问题，不重写 Provider、不动 P0/DDL/VERSION。
 > ① **项目身份**：`SQLitePickerReadProvider(project_path, project_id=...)` 显式绑定并在所有
 > 公开方法核验；`sqlite_owner_revision_source(project_path, project_id)` 绑定项目且返回的
