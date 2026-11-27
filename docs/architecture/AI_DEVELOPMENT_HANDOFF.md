@@ -1,5 +1,17 @@
 # AI 开发接续入口
 
+> **2026-11-27 / U3 Picker P0（Schema V4 基础合同，5696050c）**：本轮只做 P0，不实现 Provider。
+> `u3_shadow.py` 升到 `SCHEMA_VERSION=4`：新增 `picker_snapshot_state`、`u3_shadow_import`、
+> `u3_projection_cursor`、`task_negative_confirmation` 与 9 个 Picker 索引（算法级索引因与
+> `negative_pool_algorithm_member` 主键重复未建）；V1–V3 历史 DDL 与 checksum 未改。
+> 导入侧新增确定性 `snapshot_id`、快照自证完整性、revision 不回退、同 revision 不同摘要拒绝、
+> full 重放 `ALREADY_APPLIED`、状态/游标/台账与数据同事务；负样本确认只做查询投影
+> （原 `evidence_row` 保留）。真实 PostgreSQL 定向 **39 passed / 0 skipped**
+> （schema 13 + material/GT 26）。顺带修复 CLI `read_target_snapshot` 在 `dict_row` 连接下的
+> `KeyError: 0`（只固定该游标为 `tuple_row`）。P1～P4 未实施；未改生产、未改 VERSION、
+> 未启用 PostgreSQL 读取。合同与边界见
+> [U3 Picker P0 Schema V4](U3_PICKER_P0_SCHEMA_V4_20261127.md)。
+
 ## 统一剩余任务台账（架构阶段）
 
 | 状态 | 单元 | 说明 |
@@ -13,7 +25,7 @@
 | 已完成代码 | SmartAudit 写锁 | create/review/cancel/retry 统一在 finally 释放；复核后锁外刷新；新增前端合同测试 |
 | 已完成代码 | U3 快照/证据/完整导入 | 生命周期栅栏+修订复核；必需表 fail-closed；10 张历史证据表逐行为证据；full 快照删除；schema v2 校验 |
 | 已完成代码 | U5 只读 readiness | 只读诊断权威库/版本/租约/停止未证明/GPU 预留/阻断原因 |
-| 未开发 | U3 Picker PG 等价读 | 本轮未实现（需与选材链一并设计） |
+| 未开发 | U3 Picker PG 等价读 | Provider/查询/历史过滤未实现；P0（V4 快照身份、revision 保护、台账、投影、索引）已落地，见 `U3_PICKER_P0_SCHEMA_V4_20261127.md` |
 | 未开发 | 模型转换 G1 | 类别身份与 BMODEL 证据绑定仍未实现 |
 | 未开发 | Vue 母模型管理 | v63 安装/取消/登记页面未实现 |
 | 已完成代码 | U3 影子迁移（核心） | `u3_shadow.py`：materials/GT/负样本池 Schema + 确定性快照 + 单事务幂等导入 + 对账 + CLI；真实 PG 3 项合同 |

@@ -437,6 +437,11 @@ SELECT 1 FROM selection s JOIN material_index.materials m ON m.id=s.image_id
 
 ### 6.7 revision 高水位
 
+> 2026-11-27 更新（P0 已实现）：以下规则已落到 `u3_shadow.py` V4 的
+> `picker_snapshot_state` + 导入保护中，并按“受 revision 约束的投影表”计算摘要
+> （历史证据表不参与单调比较）。实现与验收见
+> [U3 Picker P0 Schema V4](U3_PICKER_P0_SCHEMA_V4_20261127.md)。
+
 - 记录四个高水位：`material_revision`、`annotation_revision`、`negative_pool_revision`、`usage_revision`（若任务库不可读则记 `null` 并显式标注 `unavailable`，对齐 `training_material_usage.py:213-228` 的 `'unknown'` 语义）。
 - 导入规则：
   - 目标 `revision` **必须 ≥** 源导入时的高水位；
@@ -444,6 +449,9 @@ SELECT 1 FROM selection s JOIN material_index.materials m ON m.id=s.image_id
   - 若 `revision` 相同且 `snapshot_digest` 相同 → 幂等成功（`:551-558`）。
 
 ### 6.8 幂等导入
+
+> 2026-11-27 更新（P0 已实现）：`u3_shadow_import` 台账、同快照返回
+> `ALREADY_APPLIED`、状态/游标/数据同事务提交均已实现；本文其余部分保留为原始设计记录。
 
 - 每张表按自然键 `INSERT ... ON CONFLICT (natural_key) DO UPDATE`，但仅在 `(revision, digest)` 允许时才更新；
 - 整个导入在**一个事务**内（跨表），因为 FK 与“成员+链接”一致性要求原子；
@@ -503,6 +511,8 @@ SELECT 1 FROM selection s JOIN material_index.materials m ON m.id=s.image_id
 3. **没有**影子快照工具。`algorithm_shadow.py` 只服务算法域（其 `_TABLES` 只有 algorithms/versions/analyses，`algorithm_shadow.py:45-50`）。
 4. **没有**导出/导入 CLI。`algorithm_migration_cli.py` / `storage_source_migration_cli.py` 存在，但**不**覆盖素材/GT/池。
 5. **没有** `u3_shadow_import` 台账，也没有 diff 报告生成器（§6.8/§6.9 是拟议）。
+   - 2026-11-27：`u3_shadow_import` 台账与 `picker_snapshot_state`/`u3_projection_cursor` 已随 V4 实现；
+     §6.9 的 diff 报告生成器仍未实现（现有 `reconcile()` 只给阻塞清单，不给逐键差异表）。
 6. **没有** GT 版本历史（§6.4）。任何“回放到某一版本”的需求都无法用现有数据满足。
 7. **没有**素材退休后的池成员恢复（§2.7 的级联后果）。
 8. **没有**跨库原子性保证：GT 与素材投影是两次提交（`annotation_repository.py:1465,1469-1471`），中间失败会留下“GT 已变、投影未变”的窗口；现状靠版本下界与重算兜住，不是靠事务。
@@ -533,7 +543,7 @@ SELECT 1 FROM selection s JOIN material_index.materials m ON m.id=s.image_id
 | P2 | real PostgreSQL | 页面 + 总数 + 四 revision 的读快照一致性（并发写 GT/池时不出自相矛盾页） | PROPOSED | 同 P1 |
 | P3 | real PostgreSQL | 批量选材冻结：revision 冲突时整批拒绝且不留半份清单 | PROPOSED | 需先迁 `selection` 或保留文件 + 摘要 |
 | P4 | real PostgreSQL | rescan 基线 + `baseline_complete` 同事务 | PROPOSED | 同 P3 |
-| P5 | 导入 | 幂等重放：同 `snapshot_digest` 两次导入只有一次 `APPLIED` | PROPOSED | §6.8 |
+| P5 | 导入 | 幂等重放：同 `snapshot_digest` 两次导入只有一次 `APPLIED` | EXISTING (V4) | `tests/integration/test_u3_material_gt_postgres.py`（`test_replaying_an_applied_full_snapshot_changes_no_business_row`） |
 | P6 | 对账 | 差异报告能定位 `missing/extra/changed` 与标签三层漂移 | PROPOSED | §6.9 |
 | P7 | 对账 | 故意注入差异必须被检出（防“恒绿检查器”） | PROPOSED | §6.10 第 11 项 |
 | P8 | 一致性 | `expected_version` 迁移后冻结引用仍可用（formal bulk 重放不误判） | PROPOSED | §6.4；关联 U5 的 `annotation_bulk_commit.py:98-152` |
