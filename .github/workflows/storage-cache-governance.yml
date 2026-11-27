@@ -166,13 +166,13 @@ jobs:
           # platform_core/storage/__init__.py, which imports the remote provider
           # (platform_core/storage/remote.py) that imports requests at module
           # level. The OSS/S3 SDKs stay lazy, so only requests is needed here.
-          # Pillow/starlette/psutil: the P1 SQLite picker baseline reuses
-          # training_material_picker_api, whose import chain pulls Pillow,
-          # starlette.requests and (through training_label_tasks -> task_runtime)
-          # psutil at module level. FastAPI itself stays a lazy import inside the
-          # router factory.
+          # Pillow/starlette/psutil/PyYAML: the P1 SQLite picker baseline reuses
+          # training_material_picker_api, whose module-level import chain pulls
+          # Pillow, starlette.requests, psutil (through task_runtime) and yaml
+          # (platform_core/training_tasks.py). FastAPI itself stays a lazy import
+          # inside the router factory.
           python -m pip install --disable-pip-version-check \
-            pytest "psycopg[binary]" filelock requests Pillow starlette psutil
+            pytest "psycopg[binary]" filelock requests Pillow starlette psutil PyYAML
 
       - name: Prove the service container is the real server
         run: |
