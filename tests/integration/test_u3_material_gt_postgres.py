@@ -27,6 +27,7 @@ _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.u3_shadow import (
+    U3MigrationError,
     SCHEMA_NAME,
     export_project_snapshot,
     import_project_snapshot,
@@ -773,9 +774,15 @@ def test_legacy_json_projection_comes_from_the_annotation_owner(pg, tmp_path):
 
         incomplete = dict(snapshot)
         incomplete["table_state"] = {}
-        retained = import_project_snapshot(connection, incomplete, mode="full")
-        assert retained["legacy_pending_cleared"] == 0
-        assert read_target_snapshot(connection, "p9")["legacy_reference_pending_import"] is True
+        before_refusal = read_target_snapshot(connection, "p9")
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, incomplete, mode="full")
+        assert refused.value.code == "U3_PENDING_IMPORT_INCOMPLETE"
+        after_refusal = read_target_snapshot(connection, "p9")
+        assert after_refusal["stores"] == before_refusal["stores"]
+        assert after_refusal["table_state"] == before_refusal["table_state"]
+        assert after_refusal["revisions"] == before_refusal["revisions"]
+        assert after_refusal["legacy_reference_pending_import"] is True
 
         cleared = import_project_snapshot(connection, snapshot, mode="full")
         assert cleared["legacy_pending_cleared"] == 1

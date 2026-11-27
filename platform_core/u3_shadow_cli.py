@@ -35,6 +35,15 @@ def command_export(args) -> int:
 
 
 def command_import(args) -> int:
+    """Import one snapshot file.
+
+    Trust boundary: the file is read as-is and the import can only prove that the
+    snapshot is structurally complete and self-consistent (counts, digests,
+    content_digest, table_state). It cannot prove where the file came from, so
+    this entry point is an internal controlled-ops path: use a snapshot produced
+    by ``u3_shadow_cli export`` from the authoritative SQLite owners. There is no
+    cryptographic signature or key management in this build.
+    """
     snapshot = json.loads(Path(args.snapshot).read_text(encoding="utf-8"))
     with _connect(args.dsn) as connection:
         counters = import_project_snapshot(connection, snapshot)

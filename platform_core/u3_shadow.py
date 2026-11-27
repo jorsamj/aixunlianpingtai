@@ -865,18 +865,58 @@ def _assert_target_structure(cursor) -> None:
         if name not in columns
     ]
     cursor.execute(
-        "SELECT confrelid::regclass::text AS target, confdeltype FROM pg_constraint "
-        "WHERE conrelid = (%s)::regclass AND contype='f'",
+        """
+        SELECT c.confrelid::regclass::text AS target, c.confdeltype AS delete_action,
+               ARRAY(
+                   SELECT a.attname FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+                   JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord
+               ) AS local_columns,
+               ARRAY(
+                   SELECT a.attname FROM unnest(c.confkey) WITH ORDINALITY AS u(attnum, ord)
+                   JOIN pg_attribute a ON a.attrelid = c.confrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord
+               ) AS remote_columns
+          FROM pg_constraint c
+         WHERE c.conrelid = (%s)::regclass AND c.contype = 'f'
+        """,
         (f"{SCHEMA_NAME}.negative_pool_link",),
     )
     foreign_keys = {
-        (str(row["target"]), str(row["confdeltype"])) for row in cursor.fetchall()
+        (
+            str(row["target"]),
+            str(row["delete_action"]),
+            tuple(str(name) for name in row["local_columns"]),
+            tuple(str(name) for name in row["remote_columns"]),
+        )
+        for row in cursor.fetchall()
     }
     expected = {
-        (f"{SCHEMA_NAME}.negative_pool_member", "c"),
-        (f"{SCHEMA_NAME}.negative_pool_category", "c"),
+        (f"{SCHEMA_NAME}.negative_pool_member", "c",
+         ("project_id", "material_id"), ("project_id", "material_id")),
+        (f"{SCHEMA_NAME}.negative_pool_category", "c",
+         ("project_id", "category_id"), ("project_id", "id")),
     }
     absent = sorted(expected - foreign_keys)
+    cursor.execute(
+        """
+        SELECT ARRAY(
+                   SELECT a.attname FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+                   JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord
+               ) AS columns
+          FROM pg_constraint c
+         WHERE c.conrelid = (%s)::regclass AND c.contype = 'p'
+        """,
+        (f"{SCHEMA_NAME}.annotation_label_reference",),
+    )
+    primary_key = cursor.fetchone()
+    primary_columns = (
+        tuple(str(name) for name in primary_key["columns"]) if primary_key else ()
+    )
+    expected_primary = ("project_id", "image_id", "label_code")
+    if primary_columns != expected_primary:
+        missing = list(missing) + [f"primary_key={primary_columns}"]
     if missing or absent:
         raise U3MigrationError(
             "U3_SCHEMA_STRUCTURE_INVALID",
@@ -1105,10 +1145,14 @@ def pending_clear_eligible(snapshot: Mapping[str, Any], project_id: str) -> tupl
             if (digests or {}).get(key) != _digest(rows):
                 return False, f"digest:{key}"
     for store in ("materials", "annotations"):
-        for table in (stores.get(store) or {}).get("evidence") or {}:
+        for table, rows in ((stores.get(store) or {}).get("evidence") or {}).items():
             key = f"{store}.evidence.{table}"
-            if key not in counts or key not in digests:
+            if not isinstance(rows, list):
                 return False, f"evidence:{key}"
+            if int((counts or {}).get(key, -1)) != len(rows):
+                return False, f"evidence_count:{key}"
+            if (digests or {}).get(key) != _digest(rows):
+                return False, f"evidence_digest:{key}"
     expected_content = _digest(
         [{"table": name, "digest": value} for name, value in sorted(digests.items())]
     )
@@ -1152,6 +1196,24 @@ def import_project_snapshot(
     with connection.transaction():
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"u3_import:{project_id}",))
+            if mode == "full":
+                cursor.execute(
+                    f"SELECT 1 AS pending FROM {SCHEMA_NAME}.store_revision "
+                    "WHERE project_id=%s AND store=%s",
+                    (project_id, LEGACY_REFERENCE_PENDING_STORE),
+                )
+                pending = cursor.fetchone() is not None
+                if pending:
+                    eligible, reason = pending_clear_eligible(snapshot, project_id)
+                    if not eligible:
+                        # No DELETE/INSERT/UPDATE has run yet, so the transaction
+                        # leaves every business row, table_state, revision and
+                        # evidence row of this project untouched.
+                        raise U3MigrationError(
+                            "U3_PENDING_IMPORT_INCOMPLETE",
+                            "a pending project requires a complete authoritative snapshot",
+                            detail=f"reason={reason}",
+                        )
             if mode == "full":
                 # Delete only rows of THIS project that the snapshot dropped.
                 for table, key_columns, values in (

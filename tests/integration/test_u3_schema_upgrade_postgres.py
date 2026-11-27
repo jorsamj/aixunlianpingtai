@@ -372,7 +372,7 @@ def test_v1_upgrade_keeps_source_kind_and_supports_real_read_write(pg):
                    before["stores"]["annotations"]["annotation_label_references"])
 
         references = [
-            {"image_id": "m-old", "label_code": "fire", "box_count": 3, "scope_ref": 2,
+            {"image_id": "m-old", "label_code": "fire", "box_count": 3, "scope_ref": 1,
              "annotation_state": "annotated", "source_kind": "sqlite"},
             {"image_id": "m-old", "label_code": "smoke", "box_count": 0, "scope_ref": 0,
              "annotation_state": "unannotated", "source_kind": "legacy"},
@@ -385,18 +385,23 @@ def test_v1_upgrade_keeps_source_kind_and_supports_real_read_write(pg):
             for row in after["stores"]["annotations"]["annotation_label_references"]
         }
         assert stored == {
-            "fire": ("sqlite", 3, 2, "annotated"),
+            "fire": ("sqlite", 3, 1, "annotated"),
             "smoke": ("legacy", 0, 0, "unannotated"),
         }
         assert after["legacy_reference_pending_import"] is True
 
-        # A hand-built mapping cannot prove completeness, so it must NOT clear the
-        # provisional marker even in full mode.
+        # A hand-built mapping cannot prove completeness: a full import into a
+        # pending project is refused before touching anything.
+        before = read_target_snapshot(connection, "p1")
         snapshot = _snapshot(references, materials=[{"id": "m-old", "filename": "old.jpg"}])
-        blocked = import_project_snapshot(connection, snapshot, mode="full")
-        assert blocked["legacy_pending_cleared"] == 0
-        assert blocked["legacy_pending_retained"]
-        assert read_target_snapshot(connection, "p1")["legacy_reference_pending_import"] is True
+        with pytest.raises(U3MigrationError) as incomplete:
+            import_project_snapshot(connection, snapshot, mode="full")
+        assert incomplete.value.code == "U3_PENDING_IMPORT_INCOMPLETE"
+        after_refusal = read_target_snapshot(connection, "p1")
+        assert after_refusal["stores"] == before["stores"]
+        assert after_refusal["table_state"] == before["table_state"]
+        assert after_refusal["revisions"] == before["revisions"]
+        assert after_refusal["legacy_reference_pending_import"] is True
         # Re-running the migration is a no-op and keeps the marker.
         ensure_schema(connection)
         assert read_target_snapshot(connection, "p1")["legacy_reference_pending_import"] is True
@@ -438,3 +443,54 @@ def test_recorded_v3_without_category_foreign_key_is_refused(pg):
             ensure_schema(connection)
         assert missing_fk.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
         assert "negative_pool_category" in missing_fk.value.detail
+
+def test_wrong_primary_key_or_column_mapping_is_refused(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V1, (1,))
+        ensure_schema(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = (%s)::regclass "
+                    "AND contype='p'",
+                    (f"{SCHEMA_NAME}.annotation_label_reference",),
+                )
+                primary = str(cursor.fetchone()[0])
+                cursor.execute(
+                    f"ALTER TABLE {SCHEMA_NAME}.annotation_label_reference "
+                    f"DROP CONSTRAINT {primary}"
+                )
+        with pytest.raises(U3MigrationError) as no_primary:
+            ensure_schema(connection)
+        assert no_primary.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
+        assert "primary_key" in no_primary.value.detail
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V1, (1,))
+        ensure_schema(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT conname FROM pg_constraint WHERE conrelid = (%s)::regclass "
+                    "AND contype='f' AND confrelid = (%s)::regclass",
+                    (f"{SCHEMA_NAME}.negative_pool_link",
+                     f"{SCHEMA_NAME}.negative_pool_category"),
+                )
+                category_fk = str(cursor.fetchone()[0])
+                cursor.execute(
+                    f"ALTER TABLE {SCHEMA_NAME}.negative_pool_link "
+                    f"DROP CONSTRAINT {category_fk}"
+                )
+                # A foreign key that exists but maps the wrong columns must fail:
+                # the category FK is replaced by a second member FK.
+                cursor.execute(
+                    f"ALTER TABLE {SCHEMA_NAME}.negative_pool_link "
+                    "ADD CONSTRAINT negative_pool_link_wrong_fk "
+                    "FOREIGN KEY (project_id, category_id) "
+                    f"REFERENCES {SCHEMA_NAME}.negative_pool_member"
+                    "(project_id, material_id) ON DELETE CASCADE NOT VALID"
+                )
+        with pytest.raises(U3MigrationError) as wrong_mapping:
+            ensure_schema(connection)
+        assert wrong_mapping.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
+        assert "negative_pool_category" in wrong_mapping.value.detail
