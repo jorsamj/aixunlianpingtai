@@ -1148,29 +1148,44 @@ def pending_clear_eligible(snapshot: Mapping[str, Any], project_id: str) -> tupl
                 return False, f"digest:{key}"
     for store, tables in EVIDENCE_TABLES.items():
         evidence = (stores.get(store) or {}).get("evidence") or {}
+        known = {f"{store}.evidence.{table}" for table in tables}
         unknown = [name for name in evidence if name not in tables]
         if unknown:
             return False, f"evidence_unknown:{store}.{','.join(sorted(unknown))}"
+        for source_name, source in (("counts", counts), ("digests", digests)):
+            stray = [
+                name for name in (source or {})
+                if name.startswith(f"{store}.evidence.") and name not in known
+            ]
+            if stray:
+                return False, f"evidence_unknown_{source_name}:{','.join(sorted(stray))}"
         for table in tables:
             name = f"{store}.{table}"
             key = f"{store}.evidence.{table}"
             entry = state.get(name)
             if not entry or "present" not in entry:
                 return False, f"evidence_state:{name}"
+            present = entry.get("present")
+            if not isinstance(present, bool):
+                return False, f"evidence_present_type:{name}"
             rows = evidence.get(table)
-            if entry.get("present") is True:
+            if present:
                 if not isinstance(rows, list):
                     return False, f"evidence_missing:{key}"
                 if int((counts or {}).get(key, -1)) != len(rows):
                     return False, f"evidence_count:{key}"
                 if (digests or {}).get(key) != _digest(rows):
                     return False, f"evidence_digest:{key}"
-                if int(entry.get("row_count") if entry.get("row_count") is not None else -1) != len(rows):
+                row_count = entry.get("row_count")
+                if isinstance(row_count, bool) or not isinstance(row_count, int) or row_count != len(rows):
                     return False, f"evidence_row_count:{key}"
             else:
-                if int(entry.get("row_count") or 0) != 0:
+                row_count = entry.get("row_count")
+                if "row_count" not in entry or isinstance(row_count, bool) or not isinstance(row_count, int):
+                    return False, f"evidence_absent_row_count_type:{name}"
+                if row_count != 0:
                     return False, f"evidence_absent_row_count:{name}"
-                if rows is not None or key in (counts or {}) or key in (digests or {}):
+                if table in evidence or key in (counts or {}) or key in (digests or {}):
                     return False, f"evidence_absent_fabricated:{key}"
     expected_content = _digest(
         [{"table": name, "digest": value} for name, value in sorted(digests.items())]

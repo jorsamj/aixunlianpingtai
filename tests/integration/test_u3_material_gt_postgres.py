@@ -890,3 +890,82 @@ def test_pending_import_keeps_retained_evidence_for_an_absent_source_table(pg, t
         report = reconcile(absent, final)
         assert report["same"] is True
         assert "materials.evidence.material_cleanup_deferred" in report["retained_target_evidence"]
+
+def test_pending_import_rejects_invalid_evidence_state_shapes(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="p13")
+    _seed_evidence(project)
+    snapshot = export_project_snapshot(project, "p13")
+    table = "material_storage_audit"
+    state_name = f"materials.{table}"
+    key = f"materials.evidence.{table}"
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        _pending_marker(connection, "p13")
+        before = read_target_snapshot(connection, "p13")
+
+        def damaged():
+            return _recompute_content_digest(copy.deepcopy(snapshot))
+
+        variants = {}
+        candidate = damaged()
+        candidate["table_state"][state_name]["present"] = None
+        variants["present_none"] = candidate
+        candidate = damaged()
+        candidate["table_state"][state_name]["present"] = 1
+        variants["present_int"] = candidate
+        # An absent table must still carry an integer row_count.
+        absent = copy.deepcopy(snapshot)
+        absent["stores"]["materials"]["evidence"].pop(table)
+        absent["counts"].pop(key)
+        absent["digests"].pop(key)
+        absent["table_state"][state_name] = {"present": False, "schema_version": 8}
+        variants["absent_row_count_missing"] = _recompute_content_digest(absent)
+        absent = copy.deepcopy(snapshot)
+        absent["stores"]["materials"]["evidence"].pop(table)
+        absent["counts"].pop(key)
+        absent["digests"].pop(key)
+        absent["table_state"][state_name]["present"] = False
+        absent["table_state"][state_name]["row_count"] = True
+        variants["absent_row_count_bool"] = _recompute_content_digest(absent)
+        absent = copy.deepcopy(snapshot)
+        absent["stores"]["materials"]["evidence"].pop(table)
+        absent["counts"].pop(key)
+        absent["digests"].pop(key)
+        absent["table_state"][state_name]["present"] = False
+        absent["table_state"][state_name]["row_count"] = 1
+        variants["absent_row_count_nonzero"] = _recompute_content_digest(absent)
+        # Even a None value counts as a fabricated key.
+        absent = copy.deepcopy(snapshot)
+        absent["stores"]["materials"]["evidence"][table] = None
+        absent["counts"].pop(key)
+        absent["digests"].pop(key)
+        absent["table_state"][state_name] = {"present": False, "schema_version": 8, "row_count": 0}
+        variants["absent_evidence_none"] = _recompute_content_digest(absent)
+        absent = copy.deepcopy(snapshot)
+        absent["stores"]["materials"]["evidence"].pop(table)
+        absent["table_state"][state_name] = {"present": False, "schema_version": 8, "row_count": 0}
+        variants["absent_counts_key"] = _recompute_content_digest(absent)
+        absent = copy.deepcopy(snapshot)
+        absent["stores"]["materials"]["evidence"].pop(table)
+        absent["table_state"][state_name] = {"present": False, "schema_version": 8, "row_count": 0}
+        absent["counts"].pop(key)
+        variants["absent_digests_key"] = _recompute_content_digest(absent)
+        # Unknown evidence names inside counts/digests are refused as well.
+        stray = damaged()
+        stray["counts"]["materials.evidence.material_unknown"] = 0
+        variants["unknown_counts_key"] = _recompute_content_digest(stray)
+        stray = damaged()
+        stray["digests"]["materials.evidence.material_unknown"] = _digest([])
+        variants["unknown_digests_key"] = _recompute_content_digest(stray)
+
+        for name, candidate in variants.items():
+            with pytest.raises(U3MigrationError) as refused:
+                import_project_snapshot(connection, candidate, mode="full")
+            assert refused.value.code == "U3_PENDING_IMPORT_INCOMPLETE", name
+            after = read_target_snapshot(connection, "p13")
+            assert after["stores"] == before["stores"], name
+            assert after["table_state"] == before["table_state"], name
+            assert after["revisions"] == before["revisions"], name
+            assert after["legacy_reference_pending_import"] is True, name
+
+        assert import_project_snapshot(connection, snapshot, mode="full")["legacy_pending_cleared"] == 1
