@@ -7,6 +7,9 @@
 | 已完成代码 | U2 完整性（SIGKILL/回滚/删除证据） | 真实子进程终止三窗口；反向回滚含切后 create/update/delete；删除需完整跨域证据（收集器仅实现素材侧） |
 | 已完成代码 | 素材热点（C） | v12/v20/v44/video 改为 id 快照 + 500 批 GT/素材读取；合成 1201 行 v12 GT 快照 4271ms→15ms |
 | 已完成代码 | 转换 BMODEL 门禁（D） | BMODEL 交付要求 ONNX↔BMODEL 数值/检测均 consistent，否则 `BMODEL_EVIDENCE_NOT_ELIGIBLE`；L0–L5 矩阵文档 |
+| 已完成代码 | U3 证据/约束/升级修复 | 证据按 (project,store,table) 同步、真实主键身份；池唯一名+双外键；必需字段 fail-closed；v1→v2 校验 |
+| 已完成代码 | U3 目标一致性 | read_target_snapshot 显式 REPEATABLE READ/READ ONLY，拒绝调用方事务；并发中途提交不可见（实测） |
+| 已完成代码 | U5 readiness 修正 | 用真实 stage（cancelling/recovery_blocked_*）、真实 UTC now、租约三类、SQL 失败 fail-closed |
 | 已完成代码 | SmartAudit 写锁 | create/review/cancel/retry 统一在 finally 释放；复核后锁外刷新；新增前端合同测试 |
 | 已完成代码 | U3 快照/证据/完整导入 | 生命周期栅栏+修订复核；必需表 fail-closed；10 张历史证据表逐行为证据；full 快照删除；schema v2 校验 |
 | 已完成代码 | U5 只读 readiness | 只读诊断权威库/版本/租约/停止未证明/GPU 预留/阻断原因 |
@@ -44,6 +47,19 @@
 | 真实环境待验证 | 20 万素材、2 万批选、NAS/OSS | 需生产级隔离环境，未执行 |
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
+
+## 第四批：U3 证据/Schema/快照与 U5 readiness 复核整改（2026-11-27，本批）
+
+- 起始 `78379728cd3f8d006d816f9c3fd9aab715aff101`。VERSION 42.24.592 未改；未启用 PostgreSQL 生产 Provider、未迁移真实数据、未连接 4070/A800。提交：`f2c16994`（U3）、`36af96b7`（U5）、本文档。
+- 证据导入缺陷（已修）：原逻辑用 `(store, table_name)` 作 keep 键、却拿 `row_key` 与 `k1` 比较，多张证据表连续导入时会把先前表清空。现在每 `(project_id, store, table_name)` 只同步自己的行：源表存在→按行集合删除不在快照中的行并 upsert；源表存在但为空→清空该表；源表不存在→保留目标已有行（显式历史保留合同，不伪装为空）。证据身份改为**真实主键**（无主键表才用整体内容），相同 payload 不同主键仍是两行；两侧证据列表按该身份排序，摘要稳定。
+- 池约束（已修）：`negative_pool_category` 增加 `(project_id, lower(name))` 唯一索引（等价 SQLite `COLLATE NOCASE`）；`negative_pool_link` 同时具备成员外键与分类外键且均为 `ON DELETE CASCADE`；实测大小写冲突被拒绝、删分类级联删关联、删素材级联删成员/关联/算法成员。
+- Owner 字段合同（已修）：每张必需表声明必需字段（materials.id/storage_source_id/object_key/content_sha256/payload_json、annotations.image_id/annotation_state/version/content_digest/boxes_json、material_labels.material_id/label_code、annotation_label_references 六字段等），缺字段即 `U3_OWNER_INCOMPLETE`；源端 schema 版本按支持范围校验（素材 5–8、GT 3）；必需表为空是合法空数据，结构异常不是。
+- v1→v2 升级（已修）：历史迁移行按**其自身版本**的预期 checksum 校验（新增 `schema_checksum_for(version)` 与真实 v1 DDL 常量），不再用 v2 checksum 校验 v1；真实 v1 Schema 可升级到 v2（新表/新字段/唯一索引齐全，旧素材行保留），篡改 checksum 与更高版本均被拒绝。CI U3 步骤现跑两份文件（10 项，守卫 ≥10、0 skip、0 fail）。
+- 目标快照一致性（已修）：`read_target_snapshot` 要求空闲连接、显式 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`，多表读取同一快照，并在结果中记录 `snapshot={isolation,read_only,identity}`；调用方已开事务时拒绝（`U3_TARGET_SNAPSHOT_TRANSACTION_BUSY`）。并发实测：读取中途另一连接提交的新 label 不出现在本次快照，下一次读取才可见。
+- U5 readiness（已修）：`cancelling_unverified`/`recovery_blocked_*` 实为**stage** 而非 TaskStatus，改查 `status='CANCEL_REQUESTED'`+`stage='cancelling'` 与 `stage LIKE 'recovery_blocked%'`/`process_cleanup_blocked`/`lease_expired_process_alive`；时间默认真实 UTC（可注入）；活动/过期/缺失租约三类分别报告，RUNNING/CANCEL_REQUESTED 无到期时间计为 `unproven_lease_window` 阻断；校验任务库 schema 版本（仅 8）与必需列；SQL 读取失败抛 `TaskStoreReadinessError` 而不是返回 0；过期 worker 实例报告并阻断，活动实例仅报告；不修改任何任务状态。
+- 验证：U3 真实 PostgreSQL **10 项**（8 主 + 2 升级）、U5 单测 **7 项**、SmartAudit 合同 **2 项**（上批，保留）；`py_compile`、`git diff --check` 通过。未跑全仓 pytest/Playwright/完整构建。
+- 未完成（本轮明确不做）：U3 Picker PG 等价读、模型转换 G1/BMODEL 证据绑定、Vue 母模型管理。真实环境（20 万素材、2 万批选、缓存磁盘、NAS/OSS/S3、BM 系列/RKNN/昇腾、U2 生产切换演练、U3 真实项目对账）均未验证。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改。
 
 ## 第三批：SmartAudit 写锁、U3 正确性收口、U5 只读诊断（2026-11-27，本批）
 
