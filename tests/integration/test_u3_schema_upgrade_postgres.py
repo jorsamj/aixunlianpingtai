@@ -638,3 +638,117 @@ def test_recorded_v4_with_a_missing_read_side_object_is_refused(pg):
             ensure_schema(connection)
         assert refused.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
         assert "v4_index=idx_picker_gt_label" in refused.value.detail
+
+def _fresh_v4(connection):
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            cursor.execute(f"DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE")
+    ensure_schema(connection)
+
+
+def _constraints(cursor, table, contype):
+    cursor.execute(
+        "SELECT conname FROM pg_constraint WHERE conrelid=(%s)::regclass AND contype=%s",
+        (f"{SCHEMA_NAME}.{table}", contype),
+    )
+    return [str(row[0]) for row in cursor.fetchall()]
+
+
+def _refused_by_structure(connection):
+    with pytest.raises(U3MigrationError) as refused:
+        ensure_schema(connection)
+    assert refused.value.code == "U3_SCHEMA_STRUCTURE_INVALID"
+    return refused.value
+
+
+def test_v4_primary_key_tampering_is_refused(pg):
+    for table in ("picker_snapshot_state", "task_negative_confirmation",
+                  "u3_projection_cursor"):
+        with psycopg.connect(pg.get_uri()) as connection:
+            _fresh_v4(connection)
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    for name in _constraints(cursor, table, "p"):
+                        cursor.execute(f"ALTER TABLE {SCHEMA_NAME}.{table} DROP CONSTRAINT {name}")
+            failure = _refused_by_structure(connection)
+            assert "v4_primary_key=" in failure.detail, table
+            # Nothing was repaired automatically: the primary key is still absent.
+            with connection.cursor() as cursor:
+                assert _constraints(cursor, table, "p") == [], table
+
+
+def test_v4_check_constraint_tampering_is_refused(pg):
+    cases = (
+        ("picker_snapshot_state", "status"),
+        ("u3_shadow_import", "outcome"),
+    )
+    for table, column in cases:
+        with psycopg.connect(pg.get_uri()) as connection:
+            _fresh_v4(connection)
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    for name in _constraints(cursor, table, "c"):
+                        cursor.execute(f"ALTER TABLE {SCHEMA_NAME}.{table} DROP CONSTRAINT {name}")
+            failure = _refused_by_structure(connection)
+            assert f"v4_check={table}.{column}" in failure.detail, table
+
+
+def test_v4_not_null_and_type_tampering_is_refused(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _fresh_v4(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"ALTER TABLE {SCHEMA_NAME}.u3_shadow_import "
+                    "ALTER COLUMN outcome DROP NOT NULL"
+                )
+        failure = _refused_by_structure(connection)
+        assert "v4_not_null=u3_shadow_import.outcome" in failure.detail
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        _fresh_v4(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"ALTER TABLE {SCHEMA_NAME}.picker_snapshot_state "
+                    "ALTER COLUMN content_digest TYPE TEXT"
+                )
+        failure = _refused_by_structure(connection)
+        assert "v4_type=picker_snapshot_state.content_digest" in failure.detail
+
+
+def test_v4_index_tampering_is_refused(pg):
+    # Same name, wrong column order.
+    with psycopg.connect(pg.get_uri()) as connection:
+        _fresh_v4(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP INDEX {SCHEMA_NAME}.idx_picker_gt_label")
+                cursor.execute(
+                    f"CREATE INDEX idx_picker_gt_label ON {SCHEMA_NAME}.annotation"
+                    "(project_id, image_id, annotation_state)"
+                )
+        failure = _refused_by_structure(connection)
+        assert "v4_index_columns=idx_picker_gt_label" in failure.detail
+
+    # Same name and columns, wrong table.
+    with psycopg.connect(pg.get_uri()) as connection:
+        _fresh_v4(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP INDEX {SCHEMA_NAME}.idx_picker_material_label")
+                cursor.execute(
+                    f"CREATE INDEX idx_picker_material_label ON {SCHEMA_NAME}.material"
+                    "(project_id, processing_status, created_at, id)"
+                )
+        failure = _refused_by_structure(connection)
+        assert "v4_index_table=idx_picker_material_label" in failure.detail
+
+    # A dropped index is refused as well.
+    with psycopg.connect(pg.get_uri()) as connection:
+        _fresh_v4(connection)
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(f"DROP INDEX {SCHEMA_NAME}.idx_picker_pool_joined")
+        failure = _refused_by_structure(connection)
+        assert "v4_index=idx_picker_pool_joined" in failure.detail

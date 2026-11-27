@@ -30,6 +30,7 @@ from platform_core.material_repository import MaterialRepository
 from platform_core.u3_shadow import (
     _digest,
     _snapshot_identity,
+    snapshot_evidence_streams,
     U3MigrationError,
     SCHEMA_NAME,
     export_project_snapshot,
@@ -139,6 +140,9 @@ def _fixture(tmp_path, project_id="p1"):
         )
         database.execute("UPDATE annotation_meta SET value='4' WHERE key='revision'")
         database.execute("PRAGMA user_version=3")
+    # A real owner database: initializing the repository installs the evidence and
+    # confirmation generation triggers that every genuine write path relies on.
+    AnnotationRepository(project)
     return project
 
 
@@ -423,6 +427,12 @@ def _seed_evidence(project):
                 "('m1',?,'actor','[\"fire\"]','sha',?,'digest','2026-01-01')",
                 (version, version),
             )
+    # The confirmation table is created lazily by the owner; install its triggers
+    # the same way a real write path does (rows above stay at generation 0).
+    repository = AnnotationRepository(project)
+    with repository._connect() as database:
+        with database:
+            repository._ensure_generation_objects(database)
 
 
 def test_evidence_tables_import_independently_and_survive_partial_deletes(pg, tmp_path):
@@ -880,8 +890,14 @@ def _reseal(snapshot):
     snapshot["content_digest"] = _digest(
         [{"table": name, "digest": value} for name, value in sorted(digests.items())]
     )
+    declared = snapshot.get("evidence_streams") or {}
+    streams = snapshot_evidence_streams(snapshot)
+    for name, stream in streams.items():
+        stream["generation"] = (declared.get(name) or {}).get("generation", 0)
+    snapshot["evidence_streams"] = streams
     snapshot["snapshot_id"] = _snapshot_identity(
-        snapshot["project_id"], snapshot["content_digest"], snapshot["revisions"]
+        snapshot["project_id"], snapshot["content_digest"], snapshot["revisions"],
+        snapshot["evidence_streams"],
     )
     return snapshot
 
@@ -1308,6 +1324,12 @@ def _seed_confirmations(project):
                 "INSERT INTO task_negative_confirmations VALUES (?,?,?)",
                 (receipt, context, json.dumps(evidence, sort_keys=True)),
             )
+    # Install the owner generation contract for the lazily created table (the two
+    # seeded rows stay at generation 0, exactly like a pre-upgrade owner).
+    repository = AnnotationRepository(project)
+    with repository._connect() as database:
+        with database:
+            repository._ensure_generation_objects(database)
 
 
 def test_task_negative_confirmation_projection_matches_the_owner_receipts(pg, tmp_path):
@@ -1388,3 +1410,258 @@ def test_snapshot_identity_is_deterministic_and_matches_the_export(pg, tmp_path)
     with psycopg.connect(pg.get_uri()) as connection:
         import_project_snapshot(connection, first)
         assert _state(connection, "q10")[0] == first["snapshot_id"]
+
+# ---------------------------------------------------------------------------
+# Owner-side evidence generations: stale snapshots may never replace newer
+# evidence, even when the three owner revisions are identical.
+# ---------------------------------------------------------------------------
+def _u3_rows(connection, project_id):
+    """Every U3 table row of one project (deterministic order), for equality."""
+    tables = (
+        ("material", "id"),
+        ("material_label", "material_id,label_code"),
+        ("material_annotation_scope", "material_id,label_code"),
+        ("annotation", "image_id"),
+        ("annotation_label_reference", "image_id,label_code"),
+        ("negative_pool_member", "material_id"),
+        ("negative_pool_category", "id"),
+        ("negative_pool_link", "material_id,category_id"),
+        ("negative_pool_algorithm_member", "algorithm_id,material_id"),
+        ("evidence_row", "store,table_name,row_key"),
+        ("table_state", "store,table_name"),
+        ("store_revision", "store"),
+        ("picker_snapshot_state", "project_id"),
+        ("u3_projection_cursor", "store"),
+        ("task_negative_confirmation", "receipt_id"),
+    )
+    rows = {}
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            for table, order in tables:
+                cursor.execute(
+                    f"SELECT * FROM {SCHEMA_NAME}.{table} WHERE project_id=%s ORDER BY {order}",
+                    (project_id,),
+                )
+                rows[table] = cursor.fetchall()
+    return rows
+
+
+def _confirm(repository, receipt, image="m1", version=3, digest="digest-a", context="ctx-a"):
+    return repository.confirm_task_negatives(
+        context,
+        [{
+            "receipt_id": receipt,
+            "context_key": context,
+            "image_id": image,
+            "annotation_version": version,
+            "annotation_hash": digest,
+        }],
+        {"actor_id": "tester"},
+    )
+
+
+def test_confirmation_generation_counts_insert_update_and_delete(tmp_path):
+    project = _fixture(tmp_path, project_id="g1")
+    repository = AnnotationRepository(project)
+    assert repository.task_negative_confirmation_generation() == 0
+    assert repository.task_negative_confirmation_revision() == 0
+
+    _confirm(repository, "r-1")
+    assert repository.task_negative_confirmation_generation() == 1
+    assert repository.task_negative_confirmation_revision() == 1
+
+    # Same COUNT, different receipt content: the generation still moves.
+    with sqlite3.connect(project / "annotations.sqlite3") as database:
+        database.execute(
+            "UPDATE task_negative_confirmations SET evidence_json=? WHERE receipt_id='r-1'",
+            (json.dumps({"image_id": "m1", "note": "revised"}, sort_keys=True),),
+        )
+    assert repository.task_negative_confirmation_generation() == 2
+    assert repository.task_negative_confirmation_revision() == 1
+
+    with sqlite3.connect(project / "annotations.sqlite3") as database:
+        database.execute("DELETE FROM task_negative_confirmations WHERE receipt_id='r-1'")
+    assert repository.task_negative_confirmation_generation() == 3
+    assert repository.task_negative_confirmation_revision() == 0
+
+
+def test_stale_confirmation_snapshot_is_refused_without_touching_the_projection(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="g2")
+    repository = AnnotationRepository(project)
+    before_first = repository.task_negative_confirmation_generation()
+    first = export_project_snapshot(project, "g2")
+
+    _confirm(repository, "r-1")
+    later = export_project_snapshot(project, "g2")
+    # The three owner revisions did not move: the generation is the only version.
+    assert later["revisions"] == first["revisions"]
+    assert later["evidence_streams"]["negative_confirmation"]["generation"] == before_first + 1
+    assert later["evidence_streams"]["negative_confirmation"]["revision"] == 1
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        assert import_project_snapshot(connection, later)["outcome"] == "APPLIED"
+        state = _state(connection, "g2")
+        assert state[5] == 1  # COUNT compatibility semantics
+        assert state[6] == before_first + 1  # Owner generation, not a local counter
+        assert state[7] == "READY"
+        baseline = _u3_rows(connection, "g2")
+        ledger_before = _ledger(connection, "g2")
+
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, first)
+        assert refused.value.code == "U3_SNAPSHOT_REVISION_REGRESSION"
+        assert "stream=negative_confirmation" in refused.value.detail
+
+        assert _u3_rows(connection, "g2") == baseline
+        ledger_after = _ledger(connection, "g2")
+        assert ledger_after[: len(ledger_before)] == ledger_before
+        assert [row[0] for row in ledger_after[len(ledger_before):]] == ["REFUSED"]
+
+
+def test_same_count_with_new_receipt_content_is_still_protected(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="g3")
+    repository = AnnotationRepository(project)
+    _confirm(repository, "r-1")
+    second = export_project_snapshot(project, "g3")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, second)
+
+    with sqlite3.connect(project / "annotations.sqlite3") as database:
+        database.execute(
+            "UPDATE task_negative_confirmations SET evidence_json=? WHERE receipt_id='r-1'",
+            (json.dumps({"image_id": "m1", "note": "revised"}, sort_keys=True),),
+        )
+    third = export_project_snapshot(project, "g3")
+    assert (
+        third["evidence_streams"]["negative_confirmation"]["revision"]
+        == second["evidence_streams"]["negative_confirmation"]["revision"]
+    )
+    assert (
+        third["evidence_streams"]["negative_confirmation"]["generation"]
+        == second["evidence_streams"]["negative_confirmation"]["generation"] + 1
+    )
+    with psycopg.connect(pg.get_uri()) as connection:
+        assert import_project_snapshot(connection, third)["outcome"] == "APPLIED"
+        baseline = _u3_rows(connection, "g3")
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, second)
+        assert refused.value.code == "U3_SNAPSHOT_REVISION_REGRESSION"
+        assert "stream=negative_confirmation" in refused.value.detail
+        assert _u3_rows(connection, "g3") == baseline
+
+
+def test_confirmation_write_waits_for_the_lifecycle_fence(tmp_path):
+    import threading
+    import time
+
+    from platform_core.material_repository import material_annotation_lifecycle_fence
+
+    project = _fixture(tmp_path, project_id="g4")
+    repository = AnnotationRepository(project)
+    holding = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        with material_annotation_lifecycle_fence(project, timeout=10):
+            holding.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=hold)
+    thread.start()
+    assert holding.wait(10)
+    started = time.monotonic()
+    timer = threading.Timer(0.8, release.set)
+    timer.start()
+    _confirm(repository, "r-1")
+    elapsed = time.monotonic() - started
+    thread.join(10)
+    timer.cancel()
+    # The confirmation could not commit while the export fence was held.
+    assert elapsed >= 0.5, elapsed
+    assert repository.task_negative_confirmation_generation() >= 1
+
+
+def test_material_evidence_generation_protects_no_revision_evidence(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="g5")
+    materials = MaterialRepository(project)
+    first = export_project_snapshot(project, "g5")
+    generation = first["evidence_streams"]["materials_evidence"]["generation"]
+
+    # A real owner write that deliberately does NOT advance material_meta.revision.
+    materials.record_deferred_cleanup(
+        {"id": "m1", "filename": "fire.jpg"}, owner="tester", error="boom"
+    )
+    later = export_project_snapshot(project, "g5")
+    assert later["revisions"] == first["revisions"]
+    assert later["evidence_streams"]["materials_evidence"]["generation"] == generation + 1
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        assert import_project_snapshot(connection, later)["outcome"] == "APPLIED"
+        baseline = _u3_rows(connection, "g5")
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, first)
+        assert refused.value.code == "U3_SNAPSHOT_REVISION_REGRESSION"
+        assert "stream=materials_evidence" in refused.value.detail
+        assert _u3_rows(connection, "g5") == baseline
+
+
+def test_full_import_requires_a_complete_snapshot_before_any_write(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="g6")
+    _seed_evidence(project)
+    snapshot = export_project_snapshot(project, "g6")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        assert _state(connection, "g6")[7] == "READY"
+        baseline = _u3_rows(connection, "g6")
+        ledger_before = _ledger(connection, "g6")
+
+        missing_materials = copy.deepcopy(snapshot)
+        missing_materials["stores"]["materials"].pop("materials")
+        _reseal(missing_materials)
+
+        missing_annotations = copy.deepcopy(snapshot)
+        missing_annotations["stores"]["annotations"].pop("annotations")
+        _reseal(missing_annotations)
+
+        missing_evidence = copy.deepcopy(snapshot)
+        table = "material_storage_audit"
+        missing_evidence["stores"]["materials"]["evidence"].pop(table)
+        missing_evidence["table_state"].pop(f"materials.{table}")
+        _reseal(missing_evidence)
+
+        for name, candidate in (
+            ("materials", missing_materials),
+            ("annotations", missing_annotations),
+            ("evidence", missing_evidence),
+        ):
+            with pytest.raises(U3MigrationError) as refused:
+                import_project_snapshot(connection, candidate, mode="full")
+            assert refused.value.code == "U3_SNAPSHOT_INCOMPLETE", name
+            assert "reason=" in refused.value.detail, name
+            assert _u3_rows(connection, "g6") == baseline, name
+            assert _ledger(connection, "g6") == ledger_before, name
+
+def test_resealed_evidence_without_a_new_generation_is_refused(pg, tmp_path):
+    project = _fixture(tmp_path, project_id="g7")
+    repository = AnnotationRepository(project)
+    _confirm(repository, "r-1")
+    snapshot = export_project_snapshot(project, "g7")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        baseline = _u3_rows(connection, "g7")
+
+    # Self-consistent (resealed) but the Owner generation did not move: the
+    # content cannot be newer than the published snapshot.
+    tampered = copy.deepcopy(snapshot)
+    evidence = tampered["stores"]["annotations"]["evidence"]["task_negative_confirmations"]
+    evidence[0]["payload"] = dict(
+        evidence[0]["payload"],
+        evidence_json=json.dumps({"image_id": "m1", "note": "rewritten"}, sort_keys=True),
+    )
+    _reseal(tampered)
+    with psycopg.connect(pg.get_uri()) as connection:
+        with pytest.raises(U3MigrationError) as refused:
+            import_project_snapshot(connection, tampered)
+        assert refused.value.code == "U3_SNAPSHOT_REVISION_DIVERGED"
+        assert "stream=negative_confirmation" in refused.value.detail
+        assert _u3_rows(connection, "g7") == baseline

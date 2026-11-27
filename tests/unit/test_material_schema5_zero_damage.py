@@ -165,6 +165,12 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
     expected = business_state(source)
     assert expected == before
     expected["databases"][material_path][receipts] = []
+    # The upgrade is additive on metadata only: the multi-node evidence generation
+    # key is created with value 0 (no historical business row is rewritten).
+    expected["databases"][material_path]["material_meta"] = sorted(
+        expected["databases"][material_path]["material_meta"]
+        + [json.dumps(("evidence_generation", "0"))]
+    )
     assert business_state(target) == expected
     with closing(repository._connect()) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 8

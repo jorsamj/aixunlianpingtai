@@ -30,6 +30,37 @@ _SCHEMA_VERSION = 8
 # rewriting material payloads.
 MATERIAL_READ_SCHEMA_VERSIONS = frozenset({5, 6, 7, 8})
 _INIT_LOCK_TIMEOUT = 30
+
+#: Historical evidence can change without advancing ``material_meta.revision``
+#: (physical reclamation audits, deferred-cleanup retries, assignment receipts).
+#: A store-level monotonic generation, bumped by triggers in the writing
+#: transaction, is the version the U3 projection compares so a stale snapshot can
+#: never replace newer evidence. ``negative_pool_operations`` is not listed: every
+#: write there is committed together with a ``negative_pool_meta.revision`` bump.
+EVIDENCE_GENERATION_KEY = "evidence_generation"
+_EVIDENCE_GENERATION_TABLES = (
+    "material_migrations",
+    "material_storage_audit",
+    "material_retirements",
+    "material_cleanup_deferred",
+    "material_assignment_receipts",
+)
+_EVIDENCE_GENERATION_SENTINEL = "material_storage_audit_evidence_generation_after_insert"
+
+
+def _generation_trigger_statements(table: str) -> tuple[str, ...]:
+    """Idempotent INSERT/UPDATE/DELETE triggers bumping the evidence generation."""
+    return tuple(
+        f"CREATE TRIGGER IF NOT EXISTS {table}_{EVIDENCE_GENERATION_KEY}_after_{suffix} "
+        f"AFTER {event} ON {table} BEGIN "
+        "UPDATE material_meta SET value = CAST(value AS INTEGER) + 1 "
+        f"WHERE key = '{EVIDENCE_GENERATION_KEY}'; END"
+        for suffix, event in (
+            ("insert", "INSERT"), ("update", "UPDATE"), ("delete", "DELETE"),
+        )
+    )
+
+
 # Hard cap on legacy payloads decoded by one stored-name lookup. Rows without a
 # canonical payload stored_name are only a pre-normalization legacy shape; the
 # completion query decodes at most this many of them. Hitting the cap means the
@@ -125,6 +156,7 @@ CREATE TABLE IF NOT EXISTS material_meta (
     value TEXT NOT NULL
 );
 INSERT OR IGNORE INTO material_meta(key, value) VALUES ('revision', '0');
+INSERT OR IGNORE INTO material_meta(key, value) VALUES ('evidence_generation', '0');
 CREATE TABLE IF NOT EXISTS material_migrations (
     source TEXT PRIMARY KEY,
     signature TEXT NOT NULL,
@@ -432,16 +464,39 @@ class MaterialRepository:
     _REQUIRED_OBJECTS = (
         'ix_materials_import_batch', 'ix_materials_source_status',
         'material_assignment_receipts', 'ix_materials_stored_name',
+        _EVIDENCE_GENERATION_SENTINEL,
     )
 
     def _required_objects_present(self, database: sqlite3.Connection) -> bool:
         placeholders = ",".join("?" for _ in self._REQUIRED_OBJECTS)
         rows = database.execute(
-            "SELECT name FROM sqlite_master WHERE type IN ('index','table') "
+            "SELECT name FROM sqlite_master WHERE type IN ('index','table','trigger') "
             f"AND name IN ({placeholders})",
             self._REQUIRED_OBJECTS,
         ).fetchall()
         return len(rows) == len(self._REQUIRED_OBJECTS)
+
+    def _ensure_evidence_generation(self, database: sqlite3.Connection) -> None:
+        """Install the evidence generation contract additively (idempotent).
+
+        Tables missing from an older database are skipped; whoever creates one
+        later must call this helper in the same transaction.
+        """
+        database.execute(
+            "INSERT OR IGNORE INTO material_meta(key, value) VALUES (?, '0')",
+            (EVIDENCE_GENERATION_KEY,),
+        )
+        present = {
+            str(row[0])
+            for row in database.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        for table in _EVIDENCE_GENERATION_TABLES:
+            if table not in present:
+                continue
+            for statement in _generation_trigger_statements(table):
+                database.execute(statement)
 
     def _read_schema_version_fast(self) -> int | None:
         if not self.path.is_file():
@@ -549,6 +604,10 @@ class MaterialRepository:
                         "CREATE INDEX IF NOT EXISTS ix_materials_stored_name "
                         "ON materials(json_extract(payload_json, '$.stored_name'))"
                     )
+                # Additive: the evidence generation key/triggers are installed in
+                # the same transaction as any other in-place upgrade, without a
+                # schema-version bump.
+                self._ensure_evidence_generation(database)
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:

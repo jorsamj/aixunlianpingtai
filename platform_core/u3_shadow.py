@@ -438,6 +438,13 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 "SELECT value FROM material_meta WHERE key='revision'"
             ).fetchone()
             material_revision = int(revision_row[0]) if revision_row else None
+            generation_row = database.execute(
+                "SELECT value FROM material_meta WHERE key=?",
+                (MATERIAL_EVIDENCE_GENERATION_KEY,),
+            ).fetchone()
+            # An owner database from before the counter existed observed every
+            # historical evidence row at generation 0.
+            material_evidence_generation = int(generation_row[0]) if generation_row else 0
             pool_row = database.execute(
                 "SELECT revision FROM negative_pool_meta WHERE id=1"
             ).fetchone()
@@ -503,6 +510,20 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 "SELECT value FROM annotation_meta WHERE key='revision'"
             ).fetchone()
             annotation_revision = int(meta[0]) if meta else None
+            annotation_generation_row = database.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (ANNOTATION_EVIDENCE_GENERATION_KEY,),
+            ).fetchone()
+            annotation_evidence_generation = (
+                int(annotation_generation_row[0]) if annotation_generation_row else 0
+            )
+            confirmation_generation_row = database.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (CONFIRMATION_GENERATION_KEY,),
+            ).fetchone()
+            confirmation_generation = (
+                int(confirmation_generation_row[0]) if confirmation_generation_row else 0
+            )
             annotations_schema = annotations_schema_version
         # Revision re-check: a store that moved during the export invalidates it.
         with closing(_open_read_only(materials_db)) as database:
@@ -512,15 +533,44 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
             after_pool = database.execute(
                 "SELECT revision FROM negative_pool_meta WHERE id=1"
             ).fetchone()
+            after_generation = database.execute(
+                "SELECT value FROM material_meta WHERE key=?",
+                (MATERIAL_EVIDENCE_GENERATION_KEY,),
+            ).fetchone()
             after_materials_revision = int(after_row[0]) if after_row else None
             after_pool_revision = int(after_pool[0]) if after_pool else None
+            after_material_evidence_generation = (
+                int(after_generation[0]) if after_generation else 0
+            )
         with closing(_open_read_only(annotations_db)) as database:
             after_meta = database.execute(
                 "SELECT value FROM annotation_meta WHERE key='revision'"
             ).fetchone()
             after_annotation_revision = int(after_meta[0]) if after_meta else None
+            after_annotation_generation = database.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (ANNOTATION_EVIDENCE_GENERATION_KEY,),
+            ).fetchone()
+            after_confirmation_generation = database.execute(
+                "SELECT value FROM annotation_meta WHERE key=?",
+                (CONFIRMATION_GENERATION_KEY,),
+            ).fetchone()
+            after_annotation_evidence_generation = (
+                int(after_annotation_generation[0]) if after_annotation_generation else 0
+            )
+            after_confirmation_generation_value = (
+                int(after_confirmation_generation[0]) if after_confirmation_generation else 0
+            )
     if (after_materials_revision, after_pool_revision, after_annotation_revision) != (
         material_revision, pool_revision, annotation_revision
+    ) or (
+        after_material_evidence_generation,
+        after_annotation_evidence_generation,
+        after_confirmation_generation_value,
+    ) != (
+        material_evidence_generation,
+        annotation_evidence_generation,
+        confirmation_generation,
     ):
         raise U3MigrationError(
             "U3_SNAPSHOT_SOURCE_CHANGED",
@@ -528,7 +578,13 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
             detail=(
                 f"materials={material_revision}->{after_materials_revision} "
                 f"pool={pool_revision}->{after_pool_revision} "
-                f"annotations={annotation_revision}->{after_annotation_revision}"
+                f"annotations={annotation_revision}->{after_annotation_revision} "
+                f"evidence_generations="
+                f"({material_evidence_generation},{annotation_evidence_generation},"
+                f"{confirmation_generation})->"
+                f"({after_material_evidence_generation},"
+                f"{after_annotation_evidence_generation},"
+                f"{after_confirmation_generation_value})"
             ),
         )
     counts = {f"{store}.{table}": len(rows) for store, tables in stores.items()
@@ -547,6 +603,12 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         "annotations": annotation_revision,
         "negative_pool": pool_revision,
     }
+    # One shape for both the exporter and the importer: the generations come from
+    # the owner counters, everything else is recomputed from the exported rows.
+    evidence_streams = snapshot_evidence_streams({"stores": stores})
+    evidence_streams["materials_evidence"]["generation"] = material_evidence_generation
+    evidence_streams["annotations_evidence"]["generation"] = annotation_evidence_generation
+    evidence_streams["negative_confirmation"]["generation"] = confirmation_generation
     return {
         "contract_version": CONTRACT_VERSION,
         "project_id": str(project_id),
@@ -556,11 +618,14 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         "table_state": table_state,
         "schema_versions": {"materials": materials_schema, "annotations": annotations_schema},
         "revisions": revisions,
+        "evidence_streams": evidence_streams,
         "consistency": "MATERIAL_ANNOTATION_LIFECYCLE_FENCE+REVISION_RECHECK",
         "content_digest": content_digest,
         # Deterministic identity: the same owner state always names the same
         # snapshot, so a replay is recognisable without a random token.
-        "snapshot_id": _snapshot_identity(project_id, content_digest, revisions),
+        "snapshot_id": _snapshot_identity(
+            project_id, content_digest, revisions, evidence_streams
+        ),
     }
 
 
@@ -965,20 +1030,203 @@ V4_TABLES = {
         "project_id", "receipt_id", "context_key", "image_id", "evidence",
     ),
 }
-#: ``negative_pool_algorithm_member`` already has (project_id, algorithm_id,
-#: material_id) as its primary key, so no second algorithm-first index is added.
-V4_INDEXES = (
-    "idx_u3_shadow_import_project",
-    "idx_picker_negative_receipt",
-    "idx_picker_material_order",
-    "idx_picker_material_source_order",
-    "idx_picker_material_label",
-    "idx_picker_material_scope",
-    "idx_picker_gt_label",
-    "idx_picker_gt_state",
-    "idx_picker_pool_joined",
-    "idx_picker_pool_category",
-)
+#: ``udt_name`` per column: a table with the right column names but the wrong
+#: types is not the contract (text vs char(64), int8 vs int4, jsonb vs json).
+V4_COLUMN_TYPES = {
+    "picker_snapshot_state": {
+        "project_id": "text", "snapshot_id": "text", "content_digest": "bpchar",
+        "material_revision": "int8", "annotation_revision": "int8",
+        "negative_pool_revision": "int8", "materials_digest": "bpchar",
+        "annotations_digest": "bpchar", "negative_pool_digest": "bpchar",
+        "negative_confirmation_revision": "int8",
+        "negative_confirmation_generation": "int8",
+        "negative_confirmation_digest": "bpchar", "revision_vector": "jsonb",
+        "status": "text", "captured_at": "timestamptz",
+        "published_at": "timestamptz",
+    },
+    "u3_shadow_import": {
+        "import_id": "int8", "project_id": "text", "snapshot_id": "text",
+        "snapshot_digest": "text", "revision_vector": "jsonb",
+        "import_mode": "text", "outcome": "text", "error_code": "text",
+        "detail": "text", "imported_at": "timestamptz",
+    },
+    "u3_projection_cursor": {
+        "project_id": "text", "store": "text", "last_applied_seq": "int8",
+        "source_revision": "int8", "updated_at": "timestamptz",
+    },
+    "task_negative_confirmation": {
+        "project_id": "text", "receipt_id": "text", "context_key": "text",
+        "image_id": "text", "evidence": "jsonb",
+    },
+}
+#: Columns the read contract must never see as NULL.
+V4_NOT_NULL = {
+    "picker_snapshot_state": (
+        "project_id", "snapshot_id", "content_digest",
+        "negative_confirmation_revision", "negative_confirmation_generation",
+        "revision_vector", "status", "published_at",
+    ),
+    "u3_shadow_import": (
+        "import_id", "project_id", "snapshot_id", "snapshot_digest",
+        "revision_vector", "import_mode", "outcome", "imported_at",
+    ),
+    "u3_projection_cursor": ("project_id", "store", "updated_at"),
+    "task_negative_confirmation": (
+        "project_id", "receipt_id", "context_key", "evidence",
+    ),
+}
+V4_PRIMARY_KEYS = {
+    "picker_snapshot_state": ("project_id",),
+    "u3_shadow_import": ("import_id",),
+    "u3_projection_cursor": ("project_id", "store"),
+    "task_negative_confirmation": ("project_id", "receipt_id"),
+}
+#: Every CHECK constraint that carries business meaning must still exist with all
+#: of its allowed values (a dropped or weakened CHECK changes the contract).
+V4_CHECKS = {
+    "picker_snapshot_state": ("status", ("READY", "STALE", "INCOMPLETE")),
+    "u3_shadow_import": (
+        "outcome", ("APPLIED", "ALREADY_APPLIED", "REFUSED", "FAILED"),
+    ),
+}
+#: Index -> (owning table, column order). ``negative_pool_algorithm_member``
+#: already has (project_id, algorithm_id, material_id) as its primary key, so no
+#: second algorithm-first index exists.
+V4_INDEXES = {
+    "idx_u3_shadow_import_project": (
+        "u3_shadow_import", ("project_id", "snapshot_digest", "outcome"),
+    ),
+    "idx_picker_negative_receipt": (
+        "task_negative_confirmation", ("project_id", "context_key", "image_id"),
+    ),
+    "idx_picker_material_order": (
+        "material", ("project_id", "processing_status", "created_at", "id"),
+    ),
+    "idx_picker_material_source_order": (
+        "material",
+        ("project_id", "storage_source_id", "processing_status", "created_at", "id"),
+    ),
+    "idx_picker_material_label": (
+        "material_label", ("project_id", "label_code", "material_id"),
+    ),
+    "idx_picker_material_scope": (
+        "material_annotation_scope", ("project_id", "label_code", "material_id"),
+    ),
+    "idx_picker_gt_label": (
+        "annotation_label_reference", ("project_id", "label_code", "image_id"),
+    ),
+    "idx_picker_gt_state": (
+        "annotation", ("project_id", "annotation_state", "image_id"),
+    ),
+    "idx_picker_pool_joined": (
+        "negative_pool_member", ("project_id", "joined_at", "material_id"),
+    ),
+    "idx_picker_pool_category": (
+        "negative_pool_link", ("project_id", "category_id", "material_id"),
+    ),
+}
+
+
+def _primary_key_columns(cursor, table: str) -> tuple[str, ...]:
+    cursor.execute(
+        """
+        SELECT ARRAY(
+                   SELECT a.attname FROM unnest(c.conkey) WITH ORDINALITY AS u(attnum, ord)
+                   JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = u.attnum
+                   ORDER BY u.ord
+               ) AS columns
+          FROM pg_constraint c
+         WHERE c.conrelid = (%s)::regclass AND c.contype = 'p'
+        """,
+        (f"{SCHEMA_NAME}.{table}",),
+    )
+    row = cursor.fetchone()
+    return tuple(str(name) for name in row["columns"]) if row else ()
+
+
+def _v4_structure_findings(cursor) -> list[str]:
+    """Compare the real catalog with the v4 contract (PK, type, NULL, CHECK, index)."""
+    findings: list[str] = []
+    cursor.execute(
+        "SELECT table_name,column_name,udt_name,is_nullable FROM information_schema.columns "
+        "WHERE table_schema=%s AND table_name = ANY(%s)",
+        (SCHEMA_NAME, list(V4_TABLES)),
+    )
+    columns = {
+        (str(row["table_name"]), str(row["column_name"])): (
+            str(row["udt_name"]), str(row["is_nullable"]),
+        )
+        for row in cursor.fetchall()
+    }
+    for table, spec in V4_COLUMN_TYPES.items():
+        for column, expected_type in spec.items():
+            info = columns.get((table, column))
+            if info is None:
+                findings.append(f"v4_column={table}.{column}")
+            elif info[0] != expected_type:
+                findings.append(f"v4_type={table}.{column}:{info[0]}")
+    for table, required in V4_NOT_NULL.items():
+        for column in required:
+            info = columns.get((table, column))
+            if info is not None and info[1] != "NO":
+                findings.append(f"v4_not_null={table}.{column}")
+    for table, expected_primary in V4_PRIMARY_KEYS.items():
+        if table not in {name for (name, _column) in columns}:
+            continue  # already reported as a missing v4 table
+        actual_primary = _primary_key_columns(cursor, table)
+        if actual_primary != expected_primary:
+            findings.append(f"v4_primary_key={table}:{actual_primary}")
+    cursor.execute(
+        "SELECT c.relname AS table_name, pg_get_constraintdef(con.oid) AS definition "
+        "FROM pg_constraint con JOIN pg_class c ON c.oid = con.conrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname=%s AND con.contype='c'",
+        (SCHEMA_NAME,),
+    )
+    checks: dict[str, list[str]] = {}
+    for row in cursor.fetchall():
+        checks.setdefault(str(row["table_name"]), []).append(str(row["definition"]))
+    for table, (column, values) in V4_CHECKS.items():
+        matching = [
+            definition for definition in checks.get(table, [])
+            if column in definition
+            and all(f"'{value}'" in definition for value in values)
+        ]
+        if not matching:
+            findings.append(f"v4_check={table}.{column}")
+    cursor.execute(
+        "SELECT c.relname AS table_name, i.relname AS index_name, "
+        "ix.indisunique AS is_unique, "
+        "ARRAY(SELECT a.attname FROM unnest(ix.indkey) WITH ORDINALITY AS u(attnum, ord) "
+        "JOIN pg_attribute a ON a.attrelid = ix.indrelid AND a.attnum = u.attnum "
+        "ORDER BY u.ord) AS columns "
+        "FROM pg_index ix "
+        "JOIN pg_class i ON i.oid = ix.indexrelid "
+        "JOIN pg_class c ON c.oid = ix.indrelid "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "WHERE n.nspname=%s",
+        (SCHEMA_NAME,),
+    )
+    actual_indexes = {
+        str(row["index_name"]): (
+            str(row["table_name"]),
+            tuple(str(name) for name in row["columns"]),
+            bool(row["is_unique"]),
+        )
+        for row in cursor.fetchall()
+    }
+    for name, (table, expected_columns) in V4_INDEXES.items():
+        actual = actual_indexes.get(name)
+        if actual is None:
+            findings.append(f"v4_index={name}")
+            continue
+        if actual[0] != table:
+            findings.append(f"v4_index_table={name}:{actual[0]}")
+        if actual[1] != tuple(expected_columns):
+            findings.append(f"v4_index_columns={name}:{actual[1]}")
+        if actual[2]:
+            findings.append(f"v4_index_unique={name}")
+    return findings
 
 
 def _assert_target_structure(cursor) -> None:
@@ -1063,21 +1311,11 @@ def _assert_target_structure(cursor) -> None:
     v4_columns: dict[str, set[str]] = {}
     for row in cursor.fetchall():
         v4_columns.setdefault(str(row["table_name"]), set()).add(str(row["column_name"]))
-    for table, columns in V4_TABLES.items():
-        present_columns = v4_columns.get(table)
-        if present_columns is None:
+    for table in V4_TABLES:
+        if table not in v4_columns:
             missing = list(missing) + [f"v4_table={table}"]
-            continue
-        for column in columns:
-            if column not in present_columns:
-                missing = list(missing) + [f"v4_column={table}.{column}"]
-    cursor.execute(
-        "SELECT indexname FROM pg_indexes WHERE schemaname=%s", (SCHEMA_NAME,)
-    )
-    indexes = {str(row["indexname"]) for row in cursor.fetchall()}
-    missing = list(missing) + [
-        f"v4_index={name}" for name in V4_INDEXES if name not in indexes
-    ]
+    # PKs, column types, NOT NULL, CHECK constraints, index table/column order.
+    missing = list(missing) + _v4_structure_findings(cursor)
     if missing or absent:
         raise U3MigrationError(
             "U3_SCHEMA_STRUCTURE_INVALID",
@@ -1421,11 +1659,25 @@ _STATE_COLUMNS = (
     "materials_digest", "annotations_digest", "negative_pool_digest",
     "negative_confirmation_revision", "negative_confirmation_generation",
     "negative_confirmation_digest", "content_digest", "snapshot_id", "status",
+    "revision_vector",
+)
+
+#: Owner-side generation keys, owned by the two SQLite repositories.
+MATERIAL_EVIDENCE_GENERATION_KEY = "evidence_generation"
+ANNOTATION_EVIDENCE_GENERATION_KEY = "evidence_generation"
+CONFIRMATION_GENERATION_KEY = "task_negative_confirmation_generation"
+
+#: Evidence streams that have no monotonic Owner revision of their own and are
+#: therefore protected by their Owner generation plus a content digest. The
+#: task-confirmation stream is checked first: it is the most specific one.
+EVIDENCE_STREAMS = (
+    "negative_confirmation", "annotations_evidence", "materials_evidence",
 )
 
 
 def _snapshot_identity(
     project_id: str, content_digest: str, revisions: Mapping[str, Any],
+    streams: Mapping[str, Any] | None = None,
 ) -> str:
     """Deterministic snapshot id: the same payload always names the same snapshot.
 
@@ -1438,6 +1690,7 @@ def _snapshot_identity(
             "contract_version": CONTRACT_VERSION,
             "content_digest": str(content_digest),
             "revisions": dict(revisions or {}),
+            "evidence_streams": dict(streams or {}),
         },
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
@@ -1452,7 +1705,72 @@ def _declared_snapshot_id(snapshot: Mapping[str, Any]) -> str:
         str(snapshot.get("project_id") or ""),
         str(snapshot.get("content_digest") or ""),
         snapshot.get("revisions") or {},
+        snapshot.get("evidence_streams") or {},
     )
+
+
+def evidence_stream_digest(stores: Mapping[str, Any], store: str) -> str:
+    """Stable digest of one store's historical evidence rows."""
+    evidence = (stores.get(store) or {}).get("evidence") or {}
+    return _digest(
+        [{"table": name, "digest": _digest(evidence[name])} for name in sorted(evidence)]
+    )
+
+
+def evidence_stream_tables(stores: Mapping[str, Any], store: str) -> list[str]:
+    """Evidence tables the snapshot actually carries (structure, not content)."""
+    evidence = (stores.get(store) or {}).get("evidence") or {}
+    return sorted(str(name) for name in evidence)
+
+
+def _confirmation_evidence(stores: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return (
+        (((stores.get("annotations") or {}).get("evidence") or {})
+         .get("task_negative_confirmations")) or []
+    )
+
+
+def snapshot_evidence_streams(
+    snapshot: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Owner generation + content digest for every mutable evidence stream.
+
+    Generations are Owner-side counters (0 for a snapshot exported before the
+    counter existed); digests are always recomputed from the rows, so a stale or
+    tampered snapshot cannot claim a generation it did not observe.
+    """
+    stores = snapshot.get("stores") or {}
+    declared = snapshot.get("evidence_streams") or {}
+
+    def generation(name: str) -> int:
+        value = (declared.get(name) or {}).get("generation")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return 0
+
+    confirmations = _confirmation_evidence(stores)
+    return {
+        "materials_evidence": {
+            "generation": generation("materials_evidence"),
+            "digest": evidence_stream_digest(stores, "materials"),
+            "tables": evidence_stream_tables(stores, "materials"),
+        },
+        "annotations_evidence": {
+            "generation": generation("annotations_evidence"),
+            "digest": evidence_stream_digest(stores, "annotations"),
+            "tables": evidence_stream_tables(stores, "annotations"),
+        },
+        "negative_confirmation": {
+            "generation": generation("negative_confirmation"),
+            "revision": len(confirmations),
+            "digest": _digest(confirmations),
+            "tables": (
+                ["task_negative_confirmations"]
+                if ((stores.get("annotations") or {}).get("evidence") or {})
+                .get("task_negative_confirmations") is not None else []
+            ),
+        },
+    }
 
 
 def _count_matches(value: Any, length: int) -> bool:
@@ -1502,7 +1820,8 @@ def snapshot_integrity_error(snapshot: Mapping[str, Any]) -> str | None:
         return "content_digest"
     if str(snapshot.get("snapshot_id") or "") and str(snapshot["snapshot_id"]) != (
         _snapshot_identity(
-            str(snapshot.get("project_id") or ""), expected, snapshot.get("revisions") or {}
+            str(snapshot.get("project_id") or ""), expected,
+            snapshot.get("revisions") or {}, snapshot_evidence_streams(snapshot),
         )
     ):
         return "snapshot_id"
@@ -1518,12 +1837,15 @@ def _store_digest(digests: Mapping[str, Any], store: str) -> str | None:
 
 def _revision_vector(
     revisions: Mapping[str, Any], store_digests: Mapping[str, Any],
+    streams: Mapping[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     vector: dict[str, dict[str, Any]] = {}
     for store in REVISION_STORES:
         revision = (revisions or {}).get(store)
         if isinstance(revision, int) and not isinstance(revision, bool):
             vector[store] = {"revision": revision, "digest": (store_digests or {}).get(store)}
+    for name, stream in (streams or {}).items():
+        vector[name] = dict(stream)
     return vector
 
 
@@ -1750,13 +2072,32 @@ def _apply_project_snapshot(
                         "the snapshot does not match its own identity",
                         detail=f"reason={integrity}",
                     )
+            if mode == "full" and not project_pending:
+                # Every full import (not only a legacy-pending one) proves the
+                # snapshot is complete BEFORE the first destructive write: the
+                # same contract the pending gate uses. A snapshot that cannot
+                # prove completeness must never delete first and be labelled
+                # INCOMPLETE afterwards.
+                complete, reason = pending_clear_eligible(snapshot, project_id)
+                if not complete:
+                    raise U3MigrationError(
+                        "U3_SNAPSHOT_INCOMPLETE",
+                        "a full import requires a complete authoritative snapshot",
+                        detail=f"reason={reason}",
+                    )
             revisions = snapshot.get("revisions") or {}
             store_digests = {
                 store: _store_digest(snapshot.get("digests") or {}, store)
                 for store in REVISION_STORES
             }
-            revision_vector = _revision_vector(revisions, store_digests)
+            streams = snapshot_evidence_streams(snapshot)
+            revision_vector = _revision_vector(revisions, store_digests, streams)
             prior_state = _read_snapshot_state(cursor, project_id)
+            prior_vector = {}
+            if prior_state is not None:
+                prior_vector = prior_state["revision_vector"] or {}
+                if isinstance(prior_vector, str):
+                    prior_vector = json.loads(prior_vector)
             if prior_state is None:
                 # A pre-v4 target only has store_revision high-water marks; it has
                 # no digest yet, so the first v4 import re-establishes identity.
@@ -1773,6 +2114,43 @@ def _apply_project_snapshot(
                     "annotations": prior_state["annotations_digest"],
                     "negative_pool": prior_state["negative_pool_digest"],
                 }
+            # Evidence streams (mutable historical evidence without an owner
+            # revision) are protected by their own monotonic owner generation.
+            # A presence change (a source table created or dropped) is a structural
+            # owner change, not a content conflict: the retention contract keeps
+            # the target rows of an absent table, so only content within the same
+            # structure is compared.
+            for name in EVIDENCE_STREAMS:
+                source = streams[name]
+                target = prior_vector.get(name) or {}
+                target_generation = target.get("generation")
+                if (
+                    isinstance(target_generation, int)
+                    and not isinstance(target_generation, bool)
+                    and source["generation"] < target_generation
+                ):
+                    raise U3MigrationError(
+                        "U3_SNAPSHOT_REVISION_REGRESSION",
+                        f"the {name} evidence stream may not regress",
+                        detail=(
+                            f"stream={name} target={target_generation} "
+                            f"source={source['generation']}"
+                        ),
+                    )
+                same_structure = sorted(target.get("tables") or []) == sorted(
+                    source.get("tables") or []
+                )
+                if (
+                    source["generation"] == target_generation
+                    and same_structure
+                    and isinstance(target.get("digest"), str)
+                    and target["digest"] != source["digest"]
+                ):
+                    raise U3MigrationError(
+                        "U3_SNAPSHOT_REVISION_DIVERGED",
+                        f"the {name} evidence stream changed without a new generation",
+                        detail=f"stream={name} generation={source['generation']}",
+                    )
             for store in REVISION_STORES:
                 source_revision = revisions.get(store)
                 if (
@@ -1817,6 +2195,11 @@ def _apply_project_snapshot(
                     revisions.get(store) == baseline.get(store)
                     and store_digests.get(store) == baseline_digests.get(store)
                     for store in REVISION_STORES
+                )
+                and all(
+                    (prior_vector.get(name) or {}).get("generation") == streams[name]["generation"]
+                    and (prior_vector.get(name) or {}).get("digest") == streams[name]["digest"]
+                    for name in EVIDENCE_STREAMS
                 )
                 and str(prior_state["content_digest"]) == str(snapshot.get("content_digest") or "")
             )
@@ -2064,27 +2447,21 @@ def _apply_project_snapshot(
                 "WHERE project_id=%s ORDER BY receipt_id",
                 (project_id,),
             )
-            confirmation_digest_rows = []
+            confirmation_rows_in_target = []
             for receipt_id, context_key, image_id, evidence in cursor.fetchall():
-                confirmation_digest_rows.append({
+                confirmation_rows_in_target.append({
                     "receipt_id": str(receipt_id),
                     "context_key": str(context_key),
                     "image_id": None if image_id is None else str(image_id),
                     "evidence": evidence if isinstance(evidence, dict) else json.loads(evidence),
                 })
-            confirmation_count = len(confirmation_digest_rows)
-            confirmation_digest = _digest(confirmation_digest_rows)
-            prior_generation = (
-                int(prior_state["negative_confirmation_generation"]) if prior_state else 0
-            )
-            prior_confirmation_digest = (
-                prior_state["negative_confirmation_digest"] if prior_state else None
-            )
-            confirmation_generation = (
-                prior_generation
-                if not prior_confirmation_digest
-                else prior_generation + int(prior_confirmation_digest != confirmation_digest)
-            )
+            counters["negative_confirmation_rows"] = len(confirmation_rows_in_target)
+            # The published state describes the OWNER snapshot: the Owner
+            # generation and COUNT are used as-is. An incremental apply leaves
+            # the state STALE, so a union target is never advertised as READY.
+            confirmation_count = int(streams["negative_confirmation"]["revision"])
+            confirmation_generation = int(streams["negative_confirmation"]["generation"])
+            confirmation_digest = str(streams["negative_confirmation"]["digest"])
             complete, _reason = pending_clear_eligible(snapshot, project_id)
             if mode == "full":
                 status = "READY" if complete else "INCOMPLETE"

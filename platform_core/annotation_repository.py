@@ -22,6 +22,35 @@ _SCHEMA_VERSION = 3
 _INIT_LOCK_TIMEOUT = 30
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
+#: Owner-side monotonic counters for historical evidence that can change without
+#: advancing ``annotation_meta.revision``. ``task_negative_confirmations`` is the
+#: task-level negative receipt set the Picker reads, so it gets its own counter;
+#: every evidence table also bumps the store's evidence generation. Both are
+#: maintained by triggers inside the writing transaction, so the counter and the
+#: row change commit or roll back together.
+EVIDENCE_GENERATION_KEY = "evidence_generation"
+CONFIRMATION_GENERATION_KEY = "task_negative_confirmation_generation"
+_EVIDENCE_GENERATION_TABLES = (
+    "annotation_delete_backup",
+    "annotation_candidate_commits",
+    "annotation_negative_reviews",
+    "task_negative_confirmations",
+)
+
+
+def _generation_trigger_statements(table: str, key: str) -> tuple[str, ...]:
+    """Idempotent INSERT/UPDATE/DELETE triggers bumping one meta counter."""
+    return tuple(
+        f"CREATE TRIGGER IF NOT EXISTS {table}_{key}_after_{suffix} "
+        f"AFTER {event} ON {table} BEGIN "
+        "UPDATE annotation_meta SET value = CAST(value AS INTEGER) + 1 "
+        f"WHERE key = '{key}'; END"
+        for suffix, event in (
+            ("insert", "INSERT"), ("update", "UPDATE"), ("delete", "DELETE"),
+        )
+    )
+
+
 _BACKUP_REFERENCE_CTE = """
 WITH backup_source AS (
     SELECT backup.image_id, backup.boxes_json, backup.scope_json
@@ -178,10 +207,64 @@ class AnnotationRepository:
         except sqlite3.Error:
             return False
 
+    def _generation_ready_fast(self) -> bool:
+        """Cheap probe: an older database must enter ``_initialize`` once to
+        install the additive generation keys/triggers."""
+        if not self.path.is_file():
+            return False
+        try:
+            with closing(
+                sqlite3.connect(self.path, timeout=0.25, isolation_level=None)
+            ) as db:
+                db.execute("PRAGMA busy_timeout=250")
+                keys = int(db.execute(
+                    "SELECT COUNT(*) FROM annotation_meta WHERE key IN (?,?)",
+                    (EVIDENCE_GENERATION_KEY, CONFIRMATION_GENERATION_KEY),
+                ).fetchone()[0])
+                if keys < 2:
+                    return False
+                return db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                    "AND name='annotation_delete_backup_evidence_generation_after_insert'"
+                ).fetchone() is not None
+        except sqlite3.Error:
+            return False
+
+    def _ensure_table_generation(self, db, table: str) -> None:
+        """Install the generation keys/triggers for one evidence table."""
+        keys = [EVIDENCE_GENERATION_KEY]
+        if table == "task_negative_confirmations":
+            keys.append(CONFIRMATION_GENERATION_KEY)
+        for key in keys:
+            db.execute(
+                "INSERT OR IGNORE INTO annotation_meta(key, value) VALUES (?, '0')",
+                (key,),
+            )
+            for statement in _generation_trigger_statements(table, key):
+                db.execute(statement)
+
+    def _ensure_generation_objects(self, db) -> None:
+        """Install the generation contract additively (idempotent).
+
+        Called by ``_initialize`` (so an existing database upgrades in place
+        without a schema-version bump) and by every lazy evidence-table creator,
+        so a table created later never writes without its triggers.
+        """
+        present = {
+            str(row[0])
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        for table in _EVIDENCE_GENERATION_TABLES:
+            if table in present:
+                self._ensure_table_generation(db, table)
+
     def _initialize(self) -> None:
         if (
             self._read_schema_version_fast() == _SCHEMA_VERSION
             and self._reference_index_ready_fast()
+            and self._generation_ready_fast()
         ):
             return
         lock = FileLock(
@@ -197,6 +280,10 @@ class AnnotationRepository:
                         "SELECT 1 FROM annotation_meta "
                         "WHERE key='index_rebuilt_at' LIMIT 1"
                     ).fetchone()
+                    # Additive: an existing database gets the generation contract
+                    # in place, without a schema-version bump.
+                    self._ensure_generation_objects(db)
+                    db.commit()
                     if ready is not None:
                         return
                     # Rebuild through a fresh writer connection. Closing this
@@ -392,6 +479,7 @@ class AnnotationRepository:
                                 row["image_id"],
                             ),
                         )
+                self._ensure_generation_objects(db)
                 rebuild_references = version < 2
                 db.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
                 db.commit()
@@ -1351,6 +1439,7 @@ class AnnotationRepository:
                             db.execute("""CREATE TABLE IF NOT EXISTS annotation_candidate_commits (
                                 task_id TEXT NOT NULL, operation_id TEXT NOT NULL, image_id TEXT NOT NULL,
                                 receipt_json TEXT NOT NULL, PRIMARY KEY(task_id, image_id))""")
+                            self._ensure_table_generation(db, "annotation_candidate_commits")
                         for row, image_id, prepared in prepared_rows:
                             force_version_advance = bool(row.get("force_version_advance"))
                             if force_version_advance:
@@ -1453,6 +1542,7 @@ class AnnotationRepository:
                                     source_content_sha256 TEXT NOT NULL, annotation_version INTEGER NOT NULL,
                                     annotation_digest TEXT NOT NULL, reviewed_at TEXT NOT NULL,
                                     PRIMARY KEY(image_id,source_version,actor_id,reviewed_scope_json,source_content_sha256))""")
+                                self._ensure_table_generation(db, "annotation_negative_reviews")
                                 has_review_audit = True
                                 db.execute('INSERT OR IGNORE INTO annotation_negative_reviews VALUES(?,?,?,?,?,?,?,?)',
                                     (image_id, expected_version, actor, json.dumps(labels),
@@ -1497,6 +1587,21 @@ class AnnotationRepository:
                 return 0
             return int(db.execute('SELECT COUNT(*) FROM task_negative_confirmations').fetchone()[0])
 
+    def _generation(self, key: str) -> int:
+        with closing(self._connect()) as db:
+            row = db.execute(
+                "SELECT value FROM annotation_meta WHERE key=?", (key,)
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def task_negative_confirmation_generation(self) -> int:
+        """Owner-side monotonic version of the task negative receipt set."""
+        return self._generation(CONFIRMATION_GENERATION_KEY)
+
+    def evidence_generation(self) -> int:
+        """Owner-side monotonic version of every historical evidence table."""
+        return self._generation(EVIDENCE_GENERATION_KEY)
+
     def task_negative_receipts(self, context_key, image_ids=None):
         """Read additive task evidence without migrating or changing formal GT."""
         with closing(self._connect()) as db:
@@ -1515,27 +1620,37 @@ class AnnotationRepository:
             return result
 
     def confirm_task_negatives(self, context_key, evidences, actor):
-        with closing(self._connect()) as db:
-            with db:
-                db.execute("BEGIN IMMEDIATE")
-                db.execute("CREATE TABLE IF NOT EXISTS task_negative_confirmations (receipt_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, evidence_json TEXT NOT NULL)")
-                db.execute("CREATE INDEX IF NOT EXISTS task_negative_context_idx ON task_negative_confirmations(context_key)")
-                current_by_id = {}
-                ids = [self._id(e['image_id']) for e in evidences]
-                for offset in range(0, len(ids), 500):
-                    chunk = ids[offset:offset+500]
-                    current_by_id.update({str(r['image_id']): r for r in db.execute(
-                        'SELECT * FROM annotations WHERE image_id IN (' + ','.join('?' for _ in chunk) + ')', chunk)})
-                for evidence in evidences:
-                    image_id = self._id(evidence['image_id'])
-                    current = current_by_id.get(image_id)
-                    record = self._decode_persisted_row(current) if current else self._legacy_record(image_id)
-                    if (int(record.get('version') or 0) != evidence['annotation_version'] or
-                            str(record.get('content_digest') or '') != evidence['annotation_hash']):
-                        raise ValueError('标注已变化，请重新检查并确认')
-                    value = dict(evidence, actor=actor, confirmed_at=datetime.now(timezone.utc).isoformat())
-                    db.execute('INSERT OR IGNORE INTO task_negative_confirmations VALUES(?,?,?)',
-                               (evidence['receipt_id'], context_key, json.dumps(value, ensure_ascii=False, sort_keys=True)))
+        from .material_repository import material_annotation_lifecycle_fence
+
+        # Same lifecycle fence the U3 shadow export holds: a confirmation can
+        # never land between the export's snapshot reads and its revision
+        # re-check. Lock order is fence -> SQLite, like every other formal GT and
+        # material write; nothing acquires them in the opposite order.
+        with material_annotation_lifecycle_fence(self.project_path):
+            with closing(self._connect()) as db:
+                with db:
+                    db.execute("BEGIN IMMEDIATE")
+                    db.execute("CREATE TABLE IF NOT EXISTS task_negative_confirmations (receipt_id TEXT PRIMARY KEY, context_key TEXT NOT NULL, evidence_json TEXT NOT NULL)")
+                    db.execute("CREATE INDEX IF NOT EXISTS task_negative_context_idx ON task_negative_confirmations(context_key)")
+                    # Created together with the table: the trigger exists before the
+                    # first receipt and bumps atomically with every row change.
+                    self._ensure_table_generation(db, "task_negative_confirmations")
+                    current_by_id = {}
+                    ids = [self._id(e['image_id']) for e in evidences]
+                    for offset in range(0, len(ids), 500):
+                        chunk = ids[offset:offset+500]
+                        current_by_id.update({str(r['image_id']): r for r in db.execute(
+                            'SELECT * FROM annotations WHERE image_id IN (' + ','.join('?' for _ in chunk) + ')', chunk)})
+                    for evidence in evidences:
+                        image_id = self._id(evidence['image_id'])
+                        current = current_by_id.get(image_id)
+                        record = self._decode_persisted_row(current) if current else self._legacy_record(image_id)
+                        if (int(record.get('version') or 0) != evidence['annotation_version'] or
+                                str(record.get('content_digest') or '') != evidence['annotation_hash']):
+                            raise ValueError('标注已变化，请重新检查并确认')
+                        value = dict(evidence, actor=actor, confirmed_at=datetime.now(timezone.utc).isoformat())
+                        db.execute('INSERT OR IGNORE INTO task_negative_confirmations VALUES(?,?,?)',
+                                   (evidence['receipt_id'], context_key, json.dumps(value, ensure_ascii=False, sort_keys=True)))
         return [e['receipt_id'] for e in evidences]
 
     def negative_review_evidence(self, image_id, source_version, actor_id, labels, source_hash):
