@@ -8,6 +8,8 @@ on:
     paths:
       - app.py
       - platform_core/task_runtime/**
+      - platform_core/task_store_readiness.py
+      - tests/unit/test_task_store_readiness.py
       - platform_core/training_job_projection.py
       - platform_core/training_timing.py
       - platform_core/material_batches.py
@@ -41,6 +43,8 @@ on:
     paths:
       - app.py
       - platform_core/task_runtime/**
+      - platform_core/task_store_readiness.py
+      - tests/unit/test_task_store_readiness.py
       - platform_core/training_job_projection.py
       - platform_core/training_timing.py
       - platform_core/material_batches.py
@@ -106,6 +110,7 @@ jobs:
           python -m pytest --confcutdir=tests/unit -q
           tests/unit/test_training_job_projection.py
           tests/unit/test_training_timing.py
+          tests/unit/test_task_store_readiness.py
           tests/unit/task_runtime/test_sqlite_busy_recovery.py
           tests/unit/test_material_batch_public_truth.py
           tests/unit/task_runtime/test_public_projection.py

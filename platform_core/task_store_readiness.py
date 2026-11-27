@@ -173,6 +173,12 @@ def readiness(data_dir: str | Path, *, now: str | None = None) -> dict[str, Any]
         blockers.append("recovery_blocked_owner")
     if report["gpu_reservations"]:
         blockers.append("gpu_reservations_held")
+    if report["worker_instances_active"]:
+        # An active worker keeps the ability to claim a task, renew its lease and
+        # write task state/results. There is no OS-level isolation that would make
+        # a switch safe while it runs, so the cutover requires a real drain
+        # (stopped workers), not just a count in the report.
+        blockers.append("active_worker_instances_require_drain")
     if report["worker_instances_expired"]:
         blockers.append("expired_worker_instances")
     report["blockers"] = blockers

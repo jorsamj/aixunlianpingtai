@@ -571,8 +571,12 @@ CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_member (
 CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_category (
     project_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, enabled INTEGER,
     PRIMARY KEY (project_id, id));
+-- SQLite's COLLATE NOCASE folds ASCII A-Z only. PostgreSQL lower() follows the
+-- database locale, so a UTF-8 cluster would also fold non-ASCII characters and
+-- reject names SQLite accepts. COLLATE "C" keeps the fold ASCII-only, which is
+-- the equivalent contract independent of the cluster locale.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_negative_pool_category_name
-    ON w3_material_gt.negative_pool_category(project_id, lower(name));
+    ON w3_material_gt.negative_pool_category(project_id, lower(name COLLATE "C"));
 CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_link (
     project_id TEXT NOT NULL, material_id TEXT NOT NULL, category_id TEXT NOT NULL,
     PRIMARY KEY (project_id, material_id, category_id),
@@ -605,40 +609,60 @@ CREATE TABLE IF NOT EXISTS w3_material_gt.store_revision (
 #: The exact v1 DDL this tool once applied. Historical migration rows are
 #: validated against *their own* version; validating v1 with the v2 checksum
 #: would block every legitimate upgrade (and would bless a tampered record).
-_SCHEMA_V1 = re.sub(
-    r"CREATE TABLE IF NOT EXISTS w3_material_gt\.evidence_row \(.*?"
-    r"PRIMARY KEY \(project_id, store, table_name\)\);\n",
-    "",
-    _SCHEMA,
-    flags=re.S,
-)
-_SCHEMA_V1 = re.sub(
-    r"CREATE TABLE IF NOT EXISTS w3_material_gt\.negative_pool_link \(.*?ON DELETE CASCADE\);",
-    """CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_link (
+_SCHEMA_V1 = """
+CREATE SCHEMA IF NOT EXISTS w3_material_gt;
+CREATE TABLE IF NOT EXISTS w3_material_gt.schema_migration (
+    version INTEGER PRIMARY KEY, name TEXT NOT NULL, checksum CHAR(64) NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now(), applied_by TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS w3_material_gt.material (
+    project_id TEXT NOT NULL, id TEXT NOT NULL, filename TEXT, storage_source_id TEXT,
+    storage_type TEXT, object_key TEXT, content_sha256 TEXT, size_bytes BIGINT,
+    etag TEXT, processing_status TEXT, box_count INTEGER, annotated INTEGER,
+    created_at TEXT, updated_at TEXT, payload JSONB,
+    PRIMARY KEY (project_id, id));
+CREATE TABLE IF NOT EXISTS w3_material_gt.material_label (
+    project_id TEXT NOT NULL, material_id TEXT NOT NULL, label_code TEXT NOT NULL,
+    box_count INTEGER, PRIMARY KEY (project_id, material_id, label_code),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.material(project_id, id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.material_annotation_scope (
+    project_id TEXT NOT NULL, material_id TEXT NOT NULL, label_code TEXT NOT NULL,
+    PRIMARY KEY (project_id, material_id, label_code),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.material(project_id, id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.annotation (
+    project_id TEXT NOT NULL, image_id TEXT NOT NULL, annotation_state TEXT NOT NULL,
+    version INTEGER NOT NULL, content_digest TEXT NOT NULL, boxes JSONB NOT NULL,
+    scope JSONB NOT NULL, created_at TEXT, updated_at TEXT,
+    PRIMARY KEY (project_id, image_id));
+CREATE TABLE IF NOT EXISTS w3_material_gt.annotation_label_reference (
+    project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    PRIMARY KEY (project_id, image_id, label_code, source_kind));
+CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_member (
+    project_id TEXT NOT NULL, material_id TEXT NOT NULL, joined_at TEXT,
+    PRIMARY KEY (project_id, material_id),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.material(project_id, id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_category (
+    project_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, enabled INTEGER,
+    PRIMARY KEY (project_id, id));
+CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_link (
     project_id TEXT NOT NULL, material_id TEXT NOT NULL, category_id TEXT NOT NULL,
     PRIMARY KEY (project_id, material_id, category_id),
     FOREIGN KEY (project_id, material_id)
         REFERENCES w3_material_gt.negative_pool_member(project_id, material_id)
-        ON DELETE CASCADE);""",
-    _SCHEMA_V1,
-    count=1,
-    flags=re.S,
-)
-_SCHEMA_V1 = _SCHEMA_V1.replace(
-    """CREATE UNIQUE INDEX IF NOT EXISTS uq_negative_pool_category_name
-    ON w3_material_gt.negative_pool_category(project_id, lower(name));""",
-    "",
-).replace(
-    """CREATE TABLE IF NOT EXISTS w3_material_gt.annotation_label_reference (
-    project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
-    box_count INTEGER NOT NULL DEFAULT 0, scope_ref INTEGER NOT NULL DEFAULT 0,
-    annotation_state TEXT NOT NULL, source_kind TEXT NOT NULL,
-    PRIMARY KEY (project_id, image_id, label_code));""",
-    """CREATE TABLE IF NOT EXISTS w3_material_gt.annotation_label_reference (
-    project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
-    source_kind TEXT NOT NULL,
-    PRIMARY KEY (project_id, image_id, label_code, source_kind));""",
-)
+        ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.negative_pool_algorithm_member (
+    project_id TEXT NOT NULL, algorithm_id TEXT NOT NULL, material_id TEXT NOT NULL,
+    joined_at TEXT, PRIMARY KEY (project_id, algorithm_id, material_id),
+    FOREIGN KEY (project_id, material_id)
+        REFERENCES w3_material_gt.negative_pool_member(project_id, material_id)
+        ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS w3_material_gt.store_revision (
+    project_id TEXT NOT NULL, store TEXT NOT NULL, revision BIGINT, recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, store));
+"""
 
 
 def schema_checksum() -> str:
@@ -1176,6 +1200,8 @@ def reconcile(source: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str,
     checks: dict[str, Any] = {"tables": {}, "integrity": {}}
     source_counts = source.get("counts") or {}
     target_counts = target.get("counts") or {}
+    source_state = source.get("table_state") or {}
+    retained: list[str] = []
     for table in sorted(set(source_counts) | set(target_counts)):
         left = source_counts.get(table, 0)
         right = target_counts.get(table, 0)
@@ -1183,6 +1209,14 @@ def reconcile(source: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str,
         checks["tables"][table] = {
             "source": left, "target": right, "digest_equal": same_digest,
         }
+        if table.startswith("materials.evidence.") or table.startswith("annotations.evidence."):
+            store, _, rest = table.partition(".evidence.")
+            state = source_state.get(f"{store}.{rest}") or {}
+            if not state.get("present"):
+                # The source table does not exist any more: the retained target
+                # rows are an explicit retention contract, not a mismatch.
+                retained.append(table)
+                continue
         if left != right or not same_digest:
             blocking.append(f"table_mismatch:{table}")
     source_materials = {
@@ -1241,6 +1275,7 @@ def reconcile(source: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str,
         "same": not blocking,
         "verdict": "OK" if not blocking else "MISMATCH",
         "blocking_findings": blocking,
+        "retained_target_evidence": retained,
         "checks": checks,
         "source_digest": source.get("content_digest"),
         "target_digest": target.get("content_digest"),

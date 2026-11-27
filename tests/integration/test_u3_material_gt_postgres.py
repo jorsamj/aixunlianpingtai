@@ -256,6 +256,20 @@ def test_schema_checksum_is_stable():
 # ---------------------------------------------------------------------------
 # Evidence identity, pool constraints, owner field contract, snapshot isolation
 # ---------------------------------------------------------------------------
+EVIDENCE_ROWS = {
+    "material_storage_audit": 2,
+    "material_retirements": 3,
+    "material_migrations": 1,
+    "material_cleanup_deferred": 2,
+    "material_assignment_receipts": 2,
+    "negative_pool_operations": 1,
+    "annotation_delete_backup": 2,
+    "annotation_negative_reviews": 2,
+    "annotation_candidate_commits": 2,
+    "task_negative_confirmations": 3,
+}
+
+
 def _seed_evidence(project):
     with sqlite3.connect(project / "materials.sqlite3") as database:
         database.executescript("""
@@ -271,6 +285,18 @@ def _seed_evidence(project):
             reclamation_state TEXT NOT NULL DEFAULT 'DEFERRED_SAFETY_UNVERIFIED',
             reclaimed_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reclaimed_bytes=0),
             PRIMARY KEY(task_id,image_id));
+        CREATE TABLE IF NOT EXISTS material_migrations (
+            source TEXT PRIMARY KEY, signature TEXT NOT NULL,
+            imported_count INTEGER NOT NULL, imported_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS material_cleanup_deferred (
+            cleanup_id TEXT PRIMARY KEY, image_id TEXT NOT NULL, owner TEXT NOT NULL,
+            payload_json TEXT NOT NULL, last_error TEXT NOT NULL, recorded_at TEXT NOT NULL,
+            reclamation_state TEXT NOT NULL DEFAULT 'DEFERRED_SAFETY_UNVERIFIED');
+        CREATE TABLE IF NOT EXISTS material_assignment_receipts (
+            task_id TEXT NOT NULL, image_id TEXT NOT NULL, outcome TEXT NOT NULL, error TEXT,
+            PRIMARY KEY(task_id,image_id)) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS negative_pool_operations (
+            operation_id TEXT PRIMARY KEY, identity TEXT NOT NULL, result_json TEXT NOT NULL);
         """)
         # Two rows with the same payload but different keys must stay distinct.
         for image_id in ("m1", "m2"):
@@ -278,6 +304,23 @@ def _seed_evidence(project):
                 "INSERT INTO material_storage_audit VALUES ('t1',?,'move','a','b','2026-01-01')",
                 (image_id,),
             )
+        database.execute(
+            "INSERT INTO material_migrations VALUES ('legacy-json','sig',2,'2026-01-01')"
+        )
+        for cleanup_id in ("c1", "c2"):
+            database.execute(
+                "INSERT INTO material_cleanup_deferred VALUES (?,?, 'owner','{}','err','2026-01-01',"
+                "'DEFERRED_SAFETY_UNVERIFIED')",
+                (cleanup_id, "m1"),
+            )
+        for image_id in ("m1", "m2"):
+            database.execute(
+                "INSERT INTO material_assignment_receipts VALUES ('t1',?,'APPLIED',NULL)",
+                (image_id,),
+            )
+        database.execute(
+            "INSERT INTO negative_pool_operations VALUES ('op-1','identity','{\"ok\":true}')"
+        )
         for image_id in ("m1", "m2", "m3"):
             database.execute(
                 "INSERT INTO material_retirements VALUES "
@@ -306,6 +349,28 @@ def _seed_evidence(project):
                 "INSERT INTO task_negative_confirmations VALUES (?, 'ctx', '{\"ok\":true}')",
                 (receipt,),
             )
+        database.execute("""
+        CREATE TABLE IF NOT EXISTS annotation_candidate_commits (
+            task_id TEXT NOT NULL, operation_id TEXT NOT NULL, image_id TEXT NOT NULL,
+            receipt_json TEXT NOT NULL, PRIMARY KEY(task_id, image_id))""")
+        for image_id in ("m1", "m2"):
+            database.execute(
+                "INSERT INTO annotation_candidate_commits VALUES ('t1','op1',?,'{}')",
+                (image_id,),
+            )
+        database.execute("""
+        CREATE TABLE IF NOT EXISTS annotation_negative_reviews (
+            image_id TEXT NOT NULL, source_version INTEGER NOT NULL, actor_id TEXT NOT NULL,
+            reviewed_scope_json TEXT NOT NULL, source_content_sha256 TEXT NOT NULL,
+            annotation_version INTEGER NOT NULL, annotation_digest TEXT NOT NULL,
+            reviewed_at TEXT NOT NULL,
+            PRIMARY KEY(image_id,source_version,actor_id,reviewed_scope_json,source_content_sha256))""")
+        for version in (1, 2):
+            database.execute(
+                "INSERT INTO annotation_negative_reviews VALUES "
+                "('m1',?,'actor','[\"fire\"]','sha',?,'digest','2026-01-01')",
+                (version, version),
+            )
 
 
 def test_evidence_tables_import_independently_and_survive_partial_deletes(pg, tmp_path):
@@ -315,10 +380,15 @@ def test_evidence_tables_import_independently_and_survive_partial_deletes(pg, tm
     _seed_evidence(control)
     first = export_project_snapshot(target, "p4")
     other = export_project_snapshot(control, "p4b")
-    assert first["counts"]["materials.evidence.material_storage_audit"] == 2
-    assert first["counts"]["materials.evidence.material_retirements"] == 3
-    assert first["counts"]["annotations.evidence.annotation_delete_backup"] == 2
-    assert first["counts"]["annotations.evidence.task_negative_confirmations"] == 3
+    for table, expected in EVIDENCE_ROWS.items():
+        prefix = (
+            "annotations.evidence."
+            if table in {"annotation_delete_backup", "annotation_negative_reviews",
+                         "annotation_candidate_commits", "task_negative_confirmations"}
+            else "materials.evidence."
+        )
+        assert first["counts"][prefix + table] == expected, table
+    assert first["table_state"]["materials.material_migrations"]["present"] is True
 
     with psycopg.connect(pg.get_uri()) as connection:
         import_project_snapshot(connection, first)
@@ -336,9 +406,14 @@ def test_evidence_tables_import_independently_and_survive_partial_deletes(pg, tm
         import_project_snapshot(connection, changed)
         snapshot = read_target_snapshot(connection, "p4")
         assert snapshot["counts"]["materials.evidence.material_storage_audit"] == 1
-        assert snapshot["counts"]["materials.evidence.material_retirements"] == 3
+        for table in ("material_retirements", "material_migrations",
+                      "material_cleanup_deferred", "material_assignment_receipts",
+                      "negative_pool_operations"):
+            assert snapshot["counts"]["materials.evidence." + table] == EVIDENCE_ROWS[table], table
         assert snapshot["counts"]["annotations.evidence.task_negative_confirmations"] == 2
-        assert snapshot["counts"]["annotations.evidence.annotation_delete_backup"] == 2
+        for table in ("annotation_delete_backup", "annotation_negative_reviews",
+                      "annotation_candidate_commits"):
+            assert snapshot["counts"]["annotations.evidence." + table] == EVIDENCE_ROWS[table], table
         assert reconcile(changed, snapshot)["same"] is True, reconcile(changed, snapshot)
         # The untouched project keeps every evidence row.
         control_snapshot = read_target_snapshot(connection, "p4b")
@@ -364,6 +439,35 @@ def test_pool_constraints_match_the_sqlite_contract(pg, tmp_path):
                         "(project_id,id,name,enabled) VALUES ('p5','cat-other','火焰',1)"
                     )
         assert "unique" in str(duplicate.value).lower() or "duplicate" in str(duplicate.value).lower()
+
+        # ASCII case folds exactly like SQLite COLLATE NOCASE.
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.negative_pool_category"
+                    "(project_id,id,name,enabled) VALUES ('p5','cat-ascii','FIRE',1)"
+                )
+        with pytest.raises(Exception) as ascii_case:
+            with connection.transaction():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        f"INSERT INTO {SCHEMA_NAME}.negative_pool_category"
+                        "(project_id,id,name,enabled) VALUES ('p5','cat-ascii-2','fire',1)"
+                    )
+        assert "unique" in str(ascii_case.value).lower() or "duplicate" in str(ascii_case.value).lower()
+        # Non-ASCII characters are NOT folded (SQLite NOCASE folds ASCII only).
+        with connection.transaction():
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.negative_pool_category"
+                    "(project_id,id,name,enabled) VALUES ('p5','cat-umlaut-1',%s,1)",
+                    ("\u00c4",),
+                )
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.negative_pool_category"
+                    "(project_id,id,name,enabled) VALUES ('p5','cat-umlaut-2',%s,1)",
+                    ("\u00e4",),
+                )
 
         # Deleting the category cascades its links.
         with connection.transaction():
@@ -537,3 +641,49 @@ def test_target_snapshot_is_one_repeatable_read(pg, tmp_path):
             with connection.transaction():
                 read_target_snapshot(connection, "p6")
         assert "idle" in str(busy.value).lower()
+
+def test_evidence_absent_and_empty_tables_are_distinct(pg, tmp_path):
+    """An empty source table clears; a missing source table retains."""
+    project = _fixture(tmp_path, project_id="p7")
+    _seed_evidence(project)
+    first = export_project_snapshot(project, "p7")
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, first)
+        assert reconcile(first, read_target_snapshot(connection, "p7"))["same"] is True
+
+    # (1) Table exists but is empty: the target table must be cleared.
+    with sqlite3.connect(project / "materials.sqlite3") as database:
+        database.execute("DELETE FROM material_migrations")
+    emptied = export_project_snapshot(project, "p7")
+    assert emptied["table_state"]["materials.material_migrations"]["present"] is True
+    assert emptied["counts"]["materials.evidence.material_migrations"] == 0
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, emptied)
+        snapshot = read_target_snapshot(connection, "p7")
+        assert snapshot["counts"]["materials.evidence.material_migrations"] == 0
+        assert reconcile(emptied, snapshot)["same"] is True
+
+    # (2) Table absent: the target keeps the retained history (explicit contract).
+    with sqlite3.connect(project / "materials.sqlite3") as database:
+        database.execute("DROP TABLE material_cleanup_deferred")
+    absent = export_project_snapshot(project, "p7")
+    assert absent["table_state"]["materials.material_cleanup_deferred"]["present"] is False
+    assert "materials.evidence.material_cleanup_deferred" not in absent["counts"]
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, absent)
+        snapshot = read_target_snapshot(connection, "p7")
+        assert (
+            snapshot["counts"]["materials.evidence.material_cleanup_deferred"]
+            == EVIDENCE_ROWS["material_cleanup_deferred"]
+        )
+        report = reconcile(absent, snapshot)
+        assert report["same"] is True, report
+        assert "materials.evidence.material_cleanup_deferred" in report["retained_target_evidence"]
+        # Replay stays idempotent.
+        import_project_snapshot(connection, absent)
+        assert (
+            read_target_snapshot(connection, "p7")["counts"][
+                "materials.evidence.material_cleanup_deferred"
+            ]
+            == EVIDENCE_ROWS["material_cleanup_deferred"]
+        )

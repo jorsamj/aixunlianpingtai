@@ -109,6 +109,21 @@ def test_readiness_never_mutates_the_store(tmp_path):
     assert before == after
 
 
+def test_active_worker_instance_requires_a_real_drain(tmp_path):
+    repository, task = _store(tmp_path)
+    _update(repository, "UPDATE tasks SET status='SUCCEEDED' WHERE task_id=?", (task.task_id,))
+    with sqlite3.connect(repository.path) as database:
+        database.execute(
+            "INSERT INTO worker_instances (instance_key,owner_token,worker_id,pid,started_at,"
+            "heartbeat_at,expires_at) VALUES ('k2','o2','w2',2,?,?,?)",
+            ("2026-11-26T00:00:00+00:00", "2026-11-26T23:59:00+00:00", "2026-11-27T01:00:00+00:00"),
+        )
+    report = readiness(tmp_path, now=NOW)
+    assert report["worker_instances_active"] == 1
+    assert "active_worker_instances_require_drain" in report["blockers"]
+    assert report["ready_for_cutover"] is False
+
+
 def test_expired_worker_instance_is_a_blocker(tmp_path):
     repository, task = _store(tmp_path)
     _update(repository, "UPDATE tasks SET status='SUCCEEDED' WHERE task_id=?", (task.task_id,))

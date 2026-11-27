@@ -48,6 +48,18 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第五批：第四批交付的五项定向核验与最小修复（2026-11-27，本批）
+
+- 起始 `c6a942159fcb72f828a7385f2c5e0cf448270911`（CI_PASS）。VERSION 42.24.592 未改。本轮先只读核验，再只修真实缺陷。
+- 核验 1（NOCASE 等价）：SQLite `name COLLATE NOCASE` 只折叠 ASCII A–Z；PostgreSQL `lower()` 跟随集群 locale，在 UTF-8 集群上会连非 ASCII 一起折叠 → **不与 SQLite 等价**（会拒绝 SQLite 允许的名字）。修复：唯一索引改为 `(project_id, lower(name COLLATE "C"))`（C collation 仅 ASCII 折叠，与集群 locale 无关）。实测：`FIRE`/`fire` 冲突被拒；`Ä`/`ä` 两行都允许；业务名（如「火焰」）不受影响。注意此改动改变 shadow v2 DDL 与 checksum（无任何部署依赖，升级测试动态取 checksum）。
+- 核验 2（十张证据表）：原测试只覆盖 4 张。现按真实 DDL 构造并覆盖全部 10 张（material_migrations / material_storage_audit / material_retirements / material_cleanup_deferred / material_assignment_receipts(WITHOUT ROWID) / negative_pool_operations / annotation_delete_backup / annotation_negative_reviews / annotation_candidate_commits / task_negative_confirmations），逐表核对读取、写入、主键身份（同内容不同主键不合并）、部分删除、摘要对账与重放幂等。**源表存在但为空** → 该表目标清空；**源表不存在** → 保留目标历史（`retained_target_evidence` 非阻断，显式保留合同），两种情形分别断言。
+- 核验 3（v1 真实性）：发现上一轮的 `_SCHEMA_V1` 是从当前代码派生的（3327 字符，checksum `dbde9fcf…`），并非历史版本。真实 v1 取自首次引入 U3 的提交 `9628234e`（3326 字符，checksum `20eadb1b…`），已以字面量内嵌；升级测试用该真实 v1 建库、升到 v2 并校验篡改/更高版本拒绝。
+- 核验 4（活动 Worker 阻断）：活动 Worker 仍可领取 SQLite 任务、续租、写状态与结果；项目没有 OS 级隔离合同可用于切换期间冻结它们。因此 readiness 新增 `active_worker_instances_require_drain` 阻断（活动与过期实例分别报告），切换前置条件明确为"worker 实例全部停止/过期 + 无活动租约 + 无未证明停止"。另外发现 `tests/unit/test_task_store_readiness.py` **未在**任何 workflow 中执行：已加入 `task-runtime-truth.yml` 的 pytest 列表与 paths（`platform_core/task_store_readiness.py`、该测试文件），未新建测试体系。
+- 核验 5：本轮只运行修改涉及的定向测试；未跑全仓 pytest / Playwright / 完整构建。
+- 验证：U3 真实 PostgreSQL 11 项（主文件 9 + 升级 2）+ U5 单测 8 项 = **19 passed**；两个 workflow YAML 解析通过。
+- 未完成（不在本轮范围）：U3 Picker PostgreSQL 等价读、模型转换 G1/BMODEL 证据绑定、Vue 母模型管理。真实环境（20 万素材、2 万批选、缓存磁盘、NAS/OSS/S3、BM 系列/RKNN/昇腾、U2 生产切换演练、U3 真实项目对账）均未验证。
+- 保护边界：VERSION、AGENTS.md、vendor、四份未跟踪保护文档未改。
+
 ## 第四批：U3 证据/Schema/快照与 U5 readiness 复核整改（2026-11-27，本批）
 
 - 起始 `78379728cd3f8d006d816f9c3fd9aab715aff101`。VERSION 42.24.592 未改；未启用 PostgreSQL 生产 Provider、未迁移真实数据、未连接 4070/A800。提交：`f2c16994`（U3）、`36af96b7`（U5）、本文档。
