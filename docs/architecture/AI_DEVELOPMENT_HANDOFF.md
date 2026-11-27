@@ -48,6 +48,14 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第九批：pending 清除条件、历史错误结构识别与测试真实性（2026-11-27，本批）
+
+- 起始 `468636d8c64cbbcaf81876c5aa5425e1f630a816`。VERSION 42.24.592 未改。
+- pending 标记：原实现仅在 `mode="full"` 时无条件清除，手工构造的不完整 Mapping 也能清除。现新增 `pending_clear_eligible()`：要求 contract_version/project_id 匹配、`consistency` 来自生命周期栅栏导出、必需表的 `table_state.present=True`、typed 数据键为列表且 `counts`/`digests` 与内容逐表一致、evidence 计数/摘要存在、`content_digest` 等于按表摘要重算值、revisions 含 materials/annotations；满足才清除，否则记录 `legacy_pending_cleared=0` 与 `legacy_pending_retained=<原因>`。incremental 永不清除；清除与导入同一事务。可信调用链明确为 `export_project_snapshot`（SQLite Owner + 生命周期栅栏 + revision 复核）→ `import_project_snapshot`；自报摘要只证明内容一致，不单独证明来源可信。
+- 历史错误结构：`ensure_schema` 现在每次打开都执行 `_assert_target_structure()`（同一事务内），用 `information_schema.columns` 核对 `annotation_label_reference` 七字段、用 `pg_constraint` 核对 `negative_pool_link` 的成员/分类双外键且均 CASCADE；不满足即 `U3_SCHEMA_STRUCTURE_INVALID`，detail 明确要求从权威 SQLite 导出重建 w3_material_gt，不自动修复、不删旧数据、不新增 v4、不改历史 DDL/checksum。
+- 测试真实性：legacy JSON 用例改为真实 `AnnotationRepository.rebuild_reference_index()` 生成投影（m1 正式 GT 优先、m2 legacy JSON 有框按 owner 规则得 fire 3/1 与 smoke 1/1、m3 无框不产生行），`scope_ref` 仅 0/1；并断言 pending 时 `reconcile.same=false` 且含 `legacy_reference_pending_import`、不完整 full 快照不清除、真实完整快照清除后 same=true；升级用例构造"已记录 v3 但缺 source_kind"和"缺分类外键"两种历史坏结构，均被 `U3_SCHEMA_STRUCTURE_INVALID` 阻断（detail 含缺失项与重建指令）。
+- 验证：`test_u3_schema_upgrade_postgres.py` 8 项 + `test_u3_material_gt_postgres.py` 11 项 = **19 passed**（真实 PostgreSQL，无跳过）。v1/v2/v3 checksum 未变。
+
 ## 第八批：v1 升级后 source_kind 合同修复（2026-11-27，本批）
 
 - 起始 `e078b451876c1b01ca1d6d87b02731a0d1ce2dfd`。VERSION 42.24.592 未改。
