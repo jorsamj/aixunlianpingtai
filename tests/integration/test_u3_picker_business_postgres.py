@@ -32,7 +32,7 @@ from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.negative_pool import _DDL as POOL_DDL
 from platform_core.task_runtime import TaskRepository
-from platform_core.training_label_tasks import task_negative_identity
+from platform_core.training_label_tasks import task_negative_context, task_negative_identity
 from platform_core.training_material_business_read import (
     BusinessFilter,
     BusinessHistoryChanged,
@@ -47,6 +47,8 @@ from platform_core.training_material_picker_read import (
     PickerFilter,
     PickerNegativeReceipt,
     PickerNegativeReceipts,
+    PickerProjectMismatch,
+    PickerUnsupportedFilter,
     SQLitePickerReadProvider,
     sqlite_owner_revision_source,
 )
@@ -126,7 +128,8 @@ def _box(label: str, index: int) -> dict:
 
 def _business_project(tmp_path, project_id: str = "p1"):
     """One project with every history/role state the P2 contract must classify."""
-    project = tmp_path / "projects" / project_id
+    data_dir = tmp_path / "data"
+    project = data_dir / "projects" / project_id
     project.mkdir(parents=True)
     repository = MaterialRepository(project)
     repository.upsert_many([
@@ -170,8 +173,9 @@ def _business_project(tmp_path, project_id: str = "p1"):
     }])
     repository.upsert(_material(8, source="default_local", created_at=_created(8), sha="f" * 64))
 
-    TaskRepository(project / "tasks.sqlite3")
-    usage = TrainingMaterialUsage(project / "tasks.sqlite3")
+    tasks_path = data_dir / "task_runtime" / "tasks.sqlite3"
+    TaskRepository(tasks_path)
+    usage = TrainingMaterialUsage(tasks_path)
     rows = {str(row["id"]): row for row in repository.get_many([f"m{i:03d}" for i in range(12)])}
 
     def record(task_id: str, image_ids: list[str], role: str = "train") -> None:
@@ -192,7 +196,7 @@ def _business_project(tmp_path, project_id: str = "p1"):
     record("t-other", ["m003"])
     usage.record_execution("t-other", completed_epoch=True)
     # The other-algorithm evidence must carry another algorithm id.
-    with sqlite3.connect(project / "tasks.sqlite3") as database:
+    with sqlite3.connect(tasks_path) as database:
         database.execute(
             "UPDATE training_material_usage SET algorithm_id='algo-other' WHERE task_id='t-other'"
         )
@@ -276,15 +280,15 @@ def test_history_policies_match_the_owner_and_sqlite_pickers(pg, tmp_path):
     cases = {
         "default": _filter(),
         "include_history": _filter(history_policy="include_history"),
-        "current_only": _filter(history_scope="current_only"),
-        "other_only": _filter(history_scope="other_only"),
-        "used": _filter(usage_state="used"),
-        "possible": _filter(usage_state="possible"),
-        "selected": _filter(usage_state="selected"),
+        "current_only": _filter(history_scope="current_only", browse_only=True),
+        "other_only": _filter(history_scope="other_only", browse_only=True),
+        "used": _filter(usage_state="used", browse_only=True),
+        "possible": _filter(usage_state="possible", browse_only=True),
+        "selected": _filter(usage_state="selected", browse_only=True),
         "unused": _filter(usage_state="unused"),
         "unknown": _filter(usage_state="unknown"),
-        "test_reserved": _filter(usage_state="test_reserved"),
-        "eval_only": _filter(usage_state="eval_only"),
+        "test_reserved": _filter(usage_state="test_reserved", browse_only=True),
+        "eval_only": _filter(usage_state="eval_only", browse_only=True),
         "browse": _filter(browse_only=True),
     }
     for name, filters in cases.items():
@@ -297,13 +301,13 @@ def test_history_policies_match_the_owner_and_sqlite_pickers(pg, tmp_path):
     include = set(_stream(postgres_business, filters=_filter(history_policy="include_history")))
     assert {"m002", "m004"} <= include and "m009" not in include
     # current_algorithm_trained uses evidence>0, so a "possible" row counts too.
-    assert set(_stream(postgres_business, filters=_filter(history_scope="current_only"))) == {"m002", "m004"}
-    assert set(_stream(postgres_business, filters=_filter(history_scope="other_only"))) == {"m003"}
-    assert set(_stream(postgres_business, filters=_filter(usage_state="used"))) == {"m002"}
-    assert set(_stream(postgres_business, filters=_filter(usage_state="possible"))) == {"m004"}
-    assert set(_stream(postgres_business, filters=_filter(usage_state="selected"))) == {"m005"}
-    assert set(_stream(postgres_business, filters=_filter(usage_state="test_reserved"))) == {"m009"}
-    assert set(_stream(postgres_business, filters=_filter(usage_state="eval_only"))) == {"m010"}
+    assert set(_stream(postgres_business, filters=_filter(history_scope="current_only", browse_only=True))) == {"m002", "m004"}
+    assert set(_stream(postgres_business, filters=_filter(history_scope="other_only", browse_only=True))) == {"m003"}
+    assert set(_stream(postgres_business, filters=_filter(usage_state="used", browse_only=True))) == {"m002"}
+    assert set(_stream(postgres_business, filters=_filter(usage_state="possible", browse_only=True))) == {"m004"}
+    assert set(_stream(postgres_business, filters=_filter(usage_state="selected", browse_only=True))) == {"m005"}
+    assert set(_stream(postgres_business, filters=_filter(usage_state="test_reserved", browse_only=True))) == {"m009"}
+    assert set(_stream(postgres_business, filters=_filter(usage_state="eval_only", browse_only=True))) == {"m010"}
     unused = set(_stream(postgres_business, filters=_filter(usage_state="unused")))
     assert {"m000", "m011"} <= unused and not ({"m002", "m004", "m009"} & unused)
 
@@ -379,7 +383,7 @@ def test_confirmation_receipt_validation_is_strict(tmp_path):
     provider.picker.get_task_negative_receipts = lambda *a, **k: receipts(True)
     valid = provider._valid_receipts(
         _query(filters=_filter()), contract,
-        {str(material["id"]): material}, {"m000": annotation},
+        {str(material["id"]): material}, {"m000": annotation}, receipts(True),
     )
     assert [item["receipt_id"] for item in valid] == [identity["receipt_id"]]
     for scenario, expected in (
@@ -399,7 +403,7 @@ def test_confirmation_receipt_validation_is_strict(tmp_path):
         provider.picker.get_task_negative_receipts = lambda *a, **k: payload
         kept = provider._valid_receipts(
             _query(filters=_filter()), contract,
-            {str(material["id"]): material}, {"m000": annotation},
+            {str(material["id"]): material}, {"m000": annotation}, payload,
         )
         assert len(kept) == expected, scenario
 
@@ -418,11 +422,11 @@ def test_composite_filters_page_after_every_business_predicate(pg, tmp_path):
     assert full == _stream(sqlite_business, filters=filters)
     # The first candidates in created_at order are m000 (kept), m001 (pending),
     # m002 (used), m003 (other) ...: the page must not stop at the excluded ones.
-    page = postgres_business.read_page(_query(filters=filters, page=1, page_size=3))
+    page = postgres_business.read_page(_query(filters=filters, page=1, page_size=3, count_mode="exact"))
     assert _ids(page) == full[:3]
     assert page.total == len(full)
     assert page.has_more is True
-    second = postgres_business.read_page(_query(filters=filters, page=2, page_size=3))
+    second = postgres_business.read_page(_query(filters=filters, page=2, page_size=3, count_mode="exact"))
     assert _ids(second) == full[3:6]
     # Deferred count never runs the full count.
     deferred = postgres_business.read_page(_query(
@@ -464,6 +468,10 @@ def test_cursor_is_bound_to_history_and_snapshot(pg, tmp_path):
     _publish(pg, project)
     with pytest.raises(PickerCursorContextMismatch):
         postgres_business.read_page(_query(filters=_filter(), page_size=2, cursor=cursor))
+    with pytest.raises(PickerUnsupportedFilter):
+        postgres_business.read_page(_query(
+            filters=_filter(), page_size=2, cursor=cursor, count_mode="exact",
+        ))
 
 
 def test_incomplete_or_unavailable_history_never_becomes_unused(tmp_path):
@@ -475,10 +483,10 @@ def test_incomplete_or_unavailable_history_never_becomes_unused(tmp_path):
     )
     unseen = _filter(algorithm_asset_id="algo-unseen")
     assert _stream(provider, filters=_filter(
-        algorithm_asset_id="algo-unseen", usage_state="unused",
+        algorithm_asset_id="algo-unseen", usage_state="unused", browse_only=True,
     )) == []
     assert len(_stream(provider, filters=_filter(
-        algorithm_asset_id="algo-unseen", usage_state="unknown",
+        algorithm_asset_id="algo-unseen", usage_state="unknown", browse_only=True,
     ))) == 12
 
     broken = BusinessReadProvider(
@@ -516,3 +524,187 @@ def test_candidate_sets_and_selection_digest_are_equivalent(pg, tmp_path):
         _query(filters=_filter(sample_role="pending_review")),
     )
     assert other["ids"] != result["ids"]
+
+
+# ---------------------------------------------------------------------------
+# G. Audit remediation regressions
+# ---------------------------------------------------------------------------
+class _MutatingPicker:
+    """Delegates to the real SQLite picker and mutates history mid-stream."""
+
+    def __init__(self, inner, usage):
+        self._inner = inner
+        self._usage = usage
+        self.project_id = inner.project_id
+        self.name = inner.name
+
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+
+    def iter_candidates(self, query, *, batch_size=500):
+        first = True
+        for batch in self._inner.iter_candidates(query, batch_size=batch_size):
+            if first:
+                first = False
+                # The write lands after the session captured its history revision
+                # and before the (early-stopped) page is published.
+                self._usage.record_execution("t-selected", completed_epoch=True)
+            yield batch
+
+
+def test_deferred_early_exit_still_verifies_history(tmp_path):
+    project, usage = _business_project(tmp_path)
+    provider = BusinessReadProvider(
+        _MutatingPicker(SQLitePickerReadProvider(project, project_id="p1"), usage),
+        project, project_id="p1",
+    )
+    # One page needs a single match, so the stream stops after the first candidates;
+    # the session must still detect the usage write that happened mid-stream.
+    with pytest.raises(BusinessHistoryChanged):
+        provider.read_page(_query(filters=_filter(), page=1, page_size=1))
+
+
+def test_task_status_change_is_detected_without_usage_revision_change(tmp_path, monkeypatch):
+    project, _usage = _business_project(tmp_path)
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    calls = {"count": 0}
+
+    def statuses(task_ids):
+        ids = [str(task_id) for task_id in task_ids]
+        if not ids:
+            return {}
+        calls["count"] += 1
+        status = "RUNNING" if calls["count"] == 1 else "CANCELLED"
+        return {task_id: status for task_id in ids}
+
+    monkeypatch.setattr(provider, "_task_statuses", statuses)
+    with pytest.raises(BusinessHistoryChanged):
+        list(provider.iter_candidates(_query(filters=_filter())))
+
+
+def test_central_task_owner_path_and_cross_project_guard(tmp_path):
+    project, usage = _business_project(tmp_path)
+    data_dir = project.parent.parent
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    assert provider.tasks_path == data_dir / "task_runtime" / "tasks.sqlite3"
+    assert provider.usage.path == provider.tasks_path
+    # A project-local decoy task store is never consulted.
+    with sqlite3.connect(project / "tasks.sqlite3") as database:
+        database.execute("CREATE TABLE IF NOT EXISTS training_usage_meta(id INTEGER PRIMARY KEY, revision INTEGER)")
+        database.execute("INSERT OR REPLACE INTO training_usage_meta VALUES(1, 999)")
+    assert provider.usage.path != project / "tasks.sqlite3"
+    other = tmp_path / "other" / "projects" / "p2"
+    other.mkdir(parents=True)
+    foreign = MaterialRepository(other)
+    with pytest.raises(PickerProjectMismatch):
+        BusinessReadProvider(
+            SQLitePickerReadProvider(project, project_id="p1"), project,
+            project_id="p1", materials=foreign,
+        )
+
+
+def test_formal_selection_keeps_history_and_test_protection(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    browse = set(_stream(provider, filters=_filter(usage_state="test_reserved", browse_only=True)))
+    assert browse == {"m009"}
+    assert _stream(provider, filters=_filter(usage_state="test_reserved")) == []
+    assert _stream(provider, filters=_filter(usage_state="used")) == []
+    assert "m002" in set(_stream(provider, filters=_filter(history_policy="include_history")))
+
+
+def test_real_confirmation_receipt_chain(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    annotations = AnnotationRepository(project)
+    material = {str(row["id"]): row for row in MaterialRepository(project).get_many(["m001"])}["m001"]
+    record = annotations.get("m001")
+    contract = {"algorithm_id": ALGORITHM, "effective_label_codes": ["fire"],
+                "task_negative_confirmations": []}
+    row = {**record, "content_sha256": material["content_sha256"], "id": "m001"}
+    identity = task_negative_identity(row, contract)
+    annotations.confirm_task_negatives(
+        task_negative_context(contract), [identity], {"actor_id": "tester"},
+    )
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    page = provider.read_page(_query(
+        filters=_filter(sample_role="confirmed_negative", history_policy="include_history"),
+        page=1, page_size=100, count_mode="exact",
+    ))
+    matched = {item.material.id: item for item in page.items}
+    assert "m001" in matched
+    assert matched["m001"].confirmation_receipt
+    # A new GT version invalidates the receipt: no longer a confirmed negative.
+    annotations.upsert_many([{
+        "image_id": "m001", "annotation_state": "annotated",
+        "boxes": [_box("fire", 1)], "annotation_scope": ["fire"],
+    }])
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    page = provider.read_page(_query(
+        filters=_filter(sample_role="confirmed_negative", history_policy="include_history"),
+        page=1, page_size=100, count_mode="exact",
+    ))
+    assert "m001" not in {item.material.id for item in page.items}
+
+
+def test_pg_session_keeps_candidates_gt_and_receipts_in_one_snapshot(pg, tmp_path):
+    project, _usage = _business_project(tmp_path)
+    _sqlite_business, postgres_business = _providers(pg, project)
+    query = _query(filters=_filter(history_policy="include_history"))
+    with postgres_business.read_session(query) as session:
+        first = [item.material.id for batch in session.batches() for item in batch]
+        assert first
+        with psycopg.connect(pg.get_uri()) as writer:
+            with writer.transaction():
+                with writer.cursor() as cursor:
+                    cursor.execute(
+                        f"INSERT INTO {SCHEMA_NAME}.material"
+                        "(project_id,id,filename,processing_status,created_at,payload) "
+                        "VALUES ('p1','m999','late.jpg','processed',"
+                        "'2026-09-30T00:00:00+00:00','{}'::jsonb)"
+                    )
+        again = [item.material.id for batch in session.batches() for item in batch]
+        assert again == first
+        assert session.annotations(["m000"]).annotations
+    # The late PG-only row is not an owner material, so a new session must not
+    # invent it; the owner remains the only material authority.
+    with postgres_business.read_session(query) as session:
+        assert "m999" not in [item.material.id for batch in session.batches() for item in batch]
+
+
+def test_frozen_selection_reference_matches_the_business_set(pg, tmp_path):
+    import uuid
+
+    from platform_core.training_selection_reference import (
+        freeze_selection, read_selection, selection_context,
+    )
+
+    project, _usage = _business_project(tmp_path)
+    _sqlite_business, postgres_business = _providers(pg, project)
+    filters = _filter(history_policy="include_history", sample_role="positive")
+    ids = _stream(postgres_business, filters=filters)
+    data_dir = str(project.parent.parent)
+    context = selection_context(
+        data_dir, "p1", {"algorithm_asset_id": ALGORITHM}, role="train",
+    )
+    frozen = freeze_selection(data_dir, context, ids, request_id=str(uuid.uuid4()))
+    read = read_selection(data_dir, frozen["selection_ref"], context)
+    assert read == sorted(ids)
+    assert frozen["count"] == len(ids)
+    assert selection_digest(read) == selection_digest(ids)
+    excluded = ids[0]
+    remaining = [image_id for image_id in ids if image_id != excluded]
+    frozen2 = freeze_selection(
+        data_dir, context, remaining, request_id=str(uuid.uuid4()),
+    )
+    read2 = read_selection(data_dir, frozen2["selection_ref"], context)
+    assert excluded not in read2 and read2 == sorted(remaining)

@@ -1,23 +1,18 @@
-"""U3-P2 business read contract.
+"""U3-P2 business read contract (audit-remediated).
 
 PostgreSQL (or SQLite) supplies the bounded base candidate stream; the SQLite
-Task store remains the only authority for training history, sample roles,
-training usage and task negative confirmations. This module composes those
-authorities instead of re-implementing any of their rules:
-
-* history      -> ``TrainingMaterialUsage.query_filter`` (tokens, coverage, tasks)
-* roles        -> ``training_label_tasks.training_material_role`` (+ promotions)
-* confirmations-> P1 ``get_task_negative_receipts`` re-validated against current GT
-* labels/GT    -> the caller's contract (``effective_label_codes``)
-
-Pagination is applied AFTER every business predicate, over a bounded stream.
+Task/Annotation owners remain the only authority for history, sample roles,
+usage and task negative confirmations. One explicit business read session owns
+the candidate stream, the GT/confirmation reads and the final consistency
+checks, so an early stop can never skip verification.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
 import json
-from contextlib import closing
+import sqlite3
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
@@ -27,12 +22,11 @@ from .material_repository import MaterialRepository
 from .training_label_tasks import (
     task_negative_confirmable,
     task_negative_context,
-    task_partial_scope_confirmable,
+    task_negative_identity,
     training_material_role,
 )
 from .training_material_picker_read import (
     DEFAULT_PAGE_SIZE,
-    MAX_BATCH_IDS,
     MAX_PAGE_SIZE,
     PickerCursorContextMismatch,
     PickerFilter,
@@ -42,16 +36,16 @@ from .training_material_picker_read import (
     PickerReadError,
     PickerSnapshotStale,
     PickerUnsupportedFilter,
-    _chunks,
-    _normalize_ids,
 )
 from .training_material_usage import TrainingMaterialUsage
 
-MAX_SELECTION_IDS = 50000
+#: Report-only cap for ``compare_candidate_sets``; normal streaming is unbounded
+#: (bounded per batch, not per project).
+MAX_COMPARISON_IDS = 200000
 
 
 # ---------------------------------------------------------------------------
-# Errors: explicit, never converted into an empty page or "unused"
+# Errors
 # ---------------------------------------------------------------------------
 class BusinessReadError(PickerReadError):
     code = "PICKER_BUSINESS_READ_FAILED"
@@ -59,10 +53,6 @@ class BusinessReadError(PickerReadError):
 
 class BusinessHistoryUnavailable(BusinessReadError):
     code = "PICKER_HISTORY_UNAVAILABLE"
-
-
-class BusinessHistoryIncomplete(BusinessReadError):
-    code = "PICKER_HISTORY_INCOMPLETE"
 
 
 class BusinessHistoryChanged(BusinessReadError):
@@ -93,8 +83,6 @@ _UNUSABLE_HEALTH = ("incompatible", "corrupt", "unavailable")
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class BusinessFilter:
-    """Business predicates on top of the P1 base filter, mirroring the picker."""
-
     base: PickerFilter = field(default_factory=PickerFilter)
     history_policy: str = "new_for_algorithm"
     history_scope: str = ""
@@ -102,10 +90,7 @@ class BusinessFilter:
     algorithm_asset_id: str = ""
     sample_role: str = ""
     usage_role: str = "train"
-    #: Browse keeps used rows visible (they carry a state) exactly like the
-    #: existing picker page; a formal selection excludes them by policy.
     browse_only: bool = False
-    #: Target/effective label contract for role judgment (not the GT filter).
     label_codes: tuple[str, ...] = ()
     strict_target_negative_scope: bool = False
 
@@ -115,11 +100,10 @@ class BusinessQuery:
     project_id: str
     filters: BusinessFilter = field(default_factory=BusinessFilter)
     sort_order: str = "oldest"
-    #: ``None`` streams; ``read_page`` treats None as page 1.
     page: int | None = None
     page_size: int = DEFAULT_PAGE_SIZE
     cursor: str | None = None
-    count_mode: str = "exact"
+    count_mode: str = "deferred"
     include_payload: bool = False
     verify_owner: bool = True
 
@@ -162,7 +146,7 @@ class BusinessPage:
 
 
 # ---------------------------------------------------------------------------
-# Business cursor: binds the P1 snapshot, the business query and usage revision
+# Cursor / fingerprint
 # ---------------------------------------------------------------------------
 def _business_fingerprint(query: BusinessQuery) -> str:
     filters = query.filters
@@ -204,11 +188,12 @@ def _business_fingerprint(query: BusinessQuery) -> str:
 
 
 def _encode_business_cursor(
-    created_at: str, image_id: str, *, fingerprint: str, snapshot: str, usage: str,
+    created_at: str, image_id: str, *, fingerprint: str, snapshot: str,
+    usage: str, task_evidence: str,
 ) -> str:
     payload = {
-        "t": str(created_at), "i": str(image_id),
-        "q": str(fingerprint), "s": str(snapshot), "u": str(usage),
+        "t": str(created_at), "i": str(image_id), "q": str(fingerprint),
+        "s": str(snapshot), "u": str(usage), "e": str(task_evidence),
     }
     return base64.urlsafe_b64encode(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -216,25 +201,21 @@ def _encode_business_cursor(
 
 
 def _decode_business_cursor(
-    cursor: str, *, fingerprint: str, snapshot: str, usage: str,
+    cursor: str, *, fingerprint: str, snapshot: str, usage: str, task_evidence: str,
 ) -> tuple[str, str]:
     try:
         padded = str(cursor) + "=" * (-len(str(cursor)) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
         created_at = str(payload["t"])
         image_id = str(payload["i"])
-        recorded_query = str(payload["q"])
-        recorded_snapshot = str(payload["s"])
-        recorded_usage = str(payload["u"])
+        recorded = (str(payload["q"]), str(payload["s"]), str(payload["u"]), str(payload["e"]))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
-        raise PickerCursorContextMismatch(
-            "the business cursor is not readable",
-        ) from error
-    if recorded_query != str(fingerprint) or recorded_snapshot != str(snapshot):
+        raise PickerCursorContextMismatch("the business cursor is not readable") from error
+    if recorded[0] != str(fingerprint) or recorded[1] != str(snapshot):
         raise PickerCursorContextMismatch(
             "the business cursor belongs to another query or snapshot",
         )
-    if recorded_usage != str(usage):
+    if recorded[2] != str(usage) or recorded[3] != str(task_evidence):
         raise BusinessHistoryChanged(
             "the training history changed since this cursor was issued",
         )
@@ -259,6 +240,11 @@ def _validate_business_query(query: BusinessQuery) -> tuple[int, int | None]:
         raise PickerUnsupportedFilter("invalid count_mode")
     if query.cursor and query.page is not None:
         raise PickerUnsupportedFilter("page and cursor are mutually exclusive")
+    if query.cursor and query.count_mode == "exact":
+        # A cursor resumes mid-stream; the remaining matches are not the total.
+        raise PickerUnsupportedFilter(
+            "cursor pagination supports deferred counting only",
+        )
     page: int | None = None
     if query.page is not None:
         try:
@@ -273,36 +259,18 @@ def _validate_business_query(query: BusinessQuery) -> tuple[int, int | None]:
         raise PickerUnsupportedFilter("page_size must be an integer") from error
     if size < 1 or size > MAX_PAGE_SIZE:
         raise PickerUnsupportedFilter(f"page_size must be 1..{MAX_PAGE_SIZE}")
-    # The base query keeps the exact P1 validation (dates, status, ids...).
-    _validate_base_query(query)
-    return size, page
-
-
-def _validate_base_query(query: BusinessQuery) -> None:
     from .training_material_picker_read import _validate_query
 
     _validate_query(PickerQuery(
-        project_id=query.project_id,
-        filters=query.filters.base,
-        sort_order=query.sort_order,
-        count_mode=query.count_mode,
-        page=None,
-        page_size=my_page_size(query.page_size),
-        include_payload=False,
-        include_annotations=False,
+        project_id=query.project_id, filters=filters.base,
+        sort_order=query.sort_order, count_mode="deferred", page=None,
+        page_size=size, include_payload=False, include_annotations=False,
     ))
-
-
-def my_page_size(value: int) -> int:
-    try:
-        size = int(value)
-    except (TypeError, ValueError):
-        return DEFAULT_PAGE_SIZE
-    return max(1, min(size, MAX_PAGE_SIZE))
+    return size, page
 
 
 # ---------------------------------------------------------------------------
-# Provider: bounded stream + authoritative SQLite business evaluation
+# Provider
 # ---------------------------------------------------------------------------
 class BusinessReadProvider:
     """Composes a P1 picker with the SQLite business authorities."""
@@ -316,17 +284,32 @@ class BusinessReadProvider:
         materials: MaterialRepository | None = None,
         annotations: AnnotationRepository | None = None,
         usage: TrainingMaterialUsage | None = None,
+        tasks_path: str | Path | None = None,
     ):
         self.picker = picker
         self.project_path = Path(project_path)
         self.project_id = str(project_id or "")
         if not self.project_id:
             raise ValueError("the business read provider requires an explicit project id")
+        bound = str(getattr(picker, "project_id", self.project_id) or "")
+        if bound and bound != self.project_id:
+            raise PickerProjectMismatch(
+                "the picker is bound to another project",
+                detail=f"picker={bound} requested={self.project_id}",
+            )
+        if materials is not None and Path(materials.path).parent != self.project_path:
+            raise PickerProjectMismatch("the material repository belongs to another project")
+        if annotations is not None and Path(annotations.project_path) != self.project_path:
+            raise PickerProjectMismatch("the annotation repository belongs to another project")
         self.materials = materials or MaterialRepository(self.project_path)
         self.annotations = annotations or AnnotationRepository(self.project_path)
-        self.usage = usage or TrainingMaterialUsage(self.project_path / "tasks.sqlite3")
+        # The Task store is a single central owner: <DATA_DIR>/task_runtime/tasks.sqlite3,
+        # never a per-project file. ``project.id`` scoping happens in SQL.
+        default_tasks = self.project_path.parent.parent / "task_runtime" / "tasks.sqlite3"
+        self.tasks_path = Path(tasks_path) if tasks_path else default_tasks
+        self.usage = usage or TrainingMaterialUsage(self.tasks_path)
 
-    # -- small helpers ----------------------------------------------------
+    # -- helpers ---------------------------------------------------------
     def _require_project(self, project_id: str) -> str:
         if str(project_id) != self.project_id:
             raise PickerProjectMismatch(
@@ -345,31 +328,70 @@ class BusinessReadProvider:
             "task_negative_confirmations": [],
         }
 
+    def _usage_revision(self) -> str:
+        try:
+            return str(self.usage.read_revision())
+        except Exception as error:  # noqa: BLE001 - history boundary
+            raise BusinessHistoryUnavailable(
+                "the training history revision could not be read", detail=str(error),
+            ) from error
+
+    def _task_evidence_digest(self) -> str:
+        """Bounded Task-status evidence; revision alone does not cover status."""
+        try:
+            with closing(self._tasks_connection()) as database:
+                rows = database.execute(
+                    "SELECT status, COUNT(*) FROM tasks GROUP BY status ORDER BY status"
+                ).fetchall()
+        except sqlite3.Error as error:
+            raise BusinessHistoryUnavailable(
+                "the Task status evidence could not be read", detail=str(error),
+            ) from error
+        return hashlib.sha256(
+            json.dumps([[str(row[0]), int(row[1])] for row in rows]).encode("utf-8")
+        ).hexdigest()
+
+    def _tasks_connection(self) -> sqlite3.Connection:
+        if not self.tasks_path.is_file():
+            raise BusinessHistoryUnavailable(
+                "the central Task store does not exist", detail=str(self.tasks_path),
+            )
+        connection = sqlite3.connect(
+            f"{self.tasks_path.resolve().as_uri()}?mode=ro", uri=True, timeout=5,
+        )
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _task_statuses(self, task_ids: Sequence[str]) -> dict[str, str]:
+        ids = [str(value) for value in dict.fromkeys(task_ids) if str(value)]
+        if not ids:
+            return {}
+        with closing(self._tasks_connection()) as database:
+            rows = []
+            for offset in range(0, len(ids), 200):
+                chunk = ids[offset:offset + 200]
+                rows.extend(database.execute(
+                    "SELECT task_id, status FROM tasks WHERE task_id IN ("
+                    + ",".join("?" for _ in chunk) + ")", chunk,
+                ))
+        return {str(row["task_id"]): str(row["status"] or "") for row in rows}
+
     def _picker_context(self) -> Any:
         return self.picker.snapshot_context(self.project_id)
 
-    def _base_query(
-        self, query: BusinessQuery, *, cursor: str | None,
-    ) -> PickerQuery:
+    def _base_query(self, query: BusinessQuery, *, cursor: str | None) -> PickerQuery:
         return PickerQuery(
-            project_id=query.project_id,
-            filters=query.filters.base,
-            sort_order=query.sort_order,
-            count_mode="deferred",
-            page=None,
-            page_size=MAX_PAGE_SIZE,
-            cursor=cursor,
-            include_payload=False,
-            include_annotations=False,
-            verify_owner=query.verify_owner,
+            project_id=query.project_id, filters=query.filters.base,
+            sort_order=query.sort_order, count_mode="deferred", page=None,
+            page_size=MAX_PAGE_SIZE, cursor=cursor, include_payload=False,
+            include_annotations=False, verify_owner=query.verify_owner,
         )
 
     def _history_facts(self, query: BusinessQuery, rows: Sequence[Mapping[str, Any]]) -> dict:
-        filters = query.filters
         try:
             facts = self.usage.query_filter(
-                self.project_id, str(filters.algorithm_asset_id or ""), list(rows),
-                exclude_used=False, role=filters.usage_role,
+                self.project_id, str(query.filters.algorithm_asset_id or ""), list(rows),
+                exclude_used=False, role=query.filters.usage_role,
             )
         except Exception as error:  # noqa: BLE001 - history boundary
             raise BusinessHistoryUnavailable(
@@ -386,23 +408,14 @@ class BusinessReadProvider:
         self, query: BusinessQuery, contract: Mapping[str, Any],
         rows: Mapping[str, Mapping[str, Any]],
         annotations: Mapping[str, Mapping[str, Any]],
+        receipts,
     ) -> list[Mapping[str, Any]]:
         if query.filters.browse_only or not contract.get("effective_label_codes"):
             return []
-        context_key = task_negative_context(contract)
-        try:
-            receipts = self.picker.get_task_negative_receipts(
-                self.project_id, context_key, list(rows),
-            )
-        except PickerReadError:
-            raise
-        except Exception as error:  # noqa: BLE001 - confirmation boundary
-            raise BusinessConfirmationUnavailable(
-                "the task negative confirmations could not be read", detail=str(error),
-            ) from error
-        if not receipts.authoritative or not receipts.owner_equivalent:
+        if receipts is None or not receipts.authoritative or not receipts.owner_equivalent:
             # Uncertified or diagnostic-only reads never prove current eligibility.
             return []
+        context_key = task_negative_context(contract)
         valid: list[Mapping[str, Any]] = []
         for receipt in receipts.receipts:
             evidence = dict(receipt.evidence or {})
@@ -410,6 +423,8 @@ class BusinessReadProvider:
             row = rows.get(image_id)
             annotation = annotations.get(image_id)
             if row is None or annotation is None:
+                continue
+            if str(receipt.context_key) != context_key or str(receipt.image_id or "") != image_id:
                 continue
             if str(evidence.get("context_key") or "") != context_key:
                 continue
@@ -425,6 +440,15 @@ class BusinessReadProvider:
                 annotation.get("content_digest") or ""
             ):
                 continue
+            role_row = _role_row(row, annotation)
+            recomputed = str(
+                task_negative_identity(role_row, contract).get("receipt_id") or ""
+            )
+            if recomputed and (
+                recomputed != str(receipt.receipt_id)
+                or recomputed != str(evidence.get("receipt_id") or "")
+            ):
+                continue
             valid.append(evidence)
         return valid
 
@@ -432,9 +456,7 @@ class BusinessReadProvider:
     def _role_row(
         material: Mapping[str, Any], annotation: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
-        record = {
-            key: value for key, value in material.items() if key != "payload"
-        }
+        record = {key: value for key, value in material.items() if key != "payload"}
         if annotation:
             record.update(dict(annotation))
             record["id"] = str(annotation.get("image_id") or material.get("id") or "")
@@ -442,23 +464,26 @@ class BusinessReadProvider:
             record["annotation_hash"] = str(annotation.get("content_digest") or "")
         return record
 
-    def _evaluate_batch(
-        self, query: BusinessQuery, batch: Sequence[PickerMaterial],
-    ) -> tuple[list[BusinessMaterial], dict[str, dict[str, Any]]]:
+    def _evaluate_batch(self, query: BusinessQuery, session, batch: Sequence[PickerMaterial]):
         filters = query.filters
         ids = [item.id for item in batch]
         material_rows = {str(row.get("id")): row for row in self.materials.get_many(ids)}
         annotation_rows = self.annotations.get_many(ids)
-        pg_annotations = self.picker.get_annotations(self.project_id, ids)
+        pg_annotations = session.annotations(ids)
         contract = self._contract(filters)
-        valid_receipts = self._valid_receipts(query, contract, material_rows, annotation_rows)
-        contract = {**contract, "task_negative_confirmations": valid_receipts}
+        receipts = session.receipts(task_negative_context(contract), ids)
+        contract = {
+            **contract,
+            "task_negative_confirmations": self._valid_receipts(
+                query, contract, material_rows, annotation_rows, receipts,
+            ),
+        }
         facts = self._history_facts(query, list(material_rows.values()))
         by_id = facts.get("by_image_id") or {}
-        receipt_ids = {str(receipt.get("receipt_id") or "") for receipt in valid_receipts}
+        receipt_ids = {str(receipt.get("receipt_id") or "") for receipt in
+                       contract["task_negative_confirmations"]}
         unproven_legacy = set(pg_annotations.unproven_legacy_ids)
         items: list[BusinessMaterial] = []
-        state_by_id: dict[str, dict[str, Any]] = {}
         for item in batch:
             material = material_rows.get(item.id)
             if material is None:
@@ -466,7 +491,7 @@ class BusinessReadProvider:
             annotation = annotation_rows.get(item.id)
             fact = by_id.get(item.id) or {}
             state = str(fact.get("state") or "unknown")
-            state_by_id[item.id] = fact
+            session.observe(item.id, fact)
             if filters.history_scope == "current_only":
                 if not fact.get("current_algorithm_trained"):
                     continue
@@ -478,24 +503,19 @@ class BusinessReadProvider:
                     continue
             if filters.usage_state and state != filters.usage_state:
                 continue
-            # ``exclude_used=False`` above keeps the facts neutral; the policy is
-            # applied here exactly like the existing picker SQL anti-join:
-            #   new_for_algorithm -> train/test exposure on this algorithm (or an
-            #                        active/observed Test reservation)
-            #   include_history   -> only the Test reservation is excluded
+            # Formal selection always applies the existing history/Test exclusion;
+            # only browsing may show used or protected rows. An explicit
+            # usage_state/history_scope narrows the population but never bypasses
+            # the exclusion (the existing picker does the same).
             if filters.usage_role == "test":
                 excluded = state in {"used", "possible"}
             elif filters.history_policy == "include_history":
                 excluded = bool(fact.get("benchmark_protected")) or state == "test_reserved"
             else:
                 excluded = state in {"used", "possible", "test_reserved"}
-            # An explicit usage_state/history_scope is a whitelist, exactly like
-            # the picker's Python fallback: the policy exclusion only applies to
-            # an unfiltered selection.
-            explicit_scope = bool(filters.usage_state or filters.history_scope)
-            if excluded and not filters.browse_only and not explicit_scope:
+            if excluded and not filters.browse_only:
                 continue
-            role_row = self._role_row(material, annotation)
+            role_row = _role_row(material, annotation)
             try:
                 decision = training_material_role(role_row, contract)
             except ValueError as error:
@@ -503,11 +523,9 @@ class BusinessReadProvider:
                     "a material role could not be determined", detail=str(error),
                 ) from error
             sample_role = str(decision.get("role") or "pending_review")
-            if sample_role == "pending_review":
-                if task_negative_confirmable(role_row, contract):
-                    sample_role = "pending_negative"
-                elif task_partial_scope_confirmable(role_row, contract):
-                    sample_role = "positive"
+            if sample_role == "pending_review" and task_negative_confirmable(role_row, contract):
+                # Confirmable, not confirmed: a preview role, never positive.
+                sample_role = "pending_negative"
             if filters.sample_role and sample_role != filters.sample_role:
                 continue
             base = PickerMaterial(
@@ -525,7 +543,7 @@ class BusinessReadProvider:
             )
             receipt = None
             if annotation is not None:
-                identity = _receipt_identity(role_row, contract)
+                identity = str(task_negative_identity(role_row, contract).get("receipt_id") or "")
                 if identity in receipt_ids:
                     receipt = identity
             items.append(BusinessMaterial(
@@ -539,156 +557,253 @@ class BusinessReadProvider:
                 confirmation_receipt=receipt,
                 legacy_unproven=item.id in unproven_legacy,
             ))
-        return items, state_by_id
+        return items
 
-    # -- streaming --------------------------------------------------------
-    def iter_candidates(
-        self, query: BusinessQuery, *, batch_size: int = MAX_PAGE_SIZE,
-    ) -> Iterator[tuple[BusinessMaterial, ...]]:
+    # -- read session ----------------------------------------------------
+    @contextmanager
+    def read_session(self, query: BusinessQuery) -> Iterator["_BusinessSession"]:
+        """One business read session: candidate stream + GT/receipts + final checks.
+
+        For a PostgreSQL picker the same P1 ``read_session`` (one REPEATABLE READ
+        transaction) is used for candidates, GT and receipts. For SQLite each
+        owner read is fixed by the picker and re-verified against the captured
+        snapshot token at close.
+        """
         self._require_project(query.project_id)
-        if query.page is not None:
-            raise PickerUnsupportedFilter(
-                "candidate streaming does not support page mode",
-            )
         _validate_business_query(replace(query, page=None, count_mode="deferred"))
-        fingerprint = _business_fingerprint(query)
         context = self._picker_context()
         token = str(context.snapshot_id)
         usage_revision = self._usage_revision()
-        start = None
-        if query.cursor:
-            start = _decode_business_cursor(
-                query.cursor, fingerprint=fingerprint, snapshot=token,
-                usage=usage_revision,
-            )
-        base_query = self._base_query(query, cursor=None)
-        base_cursor = None
-        if start is not None:
-            base_cursor = _encode_picker_cursor_for(
-                start[0], start[1],
-                fingerprint=_base_fingerprint(base_query), snapshot=token,
-            )
-        base_query = replace(base_query, cursor=base_cursor)
-        evaluated = 0
-        for batch in self.picker.iter_candidates(base_query, batch_size=batch_size):
-            items, _states = self._evaluate_batch(query, batch)
-            evaluated += len(batch)
-            if items:
-                yield tuple(items)
-            if evaluated > MAX_SELECTION_IDS:
-                raise PickerUnsupportedFilter(
-                    f"candidate streaming exceeded {MAX_SELECTION_IDS} materials",
+        task_evidence = self._task_evidence_digest()
+        if hasattr(self.picker, "read_session"):
+            with self.picker.read_session(
+                query.project_id, verify_owner=query.verify_owner,
+            ) as inner:
+                session = _PostgresSession(
+                    self, query, inner, token, usage_revision, task_evidence,
                 )
-        if self._usage_revision() != usage_revision:
-            raise BusinessHistoryChanged(
-                "the training history changed while streaming candidates",
+                yield session
+                session.verify()
+        else:
+            session = _SQLiteSession(
+                self, query, token, usage_revision, task_evidence,
             )
-        if str(self._picker_context().snapshot_id) != token:
-            raise PickerSnapshotStale(
-                "the picker snapshot changed while streaming candidates",
-            )
+            yield session
+            session.verify()
+
+    def iter_candidates(
+        self, query: BusinessQuery, *, batch_size: int = MAX_PAGE_SIZE,
+    ) -> Iterator[tuple[BusinessMaterial, ...]]:
+        if query.page is not None:
+            raise PickerUnsupportedFilter("candidate streaming does not support page mode")
+        with self.read_session(query) as session:
+            yield from session.batches(batch_size=batch_size)
 
     def read_page(self, query: BusinessQuery) -> BusinessPage:
         self._require_project(query.project_id)
         size, page = _validate_business_query(query)
-        context = self._picker_context()
-        token = str(context.snapshot_id)
-        usage_revision = self._usage_revision()
-        fingerprint = _business_fingerprint(query)
-        start = None
         page_number = 1 if page is None else page
-        skip = 0
-        if query.cursor:
-            start = _decode_business_cursor(
-                query.cursor, fingerprint=fingerprint, snapshot=token,
-                usage=usage_revision,
-            )
-        elif page_number > 1:
-            skip = (page_number - 1) * size
-        items: list[BusinessMaterial] = []
-        total: int | None = None
-        matched = 0
-        skipped = 0
-        last: BusinessMaterial | None = None
-        has_more = False
-        stream = self.iter_candidates(replace(query, page=None, cursor=query.cursor))
-        for batch in stream:
-            for item in batch:
-                matched += 1
-                if skipped < skip:
-                    skipped += 1
-                    continue
-                if len(items) < size:
-                    items.append(item)
-                    last = item
-                elif query.count_mode == "deferred":
-                    has_more = True
+        fingerprint = _business_fingerprint(query)
+        with self.read_session(query) as session:
+            skip = 0
+            start = None
+            if query.cursor:
+                start = _decode_business_cursor(
+                    query.cursor, fingerprint=fingerprint,
+                    snapshot=session.snapshot_id, usage=session.usage_revision,
+                    task_evidence=session.task_evidence,
+                )
+            elif page_number > 1:
+                skip = (page_number - 1) * size
+            if start is not None:
+                base_cursor = _picker_cursor_for(session, query, start)
+            else:
+                base_cursor = None
+            items: list[BusinessMaterial] = []
+            total: int | None = None
+            matched = 0
+            skipped = 0
+            last: BusinessMaterial | None = None
+            has_more = False
+            for batch in session.batches(cursor=base_cursor):
+                for item in batch:
+                    matched += 1
+                    if skipped < skip:
+                        skipped += 1
+                        continue
+                    if len(items) < size:
+                        items.append(item)
+                        last = item
+                    elif query.count_mode == "deferred":
+                        has_more = True
+                        break
+                if has_more:
                     break
-            if has_more:
-                break
-        if query.count_mode == "exact":
-            # Every match was consumed: the count is exact and the page position
-            # is known, with no second full-project COUNT.
-            total = matched
-            has_more = matched > skipped + len(items)
-        else:
-            total = None
+            if query.count_mode == "exact":
+                total = matched
+                has_more = matched > skipped + len(items)
+            # ``session.verify()`` runs on context exit and fails closed if the
+            # owner, history or Task status evidence changed -- even for an early
+            # deferred stop.
+            snapshot = session.snapshot()
         next_cursor = None
         if has_more and last is not None and last.material.created_at:
             next_cursor = _encode_business_cursor(
                 last.material.created_at, last.material.id,
-                fingerprint=fingerprint, snapshot=token, usage=usage_revision,
+                fingerprint=fingerprint, snapshot=session.snapshot_id,
+                usage=session.usage_revision, task_evidence=session.task_evidence,
             )
         return BusinessPage(
             items=tuple(items), total=total, has_more=has_more,
             next_cursor=next_cursor, page=page_number, page_size=size,
-            count_mode=query.count_mode,
-            snapshot=BusinessSnapshot(
-                project_id=self.project_id, source=str(getattr(self.picker, "name", "")),
-                picker_snapshot_id=token,
-                owner_equivalent=bool(query.verify_owner),
-                usage_revision=usage_revision,
-                task_evidence=_task_evidence(token, usage_revision, len(items)),
-                count_mode=query.count_mode,
-                read_identity=str(getattr(context, "read_identity", "") or ""),
-            ),
+            count_mode=query.count_mode, snapshot=snapshot,
         )
 
-    def _usage_revision(self) -> str:
-        try:
-            return str(self.usage.read_revision())
-        except Exception as error:  # noqa: BLE001 - history boundary
-            raise BusinessHistoryUnavailable(
-                "the training history revision could not be read", detail=str(error),
-            ) from error
+
+class _BusinessSession:
+    """Shared candidate/evaluate/verify logic for both pickers."""
+
+    def __init__(self, provider, query, token, usage_revision, task_evidence,
+                 owner_equivalent: bool = False):
+        self.provider = provider
+        self.query = query
+        self.snapshot_id = token
+        self.usage_revision = usage_revision
+        self.task_evidence = task_evidence
+        self._owner_equivalent = owner_equivalent
+        self._facts: dict[str, dict[str, Any]] = {}
+        self._expected_status: dict[str, str] = {}
+
+    # -- recording -------------------------------------------------------
+    def observe(self, image_id: str, fact: Mapping[str, Any]) -> None:
+        self._facts[image_id] = {
+            "state": str(fact.get("state") or "unknown"),
+            "benchmark_protected": bool(fact.get("benchmark_protected")),
+            "current_algorithm_trained": bool(fact.get("current_algorithm_trained")),
+            "other_algorithm_trained": bool(fact.get("other_algorithm_trained")),
+        }
+        statuses = self.provider._task_statuses(fact.get("task_ids") or [])
+        for task_id, status in statuses.items():
+            self._expected_status.setdefault(task_id, status)
+
+    # -- verification ----------------------------------------------------
+    def verify(self) -> None:
+        if self.provider._usage_revision() != self.usage_revision:
+            raise BusinessHistoryChanged(
+                "the training history changed during the business read",
+            )
+        if self.provider._task_evidence_digest() != self.task_evidence:
+            raise BusinessHistoryChanged(
+                "the Task status changed during the business read",
+            )
+        observed = self.provider._task_statuses(list(self._expected_status))
+        for task_id, status in self._expected_status.items():
+            if observed.get(task_id, "<missing>") != status:
+                raise BusinessHistoryChanged(
+                    "a Task status that affects eligibility changed during the read",
+                    detail=f"task={task_id}",
+                )
+        if self._facts:
+            rows = self.provider.materials.get_many(list(self._facts))
+            again = self.provider._history_facts(self.query, rows)
+            for image_id, before in self._facts.items():
+                after = (again.get("by_image_id") or {}).get(image_id) or {}
+                for key in ("state", "benchmark_protected",
+                            "current_algorithm_trained", "other_algorithm_trained"):
+                    value = after.get(key)
+                    expected = before[key]
+                    if key == "state":
+                        if str(value or "unknown") != expected:
+                            raise BusinessHistoryChanged(
+                                "a history state changed during the business read",
+                                detail=f"image={image_id}",
+                            )
+                    elif bool(value) != expected:
+                        raise BusinessHistoryChanged(
+                            "a history scope fact changed during the business read",
+                            detail=f"image={image_id}",
+                        )
+        if self.provider._picker_context().snapshot_id != self.snapshot_id:
+            raise PickerSnapshotStale(
+                "the picker snapshot changed during the business read",
+            )
+
+    def snapshot(self) -> BusinessSnapshot:
+        context = self.provider._picker_context()
+        return BusinessSnapshot(
+            project_id=self.provider.project_id,
+            source=str(getattr(self.provider.picker, "name", "")),
+            picker_snapshot_id=self.snapshot_id,
+            owner_equivalent=self._owner_equivalent,
+            usage_revision=self.usage_revision,
+            task_evidence=self.task_evidence,
+            count_mode=self.query.count_mode,
+            read_identity=str(getattr(context, "read_identity", "") or ""),
+        )
 
 
-def _base_fingerprint(query: PickerQuery) -> str:
-    from .training_material_picker_read import _query_fingerprint
+class _PostgresSession(_BusinessSession):
+    def __init__(self, provider, query, inner, token, usage_revision, task_evidence):
+        super().__init__(
+            provider, query, token, usage_revision, task_evidence,
+            owner_equivalent=bool(getattr(inner, "owner_equivalent", False)),
+        )
+        self.inner = inner
 
-    return _query_fingerprint(query)
+    def annotations(self, ids):
+        return self.inner.get_annotations(ids)
+
+    def receipts(self, context_key, ids):
+        return self.inner.receipts(context_key, ids)
+
+    def batches(self, *, batch_size=MAX_PAGE_SIZE, cursor=None):
+        base = self.provider._base_query(self.query, cursor=cursor)
+        for batch in self.inner.candidates(base, batch_size=batch_size):
+            yield self.provider._evaluate_batch(self.query, self, batch)
+
+    def verify(self) -> None:
+        # The P1 session verifies the Owner on exit; re-check the business facts
+        # and the picker snapshot before publishing anything.
+        super().verify()
 
 
-def _encode_picker_cursor_for(
-    created_at: str, image_id: str, *, fingerprint: str, snapshot: str,
-) -> str:
+class _SQLiteSession(_BusinessSession):
+    def __init__(self, provider, query, token, usage_revision, task_evidence):
+        super().__init__(
+            provider, query, token, usage_revision, task_evidence,
+            # The SQLite picker re-reads the owner; the token comparison in
+            # verify() is what proves current equivalence.
+            owner_equivalent=bool(query.verify_owner),
+        )
+
+    def annotations(self, ids):
+        return self.provider.picker.get_annotations(self.provider.project_id, ids)
+
+    def receipts(self, context_key, ids):
+        return self.provider.picker.get_task_negative_receipts(
+            self.provider.project_id, context_key, ids,
+        )
+
+    def batches(self, *, batch_size=MAX_PAGE_SIZE, cursor=None):
+        base = self.provider._base_query(self.query, cursor=cursor)
+        for batch in self.provider.picker.iter_candidates(base, batch_size=batch_size):
+            yield self.provider._evaluate_batch(self.query, self, batch)
+
+
+def _role_row(material: Mapping[str, Any], annotation: Mapping[str, Any] | None) -> dict[str, Any]:
+    return BusinessReadProvider._role_row(material, annotation)
+
+
+def _picker_cursor_for(session, query: BusinessQuery, start: tuple[str, str]) -> str:
     from .training_material_picker_read import encode_picker_cursor
 
+    base = session.provider._base_query(query, cursor=None)
+    from .training_material_picker_read import _query_fingerprint
+
     return encode_picker_cursor(
-        created_at, image_id, fingerprint=fingerprint, snapshot=snapshot,
+        start[0], start[1], fingerprint=_query_fingerprint(base),
+        snapshot=session.snapshot_id,
     )
-
-
-def _receipt_identity(row: Mapping[str, Any], contract: Mapping[str, Any]) -> str:
-    from .training_label_tasks import task_negative_identity
-
-    return str(task_negative_identity(row, contract).get("receipt_id") or "")
-
-
-def _task_evidence(token: str, usage_revision: str, count: int) -> str:
-    return hashlib.sha256(
-        json.dumps([token, usage_revision, count]).encode("utf-8")
-    ).hexdigest()[:32]
 
 
 def selection_digest(image_ids: Sequence[str]) -> str:
@@ -701,37 +816,37 @@ def selection_digest(image_ids: Sequence[str]) -> str:
 
 def compare_candidate_sets(
     first: BusinessReadProvider, second: BusinessReadProvider, query: BusinessQuery,
-    *, limit: int = MAX_SELECTION_IDS,
+    *, limit: int = MAX_COMPARISON_IDS,
 ) -> dict[str, Any]:
-    """Read-only equivalence of two providers over the same business query.
+    """Read-only equivalence over the same business query.
 
-    The comparison is only published after BOTH streams are fully consumed and
-    each provider's own snapshot/history checks passed; a partial stream or a
-    changed owner never yields a "successful" subset.
+    Both streams must be fully consumed, both sessions must verify (owner,
+    history, Task status) and both must observe the same history revision; only
+    then is a count/digest published.
     """
-    first_ids = list(_collect_ids(first, query, limit))
-    second_ids = list(_collect_ids(second, query, limit))
+    first_ids, first_revision = _collect(first, query, limit)
+    second_ids, second_revision = _collect(second, query, limit)
+    if first_revision != second_revision:
+        raise BusinessHistoryChanged("the two reads used different history revisions")
     if first_ids != second_ids:
         raise BusinessCandidateMismatch(
             "candidate sets differ",
             detail=f"first={len(first_ids)} second={len(second_ids)}",
         )
-    return {
-        "count": len(first_ids),
-        "digest": selection_digest(first_ids),
-        "ids": first_ids,
-    }
+    return {"count": len(first_ids), "digest": selection_digest(first_ids), "ids": first_ids}
 
 
-def _collect_ids(
-    provider: BusinessReadProvider, query: BusinessQuery, limit: int,
-) -> Iterator[str]:
-    seen = 0
-    for batch in provider.iter_candidates(query):
-        for item in batch:
-            seen += 1
-            if seen > limit:
-                raise PickerUnsupportedFilter(
-                    f"candidate comparison is limited to {limit} materials",
-                )
-            yield item.material.id
+def _collect(provider: BusinessReadProvider, query: BusinessQuery, limit: int):
+    ids: list[str] = []
+    revision = ""
+    with provider.read_session(query) as session:
+        revision = session.usage_revision
+        for batch in session.batches():
+            for item in batch:
+                ids.append(item.material.id)
+                if len(ids) > limit:
+                    raise PickerUnsupportedFilter(
+                        f"candidate comparison is limited to {limit} materials",
+                    )
+        session.verify()
+    return ids, revision

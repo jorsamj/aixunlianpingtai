@@ -574,3 +574,17 @@ flowchart TB
 - 前端：封存只在同正文幂等 POST 成功后才可执行；409 冲突在刷新后仍保持阻断；`execution_attempted` 的未知创建状态跨刷新保留。
 - 性能：`/images` 20 万返回约 106MB/2.2s、`/datasets` 约 6.5s、`/projects` 约 4.6s（隔离合成、无 GT 的 legacy 回退路径）；标签编辑已改为仅刷新标签，不再触发 `loadRelated()` 全量 `/images`。
 - 未实施：FTS5、`/images`/`/datasets`/`loadRelated` 的结构性治理、生产 Worker 生命周期与生产现场验收。
+
+## U3 Picker 迁移状态（2026-11-28 校正）
+
+| 阶段 | 状态 | 证据 |
+|---|---|---|
+| U3 基础 | 已验收 | 素材/GT/池迁移与对账 |
+| U3-P0 | 已验收、冻结 | Schema V4；57 项 PG 合同 |
+| U3-P1 | 已验收 | 只读 Provider、项目绑定、Owner 失败关闭；41 项 |
+| U3-P2 | 本地实现完成、待独立验收 | 业务读取合同（历史/角色/用途/确认/分页/冻结等价）；14 项 |
+| U3-P3-A | 设计完成 | 增量同步前置合同，未写 Worker/Schema |
+| U3-P3-B 及以后 | 未授权 | Owner Change Log、增量同步 |
+| U3-P4/P5 | 未授权 | 规模差分、生产切换 |
+
+SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。

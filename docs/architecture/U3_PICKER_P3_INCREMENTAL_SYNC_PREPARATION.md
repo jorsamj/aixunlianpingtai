@@ -79,3 +79,18 @@
 
 本轮未新增 Schema/表、未实现 Worker/队列/定时同步、未改 Owner 写入路径、未改 VERSION；
 P3-B 代码需在 P2 审计通过后另行授权。
+
+## 6. 审计补充合同
+
+1. **事件 payload 与摘要**：事件只写实体主键、`event_kind`、`tombstone_json`（delete）与
+   `payload_digest`；完整实体内容仍以 Owner 行为准。消费者按 `payload_digest` 幂等比对，实体后续
+   变化产生新的 `(stream, sequence)`，不复用旧摘要。
+2. **基线与 high-water mark 同快照**：初始化快照必须在**同一 SQLite 只读事务**内读取各流
+   `change_sequence`，导出数据也来自该事务；发布 READY 后增量从 `hwm+1` 开始消费，避免“导出期间
+   写入丢失”。
+3. **跨流依赖与 READY**：`picker_snapshot_state.status=READY` 仍由完整导入产生；增量消费不得在
+   流未对齐（如 GT 先于其素材、确认先于其 GT）时推进全局 READY，按流独立游标 + 依赖检查，
+   任一依赖缺失即暂停并保留旧 READY 快照。
+4. **幂等/缺口/失败/重建**：`(stream, sequence)` + 摘要幂等；序缺口、摘要不一致或 Owner 结构
+   未认证 → 停止增量、标记重建；重建复用现有完整导出/导入，不清空 PG 投影掩盖异常；Owner 数据
+   永不因同步失败被修改。
