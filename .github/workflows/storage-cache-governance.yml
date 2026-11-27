@@ -166,8 +166,11 @@ jobs:
           # platform_core/storage/__init__.py, which imports the remote provider
           # (platform_core/storage/remote.py) that imports requests at module
           # level. The OSS/S3 SDKs stay lazy, so only requests is needed here.
+          # Pillow/starlette: the P1 SQLite picker baseline reuses
+          # training_material_picker_api, which imports both at module level
+          # (FastAPI itself stays a lazy import inside the router factory).
           python -m pip install --disable-pip-version-check \
-            pytest "psycopg[binary]" filelock requests
+            pytest "psycopg[binary]" filelock requests Pillow starlette
 
       - name: Prove the service container is the real server
         run: |
@@ -193,13 +196,14 @@ jobs:
             --junitxml=storage-source-postgres.xml \
             tests/integration/test_storage_source_postgres.py
 
-      - name: U3 material, formal GT and negative-pool shadow contracts
+      - name: U3 shadow contracts and P1 picker read provider
         run: |
           python -m pytest -q -p no:cacheprovider -rs \
             --confcutdir=tests/integration \
             --junitxml=u3-material-gt-postgres.xml \
             tests/integration/test_u3_material_gt_postgres.py \
-            tests/integration/test_u3_schema_upgrade_postgres.py
+            tests/integration/test_u3_schema_upgrade_postgres.py \
+            tests/integration/test_u3_picker_read_postgres.py
 
       - name: Refuse a run that skipped a U3 contract
         if: always()
@@ -212,12 +216,16 @@ jobs:
           if not report.is_file():
               raise SystemExit("no JUnit report: the U3 contracts did not run")
           root = ET.parse(report).getroot()
-          suite = root.find("testsuite") if root.tag == "testsuites" else root
-          tests = int(suite.get("tests") or 0)
-          skipped = int(suite.get("skipped") or 0)
-          failures = int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
-          print(f"u3 tests={tests} skipped={skipped} failures={failures}")
-          if skipped or failures or tests < 10:
+          suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+          tests = sum(int(suite.get("tests") or 0) for suite in suites)
+          skipped = sum(int(suite.get("skipped") or 0) for suite in suites)
+          failures = sum(
+              int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
+              for suite in suites
+          )
+          print(f"u3 suites={len(suites)} tests={tests} skipped={skipped} failures={failures}")
+          # P0 (57) + P1 (23) contracts; a lower total means a file was not collected.
+          if skipped or failures or tests < 70:
               raise SystemExit("a U3 shadow contract was skipped, failed or missing")
           PY
 
