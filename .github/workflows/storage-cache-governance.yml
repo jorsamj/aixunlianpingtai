@@ -9,6 +9,7 @@ on:
     paths:
       - 'platform_core/storage/**'
       - platform_core/storage_source_*.py
+      - platform_core/u3_*.py
       - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
@@ -17,6 +18,7 @@ on:
       - 'static/index.html'
       - 'tests/unit/storage/**'
       - 'tests/integration/test_storage_source_postgres.py'
+      - 'tests/integration/test_u3_material_gt_postgres.py'
       - 'tests/frontend/storage-*.test.mjs'
       - '.github/workflows/storage-cache-governance.yml'
       - 'docs/STORAGE_CACHE_AND_OBJECT_IMMUTABILITY.md'
@@ -24,6 +26,7 @@ on:
     paths:
       - 'platform_core/storage/**'
       - platform_core/storage_source_*.py
+      - platform_core/u3_*.py
       - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
@@ -32,6 +35,7 @@ on:
       - 'static/index.html'
       - 'tests/unit/storage/**'
       - 'tests/integration/test_storage_source_postgres.py'
+      - 'tests/integration/test_u3_material_gt_postgres.py'
       - 'tests/frontend/storage-*.test.mjs'
       - '.github/workflows/storage-cache-governance.yml'
       - 'docs/STORAGE_CACHE_AND_OBJECT_IMMUTABILITY.md'
@@ -188,6 +192,33 @@ jobs:
             --confcutdir=tests/integration \
             --junitxml=storage-source-postgres.xml \
             tests/integration/test_storage_source_postgres.py
+
+      - name: U3 material, formal GT and negative-pool shadow contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=u3-material-gt-postgres.xml \
+            tests/integration/test_u3_material_gt_postgres.py
+
+      - name: Refuse a run that skipped a U3 contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("u3-material-gt-postgres.xml")
+          if not report.is_file():
+              raise SystemExit("no JUnit report: the U3 contracts did not run")
+          root = ET.parse(report).getroot()
+          suite = root.find("testsuite") if root.tag == "testsuites" else root
+          tests = int(suite.get("tests") or 0)
+          skipped = int(suite.get("skipped") or 0)
+          failures = int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
+          print(f"u3 tests={tests} skipped={skipped} failures={failures}")
+          if skipped or failures or tests < 3:
+              raise SystemExit("a U3 shadow contract was skipped, failed or missing")
+          PY
 
       - name: Refuse a run that skipped a PostgreSQL contract
         if: always()
