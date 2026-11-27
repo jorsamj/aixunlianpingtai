@@ -22,12 +22,15 @@ def _require_or_skip(module_name: str, reason: str):
 psycopg = _require_or_skip("psycopg", "psycopg 3 is required for PostgreSQL contracts")
 
 from platform_core.u3_shadow import (
+    CONTRACT_VERSION,
     SCHEMA_NAME,
     SCHEMA_VERSION,
     U3MigrationError,
     _SCHEMA_V1,
     _SCHEMA_V2,
     ensure_schema,
+    import_project_snapshot,
+    read_target_snapshot,
     schema_checksum,
     schema_checksum_for,
 )
@@ -309,3 +312,99 @@ def test_tampered_or_unknown_versions_are_refused(pg):
         with pytest.raises(U3MigrationError) as newer:
             ensure_schema(connection)
         assert newer.value.code == "U3_SCHEMA_NEWER_THAN_TOOL"
+
+def _snapshot(references, *, materials=None):
+    """Minimal authoritative snapshot (as exported from a SQLite project)."""
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "project_id": "p1",
+        "stores": {
+            "materials": {
+                "materials": materials or [],
+                "material_labels": [{"material_id": "m-old", "label_code": "fire", "box_count": 2}],
+                "material_annotation_scopes": [{"material_id": "m-old", "label_code": "fire"}],
+                "negative_pool_members": [{"material_id": "m-old", "joined_at": "2026-01-01"}],
+                "negative_pool_categories": [{"id": "cat-1", "name": "FIRE", "enabled": 1}],
+                "negative_pool_links": [{"material_id": "m-old", "category_id": "cat-1"}],
+                "negative_pool_algorithm_members": [],
+                "evidence": {},
+            },
+            "annotations": {
+                "annotations": [
+                    {"image_id": "m-old", "annotation_state": "annotated", "version": 4,
+                     "content_digest": "digest", "boxes": [], "scope": []},
+                ],
+                "annotation_label_references": references,
+                "evidence": {},
+            },
+        },
+        "revisions": {"materials": 1, "annotations": 1, "negative_pool": 0},
+    }
+
+
+def test_v1_upgrade_keeps_source_kind_and_supports_real_read_write(pg):
+    with psycopg.connect(pg.get_uri()) as connection:
+        _build(connection, _SCHEMA_V1, (1,))
+        ensure_schema(connection)
+        with connection.cursor() as cursor:
+            # The upgraded table really has the business column ...
+            cursor.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_schema=%s "
+                "AND table_name='annotation_label_reference' ORDER BY column_name",
+                (SCHEMA_NAME,),
+            )
+            columns = [str(row[0]) for row in cursor.fetchall()]
+            for required in ("project_id", "image_id", "label_code", "box_count",
+                             "scope_ref", "annotation_state", "source_kind"):
+                assert required in columns, (required, columns)
+            # ... and it carries the legacy value, not a fabricated one.
+            cursor.execute(
+                f"SELECT label_code,source_kind FROM {SCHEMA_NAME}.annotation_label_reference "
+                "ORDER BY label_code"
+            )
+            assert cursor.fetchall() == [("fire", "sqlite"), ("smoke", "legacy")]
+
+        connection.rollback()  # leave the implicit read transaction
+        # Before the authoritative import the target is explicitly incomplete.
+        before = read_target_snapshot(connection, "p1")
+        assert before["legacy_reference_pending_import"] is True
+        assert any(row["source_kind"] == "sqlite" for row in
+                   before["stores"]["annotations"]["annotation_label_references"])
+
+        references = [
+            {"image_id": "m-old", "label_code": "fire", "box_count": 3, "scope_ref": 2,
+             "annotation_state": "annotated", "source_kind": "sqlite"},
+            {"image_id": "m-old", "label_code": "smoke", "box_count": 0, "scope_ref": 0,
+             "annotation_state": "unannotated", "source_kind": "legacy"},
+        ]
+        import_project_snapshot(connection, _snapshot(references), mode="incremental")
+        after = read_target_snapshot(connection, "p1")
+        stored = {
+            row["label_code"]: (row["source_kind"], row["box_count"], row["scope_ref"],
+                                row["annotation_state"])
+            for row in after["stores"]["annotations"]["annotation_label_references"]
+        }
+        assert stored == {
+            "fire": ("sqlite", 3, 2, "annotated"),
+            "smoke": ("legacy", 0, 0, "unannotated"),
+        }
+        assert after["legacy_reference_pending_import"] is True
+
+        # A full authoritative import clears the provisional marker.
+        snapshot = _snapshot(references, materials=[{"id": "m-old", "filename": "old.jpg"}])
+        result = import_project_snapshot(connection, snapshot, mode="full")
+        assert result["legacy_pending_cleared"] == 1
+        cleared = read_target_snapshot(connection, "p1")
+        assert cleared["legacy_reference_pending_import"] is False
+        stored = {
+            row["label_code"]: (row["source_kind"], row["box_count"], row["scope_ref"],
+                                row["annotation_state"])
+            for row in cleared["stores"]["annotations"]["annotation_label_references"]
+        }
+        assert stored == {
+            "fire": ("sqlite", 3, 2, "annotated"),
+            "smoke": ("legacy", 0, 0, "unannotated"),
+        }
+        # Re-running the migration is a no-op and keeps the proven data.
+        ensure_schema(connection)
+        assert read_target_snapshot(connection, "p1")["legacy_reference_pending_import"] is False

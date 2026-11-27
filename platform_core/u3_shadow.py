@@ -31,6 +31,10 @@ from typing import Any, Iterable, Mapping
 
 SCHEMA_NAME = "w3_material_gt"
 SCHEMA_VERSION = 3
+#: Pseudo store-revision key recording that v1 reference rows were upgraded with
+#: provisional counters and must be replaced by a full authoritative SQLite import
+#: before the target may be considered complete.
+LEGACY_REFERENCE_PENDING_STORE = "legacy_reference_pending_import"
 CONTRACT_VERSION = "u3-shadow-snapshot-v2"
 REQUIRED_TABLES = {
     "materials": ("materials", "material_meta", "material_labels",
@@ -795,14 +799,14 @@ _SCHEMA_UPGRADES = {
         """CREATE TABLE w3_material_gt.annotation_label_reference_v2 (
             project_id TEXT NOT NULL, image_id TEXT NOT NULL, label_code TEXT NOT NULL,
             box_count INTEGER NOT NULL DEFAULT 0, scope_ref INTEGER NOT NULL DEFAULT 0,
-            annotation_state TEXT NOT NULL,
+            annotation_state TEXT NOT NULL, source_kind TEXT NOT NULL,
             PRIMARY KEY (project_id, image_id, label_code))""",
         # The counters never existed in v1, so they keep the historical default 0;
         # the annotation state comes from the trusted formal GT row.
         """INSERT INTO w3_material_gt.annotation_label_reference_v2
-            (project_id, image_id, label_code, box_count, scope_ref, annotation_state)
+            (project_id, image_id, label_code, box_count, scope_ref, annotation_state, source_kind)
            SELECT legacy.project_id, legacy.image_id, legacy.label_code, 0, 0,
-                  COALESCE(annotation.annotation_state, 'unannotated')
+                  COALESCE(annotation.annotation_state, 'unannotated'), legacy.source_kind
              FROM w3_material_gt.annotation_label_reference_legacy AS legacy
              LEFT JOIN w3_material_gt.annotation AS annotation
                ON annotation.project_id = legacy.project_id
@@ -928,6 +932,32 @@ def ensure_schema(connection) -> dict[str, Any]:
                             "the reference upgrade lost rows",
                             detail=f"legacy={migrated['legacy']} typed={migrated['typed']}",
                         )
+                    cursor.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema=%s AND table_name='annotation_label_reference'",
+                        (SCHEMA_NAME,),
+                    )
+                    columns = {str(row["column_name"]) for row in cursor.fetchall()}
+                    missing = [
+                        name for name in REQUIRED_COLUMNS["annotation_label_references"]
+                        if name not in columns
+                    ]
+                    if missing:
+                        raise U3MigrationError(
+                            "U3_UPGRADE_REFERENCE_SCHEMA_INVALID",
+                            "the upgraded reference table does not match the v2 contract",
+                            detail=f"missing={missing}",
+                        )
+                    # The counters were never stored by v1 and the state may come
+                    # from the 'unannotated' fallback: this target is NOT complete
+                    # until the authoritative SQLite owner is imported in full.
+                    cursor.execute(
+                        f"INSERT INTO {SCHEMA_NAME}.store_revision(project_id,store,revision) "
+                        "SELECT DISTINCT project_id, %s, 0 "
+                        f"FROM {SCHEMA_NAME}.annotation_label_reference_legacy "
+                        "ON CONFLICT (project_id,store) DO NOTHING",
+                        (LEGACY_REFERENCE_PENDING_STORE,),
+                    )
                 for applied in applied_versions:
                     if applied == 0:
                         continue
@@ -1207,6 +1237,15 @@ def import_project_snapshot(
                     "revision=EXCLUDED.revision, recorded_at=now()",
                     (project_id, str(store), revision),
                 )
+            if mode == "full":
+                # A full import comes from the authoritative SQLite owner, so the
+                # provisional v1-upgrade rows (zero counters / default state) are
+                # replaced by proven data and the target is complete again.
+                cursor.execute(
+                    f"DELETE FROM {SCHEMA_NAME}.store_revision WHERE project_id=%s AND store=%s",
+                    (project_id, LEGACY_REFERENCE_PENDING_STORE),
+                )
+                counters["legacy_pending_cleared"] = int(cursor.rowcount == 1)
     return counters
 
 
@@ -1337,7 +1376,16 @@ def read_target_snapshot(connection, project_id: str) -> dict[str, Any]:
                 f"SELECT store,revision FROM {SCHEMA_NAME}.store_revision WHERE project_id=%s",
                 (project_id,),
             )
-            revisions = {str(row["store"]): row["revision"] for row in cursor.fetchall()}
+            revision_rows = cursor.fetchall()
+            legacy_pending = any(
+                str(row["store"]) == LEGACY_REFERENCE_PENDING_STORE
+                for row in revision_rows
+            )
+            revisions = {
+                str(row["store"]): row["revision"]
+                for row in revision_rows
+                if str(row["store"]) != LEGACY_REFERENCE_PENDING_STORE
+            }
             cursor.execute(
                 f"SELECT store,table_name,present,schema_version,row_count FROM {SCHEMA_NAME}.table_state "
                 "WHERE project_id=%s ORDER BY store,table_name",
@@ -1376,6 +1424,7 @@ def read_target_snapshot(connection, project_id: str) -> dict[str, Any]:
                 "read_only": True,
                 "identity": snapshot_identity,
             },
+            "legacy_reference_pending_import": legacy_pending,
             "table_state": table_state,
             "revisions": revisions,
             "content_digest": _digest(
@@ -1450,6 +1499,10 @@ def reconcile(source: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str,
     )[:50]
     if (source.get("revisions") or {}) != (target.get("revisions") or {}):
         blocking.append("revision_high_water_mismatch")
+    if target.get("legacy_reference_pending_import"):
+        # v1 could not prove box_count/scope_ref/annotation_state, so the target is
+        # not complete until a full authoritative SQLite import replaces them.
+        blocking.append("legacy_reference_pending_import")
     source_state = source.get("table_state") or {}
     target_state = target.get("table_state") or {}
     for name, state in source_state.items():

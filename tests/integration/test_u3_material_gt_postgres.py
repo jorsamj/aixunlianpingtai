@@ -707,3 +707,68 @@ def test_evidence_metadata_error_fails_closed_instead_of_retaining(tmp_path, mon
     assert failure.value.code == "U3_OWNER_UNREADABLE"
     # Nothing was produced, so no snapshot can later be treated as retained.
     assert not (project / "u3-snapshot.json").exists()
+
+def test_legacy_json_projection_survives_import_without_reconstruction(pg, tmp_path):
+    """The reference projection is authoritative; the upgrade never invents it.
+
+    Mirrors AnnotationRepository semantics: a formal annotation wins, a legacy
+    JSON file is read only when no formal row exists, box_count is the number of
+    boxes for the label and scope_ref says whether the label is in scope.
+    """
+    project = _fixture(tmp_path, project_id="p9")
+    annotations = project / "annotations"
+    annotations.mkdir(parents=True, exist_ok=True)
+    # m1: formal annotation wins over its (stale) legacy JSON.
+    (annotations / "m1.json").write_text(
+        json.dumps({"boxes": [{"label": "smoke"}], "annotation_state": "annotated"}),
+        encoding="utf-8",
+    )
+    # m2: legacy JSON with boxes and no explicit scope.
+    (annotations / "m2.json").write_text(
+        json.dumps({
+            "boxes": [{"label": "fire"}, {"label": "fire"}, {"label": "fire"},
+                      {"label": "smoke"}],
+            "annotation_state": "annotated",
+        }),
+        encoding="utf-8",
+    )
+    # m3: legacy JSON without boxes.
+    (annotations / "m3.json").write_text(json.dumps({}), encoding="utf-8")
+    with sqlite3.connect(project / "annotations.sqlite3") as database:
+        database.execute("DELETE FROM annotation_label_references")
+        database.executemany(
+            "INSERT INTO annotation_label_references VALUES (?,?,?,?,?,?)",
+            [
+                ("m1", "fire", 2, 1, "annotated", "sqlite"),
+                ("m2", "fire", 3, 1, "annotated", "legacy"),
+                ("m2", "smoke", 1, 1, "annotated", "legacy"),
+            ],
+        )
+    snapshot = export_project_snapshot(project, "p9")
+    exported = {
+        (row["image_id"], row["label_code"]): (
+            row["box_count"], row["scope_ref"], row["annotation_state"], row["source_kind"],
+        )
+        for row in snapshot["stores"]["annotations"]["annotation_label_references"]
+    }
+    assert exported == {
+        ("m1", "fire"): (2, 1, "annotated", "sqlite"),
+        ("m2", "fire"): (3, 1, "annotated", "legacy"),
+        ("m2", "smoke"): (1, 1, "annotated", "legacy"),
+    }
+    # Nothing is fabricated for the images without boxes (m3 stays absent).
+    assert not any(image == "m3" for image, _ in exported)
+
+    with psycopg.connect(pg.get_uri()) as connection:
+        import_project_snapshot(connection, snapshot)
+        target = read_target_snapshot(connection, "p9")
+        stored = {
+            (row["image_id"], row["label_code"]): (
+                row["box_count"], row["scope_ref"], row["annotation_state"],
+                row["source_kind"],
+            )
+            for row in target["stores"]["annotations"]["annotation_label_references"]
+        }
+        assert stored == exported
+        assert target["legacy_reference_pending_import"] is False
+        assert reconcile(snapshot, target)["same"] is True
