@@ -2,6 +2,7 @@
 import {computed,onMounted,ref} from 'vue';
 import {useRoute,useRouter} from 'vue-router';
 import QualityCheckChart from './QualityCheckChart.vue';
+import SmartAudit from './SmartAudit.vue';
 import TaskStatusTag from '../components/TaskStatusTag.vue';
 import {trainingReaderApi,type TaskPage} from '../api/training-reader';
 import {useReadScope} from '../composables/useReadScope';
@@ -20,8 +21,13 @@ interface Snapshot {ok:boolean;project:{id:string};material_summary:{total:numbe
 interface Quality {count:number;score:number;warnings?:string[];scores:Record<string,number>;split_counts:Record<string,number>;label_images:Record<string,number>}
 const filters=[{id:'issue',label:'质量问题'},{id:'pending_decision',label:'待处理'},{id:'processed',label:'已处理'},{id:'',label:'全部'}];
 const filter=ref('issue'),page=ref<MaterialPage>(),summary=ref<Snapshot>(),tasks=ref<TaskPage>(),quality=ref<Quality>();
-const tab=ref(route.query.tab==='issues'||route.query.tab==='training'?route.query.tab:'overview');
+const tab=ref(route.query.tab==='issues'||route.query.tab==='training'||route.query.tab==='audit'?route.query.tab:'overview');
 const cursor=ref('');
+// Explicit return path for every drill-down. Links only: no sample is moved
+// between splits and no training candidate is created from a Test sample here.
+const backPath=(name:'quality-centre',tabName:string)=>router.resolve({name,params,query:{tab:tabName}}).fullPath;
+const issuesBack=backPath('quality-centre','issues');
+const trainingBack=backPath('quality-centre','training');
 function loadOverview(){
   return reads.run('summary',signal=>request<Snapshot>('/api/v53/bootstrap/snapshot?'+new URLSearchParams({preferred_project_id:projectId,core:'true'}),{signal}),value=>{
     if(value.ok!==true||value.project.id!==projectId)throw new Error('质量摘要项目不一致');
@@ -105,8 +111,9 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
           <el-table-column label="素材" min-width="230"><template #default="{row}">{{row.filename||row.name||row.id}}</template></el-table-column>
           <el-table-column prop="split" label="用途" min-width="100"/>
           <el-table-column prop="annotation_state" label="标注状态" min-width="120"/>
-          <el-table-column label="操作" min-width="110"><template #default="{row}">
-            <router-link :to="{name:'formal-annotation',params,query:{image:row.id,quality_status:filter||undefined}}">人工标注</router-link>
+          <el-table-column label="操作" min-width="180"><template #default="{row}">
+            <router-link :to="{name:'formal-annotation',params,query:{image:row.id,quality_status:filter||undefined,back:issuesBack}}">人工标注</router-link>
+            <router-link :to="{name:'materials',params,query:{detail:row.id,...(filter?{quality_status:filter}:{})}}">素材详情</router-link>
           </template></el-table-column>
         </el-table>
         <div class="tools">
@@ -131,10 +138,21 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
           <el-table-column label="算法" min-width="190"><template #default="{row}">{{row.algorithm_name||row.algorithm_id||row.task_id}}</template></el-table-column>
           <el-table-column label="状态" min-width="110"><template #default="{row}"><TaskStatusTag :status="row.status"/></template></el-table-column>
           <el-table-column label="质量证据" min-width="150"><template #default="{row}">
-            <router-link v-if="row.report_job_id" :to="{name:'training-report',params:{...params,jobId:row.report_job_id},query:{algorithm:row.algorithm_id,version:row.version_id,back:route.fullPath}}">训练报告与评测</router-link>
+            <router-link v-if="row.report_job_id" :to="{name:'training-report',params:{...params,jobId:row.report_job_id},query:{algorithm:row.algorithm_id,version:row.version_id,back:trainingBack}}">训练报告与评测</router-link>
             <span v-else>暂无报告</span>
           </template></el-table-column>
+          <el-table-column label="样本诊断" min-width="200"><template #default="{row}">
+            <template v-if="row.algorithm_id&&row.version_id">
+              <router-link :to="{name:'version-report',params:{...params,algorithmId:row.algorithm_id,versionId:row.version_id},query:{tab:'evaluation',view:'samples',issue:'fp',back:trainingBack}}">FP 误检</router-link>
+              <router-link :to="{name:'version-report',params:{...params,algorithmId:row.algorithm_id,versionId:row.version_id},query:{tab:'evaluation',view:'samples',issue:'fn',back:trainingBack}}">FN 漏检</router-link>
+              <router-link :to="{name:'version-report',params:{...params,algorithmId:row.algorithm_id,versionId:row.version_id},query:{tab:'evaluation',view:'iteration',back:trainingBack}}">困难样本与继续训练</router-link>
+            </template>
+            <span v-else>未关联算法版本</span>
+          </template></el-table-column>
         </el-table>
+      </el-tab-pane>
+      <el-tab-pane name="audit" label="智能审计">
+        <SmartAudit :project-id="projectId"/>
       </el-tab-pane>
     </el-tabs>
   </section>

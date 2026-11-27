@@ -62,6 +62,7 @@ const sampleKinds=['tp','fp','fn','wrong_class','localization','low_confidence',
 onMounted(()=>{
   const view=typeof route.query.view==='string'?route.query.view:'',requested=typeof route.query.issue==='string'?route.query.issue:'';
   if(view==='samples'){tab.value='samples';if(sampleKinds.includes(requested))issue.value=requested}
+  else if(view==='iteration'){tab.value='iteration'}
   void load();
 });
 </script>

@@ -92,7 +92,16 @@ function searchQueue(){
   void loadPage(1,'first',{...filters,query:search.value.trim(),annotation_state:annotationState.value});
 }
 function loadLabels(){return reads.run('labels',signal=>getReviewLabels(projectId,signal),value=>{labels.value=value})}
-function back(){void router.push({name:'materials',params:{projectId},query:returnQuery()})}
+function back(){
+  // An explicit ?back= (quality centre, report, sample review) keeps the user on
+  // the page they came from; it only ever navigates, never moves samples.
+  const source=typeof route.query.back==='string'?route.query.back:'';
+  if(source.startsWith('/projects/')){
+    const target=router.resolve(source);
+    if(target.params.projectId===projectId){void router.push(source);return}
+  }
+  void router.push({name:'materials',params:{projectId},query:returnQuery()})
+}
 function exitToLegacy(){if(!editor.value||editor.value.mayLeave())location.assign(originals.value)}
 function beforeLogout(event:Event){if(editor.value&&!editor.value.mayLeave())event.preventDefault()}
 onBeforeRouteLeave(()=>editor.value?.mayLeave()??true);
