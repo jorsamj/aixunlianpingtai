@@ -1,5 +1,20 @@
 # AI 开发接续入口
 
+> **2026-11-27 / U3 P0 结构生命周期整改（d72153a5）**：只修独立审计发现的“结构变化后旧快照
+> 回放”漏洞，不新增 Schema V5、不改历史 DDL/checksum、VERSION 仍 42.24.592。
+> Owner 侧新增持久化结构版本（`annotation_meta`/`material_meta` 的 `evidence_structure` +
+> `evidence_structure_generation`）：首次观察为基线 0，之后表创建/删除/重建都 +1；
+> 触发器安装入口与懒建表同步认证，另提供显式 `reconcile_evidence_structure()`；绕过 Owner 的
+> 原始 DDL 未认证时**导出失败关闭**（`U3_OWNER_STRUCTURE_UNVERIFIED`）。
+> 快照 `evidence_streams` 增加 `structure_generation`/`structure_certified` 并进入
+> `snapshot_id`/`revision_vector`；导入侧结构版本更低拒绝（`U3_SNAPSHOT_STRUCTURE_REGRESSION`），
+> 同版本不同表集合或无法证明时拒绝（`U3_SNAPSHOT_STRUCTURE_UNVERIFIED`），之后才比较行
+> generation 与摘要。确认投影与证据行同进退（缺表两者都保留，空表清空）。V4 结构核验补上
+> `u3_shadow_import` 主键与 CHECK 允许值集合严格相等。
+> 定向用例：真实 PostgreSQL **55 passed / 0 skipped**（schema 17 + material/GT 38），
+> 另有受影响单元/API 定向 **186 passed**。P1 Provider 未启动；远端未推送（按要求）。
+> 合同见 [U3 Picker P0 Schema V4](U3_PICKER_P0_SCHEMA_V4_20261127.md)。
+
 > **2026-11-27 / U3 Picker P0 审计整改（293543be）**：按独立审计只修三项，不新增 Schema V5。
 > ① **Owner 侧单调 generation**：`annotations.sqlite3` 新增 `task_negative_confirmation_generation`
 > 与 `evidence_generation`，`materials.sqlite3` 新增 `evidence_generation`，由同事务 SQLite
