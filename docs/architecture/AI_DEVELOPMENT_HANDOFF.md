@@ -48,6 +48,15 @@
 | 真实环境待验证 | BModel/RKNN/昇腾 实机 | 无授权硬件，未执行 |
 | 用户授权待确认 | 生产库切换、默认入口切换、supervisor-required | 均未启用 |
 
+## 第十一批：证据表逐表校验、revision 完整性与外键有效性（2026-11-27，本批）
+
+- 起始 `5a6a5e5ab02173a93f0ce44d871d58ce708b8a0c`。VERSION 42.24.592 未改。
+- P1-1：`pending_clear_eligible()` 原先只遍历快照中已存在的 evidence 项，整张表连同 counts/digests 一起缺失仍可能通过。现在遍历 `EVIDENCE_TABLES` 全部 10 张：每张必须有 `table_state`；present=True 时 evidence 键存在、为 list、counts==长度、digests==重算摘要、`table_state.row_count`==长度；present=False 时 `row_count` 必须为 0，且不得出现伪造的 evidence/counts/digests 键；未知 evidence 表直接拒绝。absent/empty 业务语义未变。
+- P1-2：新增真实 pending+evidence 回归（先导入真实 evidence 行→设 pending→删一张表的数据/table_state/counts/digests 并重算 content_digest→full 导入被 `U3_PENDING_IMPORT_INCOMPLETE` 拒绝，前后 stores/table_state/revisions/pending 完全一致；原始完整快照随后成功并清除标记）；另加 pending 下"源表 absent"合法用例：present=False 不阻断，目标历史 evidence 保留、reconcile 报 `retained_target_evidence` 且 same=true。
+- P2-1：revision 要求 `materials`/`annotations`/`negative_pool` 三项均存在且为非负整数；新增缺 `negative_pool` 的拒绝用例。
+- P2-2：外键校验读取 `pg_constraint.convalidated`，列映射正确但 `NOT VALID` 的外键同样 `U3_SCHEMA_STRUCTURE_INVALID`；新增真实 PostgreSQL 用例。
+- 验证：`test_u3_schema_upgrade_postgres.py` 10 项 + `test_u3_material_gt_postgres.py` 14 项 = **24 passed**（真实 PostgreSQL，0 skip）。
+
 ## 第十批：pending 前置门槛、来源信任边界与结构补强（2026-11-27，本批）
 
 - 起始 `5d2df928564c8fbca39abc0459eff9f9f586e1dd`。VERSION 42.24.592 未改。
