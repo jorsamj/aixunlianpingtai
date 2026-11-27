@@ -1,5 +1,23 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P1 收口：项目身份、Owner 等价失败关闭、候选流与会话（1877c768）**：
+> 只修 P1 合同问题，不重写 Provider、不动 P0/DDL/VERSION。
+> ① **项目身份**：`SQLitePickerReadProvider(project_path, project_id=...)` 显式绑定并在所有
+> 公开方法核验；`sqlite_owner_revision_source(project_path, project_id)` 绑定项目且返回的
+> `OwnerRevisionVector` 携带 `project_id`，Provider 再核对；跨项目一律 `PICKER_PROJECT_MISMATCH`
+> （相同 revision / 相同素材 ID 不再可能互相证明）。② **Owner 等价失败关闭**：每个 SQLite DB
+> 一个只读事务读取 revision/generation/structure/presence；缺失、负数、布尔、非整数一律
+> `PICKER_OWNER_UNVERIFIABLE`；PG 快照缺流/空向量/结构未认证/顶层列与向量不一致一律
+> `PICKER_SNAPSHOT_STALE`；确认表从未创建时的 generation=0 兼容仅在“表确实 absent”时应用。
+> ③ **候选流**：默认 batch 可用（内部页 ≤120）、不重复 COUNT、支持绑定快照 cursor 续读、
+> 拒绝 page 模式；④ **JSONB 生命周期**与 SQLite `json_extract` 的 NULL 语义对齐；
+> 日期仅声明 ISO-8601；⑤ **回执公共 DTO**：absent/present_empty/present 三态、`owner_equivalent`、
+> 必须显式 `image_ids`；⑥ **read_session**：ONE RR READ ONLY 事务组合 page/count/annotations/
+> 池/回执，关闭时 Owner 后置复核。
+> 定向：真实 PostgreSQL **39 passed / 0 skipped**；CI 拆 P0（≥50）/P1（≥20）两个步骤分别
+> 证明执行；P1 依赖补 `Pillow`/`starlette`/`psutil`。未改 VERSION 42.24.592、未启 P2。
+> 合同见 [U3 Picker P1 Read Provider](U3_PICKER_P1_READ_PROVIDER_20261127.md)。
+
 > **2026-11-27 / U3-P1 Picker PostgreSQL 只读读取层（38204b17）**：新增
 > `platform_core/training_material_picker_read.py`（Provider 合同 + `SQLitePickerReadProvider`
 > 基准 + `PostgresPickerReadProvider` 独立 SQL），`training_material_picker_api.py` 与
