@@ -591,9 +591,10 @@ flowchart TB
 | U3-P4-A | 测量能力完成、200k 已测 | 200k artifact：exact 5.6–7.2s、deferred 69/116ms；冻结/增量一致性通过 |
 | U3-P4-B | 第二轮优化已实现、复测待 CI | payload 复用 + exact count-only 游标续算；GT/回执/history/Task 判定不变 |
 | U3-P4-C | 未完成 | 分段诊断/非空角色/正式冻结三方差分/并发证据仍未收口 |
-| U3 同步运行 | 已实现、默认关闭 | 显式 `u3_sync_runner`，有界批次/时间/重试 |
-| Change Log 治理 | 只读诊断已实现 | inventory + dry-run，safe_to_delete=false，无清理 |
-| 部署预检 | 只读预检/回退准备已实现 | PG/SQLite/容量检查，不执行部署 |
+| U3 同步运行 | 已实现、默认关闭 | `u3_sync_runner` 项目目录绑定、总批次/时间预算、停止事件、项目隔离 |
+| Change Log 治理 | 只读诊断已实现 | HWM 缺失/固定读事务/物理库去重；safe_to_delete=false |
+| 部署预检 | 只读预检/回退准备已实现 | SQLite query_only + PG 只读事务 + 完整表检查；未部署 |
+| Service Nodes 前端 | 定向修复 | Playwright setPage 前等待 fixtureReady；失败用例通过 |
 | U3-P5 | 未授权 | 生产读取切换 |
 
 SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。\n\n

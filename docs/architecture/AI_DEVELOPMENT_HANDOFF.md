@@ -1,5 +1,11 @@
 # AI 开发接续入口
 
+> **2026-11-28 / 批次 I–N（本批）**：修复 exact count 外层提前退出；sync runner 绑定真实
+> `data_dir/projects/<id>`、批次总上限、共享时间预算、stop event 及项目隔离；Change Log
+> 治理补 HWM 缺失/固定读事务/物理库去重；部署预检改为 SQLite `query_only` + PG 只读事务并
+> 检查完整 U3/owner 表；Service Nodes Playwright 在 setPage 前等待既有 `fixtureReady`，
+> 失败用例定向通过。L 分段性能诊断、M 非空角色/三方差分、O/P 产品功能仍未完成。
+>
 > **2026-11-28 / 批次 A/B/E/F/H 连续交付（本批）**：转换支持 trusted codes-only
 > 类别合同及字符串 class_id 规范化；count-only 在无稳定 created_at 时回退完整计数。
 > 新增 `u3_sync_runner.py`（默认 disabled、项目/批次/时间边界、有限重试、永久冲突
