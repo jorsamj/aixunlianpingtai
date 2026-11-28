@@ -602,7 +602,9 @@ flowchart TB
 | 素材库删除统计 | 已修复 | 可见行即时移除；total 服务端权威并标记待刷新 |
 | 素材 FILTERED 删除 | 已实现 | 服务端冻结 ID 摘要、排除集合、前端全选/排除 |
 | AI 审核正式入库 | 已修复 | 完成后冻结选择失效，已入库候选不能重复提交 |
-| 训练创建初始化 | 已修复 | load epoch 防止旧响应覆盖新算法/选项/设备 |
+| FILTERED 删除闭环 | 已修复 | 恢复识别 filtered、范围/摘要核验、清空项目授权、执行排除证明 |
+| AI 批量正式入库 | 已修复 | 所有终态立即失效冻结范围 |
+| 训练初始化生命周期 | 已修复 | algorithm/benchmark/source/ready 共享 epoch |
 | U3-P5 | 未授权 | 生产读取切换 |
 
 SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。\n\n

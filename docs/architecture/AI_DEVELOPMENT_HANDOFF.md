@@ -1,5 +1,10 @@
 # AI 开发接续入口
 
+> **2026-11-28 / A2/B2/C2 闭环（本批）**：FILTERED 删除恢复识别 single/selected/
+> filtered，校验筛选/排除/数量/摘要并拒绝未授权全项目清空；AI 批量正式入库所有终态
+> 立即失效冻结范围；训练创建把 algorithm/benchmark/source/ready 纳入同一 epoch。
+> 已用隔离 API 证明 FILTERED 任务实际执行且排除素材保留。D/E/F 未完成。
+>
 > **2026-11-28 / A/B/C 产品功能包（本批）**：素材库新增服务端 FILTERED 全选删除与
 > 手工排除，预检冻结真实 ID 摘要；AI 审核正式入库后冻结选择失效；训练创建增加
 > 请求 epoch，旧算法/选项/设备响应不能覆盖新选择。A 定向 API 1 项、素材 Playwright
