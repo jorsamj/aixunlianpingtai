@@ -27,6 +27,10 @@ _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 from platform_core import u3_incremental_sync as sync
 from platform_core import material_repository_batch as material_batch_module
 from platform_core.u3_sync_runner import SyncRunnerConfig, run_once
+from platform_core.u3_change_log_governance import (
+    change_log_dry_run,
+    owner_change_log_inventory,
+)
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.negative_pool import NegativePool
@@ -600,6 +604,23 @@ def test_controlled_sync_runner_is_disabled_by_default_and_bounded(pg, tmp_path)
         assert connection.execute(
             f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p13' AND id='m1'"
         ).fetchone()[0] == "runner-sync.jpg"
+
+
+def test_change_log_governance_is_read_only_and_conservative(pg, tmp_path):
+    project, _, _, _, _ = _project(tmp_path, "p14")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        _baseline(connection, project, "p14")
+        inventory = owner_change_log_inventory(project)
+        assert inventory["available"] is True
+        assert inventory["streams"]["materials"]["row_count"] > 0
+        dry_run = change_log_dry_run(
+            connection, project_dir=project, project_id="p14"
+        )
+        assert dry_run["safe_to_delete"] is False
+        assert dry_run["status"] == "READY"
+        assert dry_run["candidates"]["materials"]["to_sequence"] >= 1
+        assert "只读 dry-run" in dry_run["note"]
 
 
 def test_b3_publish_failure_keeps_previous_identity_and_stale(pg, tmp_path, monkeypatch):
