@@ -870,6 +870,27 @@ def test_browse_mode_keeps_the_real_confirmation_role(tmp_path):
     assert "m001" in matched and matched["m001"].confirmation_receipt
 
 
+def test_formal_selection_reference_matches_sqlite_and_postgres(pg, tmp_path):
+    from platform_core.training_selection_reference import (
+        freeze_selection, read_selection,
+    )
+
+    project, _usage = _business_project(tmp_path)
+    sqlite_business, postgres_business = _providers(pg, project)
+    filters = _filter(
+        sample_role="positive", history_policy="include_history",
+    )
+    sqlite_ids = set(_stream(sqlite_business, filters=filters))
+    postgres_ids = set(_stream(postgres_business, filters=filters))
+    assert sqlite_ids == postgres_ids
+    context = {"project_id": "p1"}
+    receipt = freeze_selection(tmp_path, context, sorted(sqlite_ids))
+    frozen = read_selection(tmp_path, receipt["selection_ref"], context)
+    assert set(frozen) == sqlite_ids
+    assert receipt["count"] == len(sqlite_ids)
+    assert selection_digest(frozen) == selection_digest(sqlite_ids)
+
+
 def test_session_holds_one_fixed_task_snapshot_across_batches(tmp_path):
     project, usage = _business_project(tmp_path)
     tasks_path = project.parent.parent / "task_runtime" / "tasks.sqlite3"

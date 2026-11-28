@@ -680,6 +680,48 @@ def test_u3_p4_scale_measurement(tmp_path):
         }
         assert concurrent[0] == concurrent[1]
 
+        write_repo = MaterialRepository(project)
+        write_annotations = AnnotationRepository(project)
+        write_ids = [f"p4-batch-{index:04d}" for index in range(100)]
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            write_log_before = int(database.execute(
+                "SELECT COUNT(*) FROM owner_change_log"
+            ).fetchone()[0])
+        write_started = time.perf_counter()
+        write_repo.upsert_many([
+            {
+                "id": image_id, "filename": image_id + ".jpg",
+                "object_key": "uploads/" + image_id + ".jpg",
+                "content_sha256": f"{index + 1:064x}",
+                "size_bytes": 1024, "processing_status": "processed",
+            }
+            for index, image_id in enumerate(write_ids)
+        ])
+        material_write_ms = (time.perf_counter() - write_started) * 1000
+        write_started = time.perf_counter()
+        write_annotations.upsert_many([
+            {
+                "image_id": image_id, "annotation_state": "annotated",
+                "annotation_scope": ["fire"],
+                "boxes": [{
+                    "label": "fire", "class_id": 0,
+                    "x1": 1, "y1": 1, "x2": 12, "y2": 12,
+                }],
+            }
+            for image_id in write_ids
+        ])
+        annotation_write_ms = (time.perf_counter() - write_started) * 1000
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            write_log_after = int(database.execute(
+                "SELECT COUNT(*) FROM owner_change_log"
+            ).fetchone()[0])
+        RESULT["layers"]["write_cost"] = {
+            "materials": 100, "annotations": 100,
+            "material_ms": round(material_write_ms, 3),
+            "annotation_ms": round(annotation_write_ms, 3),
+            "change_log_growth": write_log_after - write_log_before,
+        }
+
         with connection.cursor() as cursor:
             cursor.execute("SELECT version()")
             postgres_version = str(cursor.fetchone()[0])
