@@ -434,9 +434,28 @@ export async function submitNativeTraining(options: NativeTrainingSubmission) {
   if (supplement?.active) payload.supplement_candidate_set_id = supplement.candidateSetId;
   if (source?.candidateSetId) {
     const candidates = sourceView?.candidate_set?.material_ids || [];
-    if (fixed || draft.trainSelectionRef || !candidates.length
-      || candidates.some(id=>!draft.materialIds?.includes(id)||draft.testMaterialIds?.includes(id)))
-      throw new Error('来源补数必须保留在明确的 Train 素材中，请核对冻结范围');
+    const sourceRef = String(draft.trainSelectionRef || '');
+    let candidatesInTrain = false;
+    if (sourceRef && candidates.length) {
+      const found: string[] = [];
+      for (let offset = 0; offset < candidates.length; offset += 100) {
+        const member = await selectionMembership(projectId, {
+          algorithm_asset_id: asset.id, base_version_id: payload.base_version_id,
+          model: payload.model, framework: payload.framework,
+          train_labels: payload.train_labels, history_policy: payload.history_policy,
+          role: 'train', selection_ref: sourceRef,
+          image_ids: candidates.slice(offset, offset + 100),
+        }, signal);
+        ensureCurrent();
+        found.push(...member.items);
+      }
+      candidatesInTrain = new Set(found).size === new Set(candidates).size;
+    } else {
+      candidatesInTrain = !candidates.some(id =>
+        !draft.materialIds?.includes(id) || draft.testMaterialIds?.includes(id));
+    }
+    if (fixed || !candidates.length || !candidatesInTrain)
+      throw new Error('来源补数必须保留在明确的 Train 冻结范围内，请核对选择');
     payload.supplement_candidate_set_id = source.candidateSetId;
   }
 
