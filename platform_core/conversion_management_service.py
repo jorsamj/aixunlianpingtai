@@ -816,7 +816,10 @@ class ConversionManagementService:
             schema = source_trace.get("label_schema")
             schema_rows = schema if isinstance(schema, list) else []
             try:
-                schema_rows = sorted(schema_rows, key=lambda row: int(row.get("class_id")))
+                schema_rows = sorted(
+                    [dict(row, class_id=int(row.get("class_id"))) for row in schema_rows],
+                    key=lambda row: int(row.get("class_id")),
+                )
             except (TypeError, ValueError):
                 schema_rows = []
             if status == "verified":

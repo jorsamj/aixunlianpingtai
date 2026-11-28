@@ -830,7 +830,10 @@ def build_conversion_source_manifest(*, source: Path, source_trace: Dict[str, An
                 solution='请重新冻结源模型类别合同，不能把未核验的 label_binding 写入 manifest。',
             )
         try:
-            normalized_schema = sorted(schema, key=lambda row: int(row.get('class_id')))
+            normalized_schema = sorted(
+                [dict(row, class_id=int(row.get('class_id'))) for row in schema],
+                key=lambda row: int(row.get('class_id')),
+            )
         except (TypeError, ValueError):
             normalized_schema = []
         mapping_sha256 = hashlib.sha256(json.dumps(

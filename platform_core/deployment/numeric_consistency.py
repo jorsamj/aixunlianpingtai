@@ -665,18 +665,24 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
             normalized = []
             try:
                 normalized = sorted(
-                    [dict(row) for row in (label_schema or [])],
+                    [dict(row, class_id=int(row.get("class_id")))
+                     for row in (label_schema or [])],
                     key=lambda row: int(row.get("class_id")),
                 )
             except (TypeError, ValueError):
                 normalized = []
             codes = [str(code) for code in (label_codes or [])]
-            schema_ok = (
-                bool(codes)
-                and len(normalized) == len(codes)
-                and [int(row.get("class_id")) for row in normalized] == list(range(len(codes)))
-                and [str(row.get("code") or "") for row in normalized] == codes
-            )
+            if normalized:
+                schema_ok = (
+                    bool(codes)
+                    and len(normalized) == len(codes)
+                    and [int(row.get("class_id")) for row in normalized] == list(range(len(codes)))
+                    and [str(row.get("code") or "") for row in normalized] == codes
+                )
+            else:
+                # Trusted codes-only contracts are valid: the order is the class
+                # id order and no historical schema is invented.
+                schema_ok = bool(codes)
             mapping_sha = hashlib.sha256(
                 json.dumps(codes, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             ).hexdigest()
@@ -684,9 +690,11 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
                 json.dumps(normalized, ensure_ascii=False, sort_keys=True,
                            separators=(",", ":")).encode("utf-8")
             ).hexdigest() if normalized else ""
+            expected_schema_sha = str(label_binding.get("schema_sha256") or "")
             if (not schema_ok
                     or str(label_binding.get("mapping_sha256") or "") != mapping_sha
-                    or str(label_binding.get("schema_sha256") or "") != schema_sha):
+                    or expected_schema_sha != schema_sha
+                    or (not normalized and expected_schema_sha)):
                 label_identity = {
                     "status": "conflict", "codes": [], "mapping_sha256": "",
                     "reason": "label_binding 的类别顺序/摘要与验证请求不一致",
