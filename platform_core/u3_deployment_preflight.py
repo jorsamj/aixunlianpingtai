@@ -23,32 +23,42 @@ def _pg_state(dsn: str) -> dict[str, Any]:
         return {"status": "UNAVAILABLE", "reason": "DRIVER_MISSING"}
     try:
         with psycopg.connect(dsn, connect_timeout=5) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT to_regclass(%s)", (f"{SCHEMA_NAME}.schema_migration",)
-                )
-                present = cursor.fetchone()[0] is not None
-                if not present:
-                    return {"status": "SCHEMA_MISSING", "schema_version": None}
-                cursor.execute(
-                    f"SELECT max(version) FROM {SCHEMA_NAME}.schema_migration"
-                )
-                version = int(cursor.fetchone()[0] or 0)
-                cursor.execute(
-                    "SELECT to_regclass(%s),to_regclass(%s),to_regclass(%s)",
-                    (
-                        f"{SCHEMA_NAME}.u3_projection_cursor",
-                        f"{SCHEMA_NAME}.picker_snapshot_state",
-                        f"{SCHEMA_NAME}.u3_projection_baseline",
-                    ),
-                )
-                tables = cursor.fetchone()
-                return {
-                    "status": "AVAILABLE",
-                    "schema_version": version,
-                    "supports_u3": version >= SCHEMA_VERSION,
-                    "projection_tables": all(table is not None for table in tables),
-                }
+            with connection.transaction():
+                connection.execute("SET TRANSACTION READ ONLY")
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT to_regclass(%s)", (f"{SCHEMA_NAME}.schema_migration",)
+                    )
+                    present = cursor.fetchone()[0] is not None
+                    if not present:
+                        return {"status": "SCHEMA_MISSING", "schema_version": None}
+                    cursor.execute(
+                        f"SELECT max(version),COUNT(*) FROM {SCHEMA_NAME}.schema_migration"
+                    )
+                    version, migration_rows = cursor.fetchone()
+                    version = int(version or 0)
+                    required = (
+                        "material", "material_label", "material_annotation_scope",
+                        "annotation", "annotation_label_reference", "evidence_row",
+                        "table_state", "store_revision", "picker_snapshot_state",
+                        "u3_projection_cursor", "u3_projection_baseline",
+                        "u3_shadow_import", "task_negative_confirmation",
+                    )
+                    missing = []
+                    for table in required:
+                        cursor.execute(
+                            "SELECT to_regclass(%s)", (f"{SCHEMA_NAME}.{table}",)
+                        )
+                        if cursor.fetchone()[0] is None:
+                            missing.append(table)
+                    return {
+                        "status": "AVAILABLE",
+                        "schema_version": version,
+                        "migration_rows": int(migration_rows or 0),
+                        "supports_u3": version >= SCHEMA_VERSION,
+                        "missing_tables": missing,
+                        "projection_tables": not missing,
+                    }
     except Exception as error:  # noqa: BLE001 - deployment preflight boundary
         return {"status": "UNAVAILABLE", "reason": str(error)[:300]}
 
@@ -59,24 +69,54 @@ def _sqlite_owner_state(project: Path) -> dict[str, Any]:
     if not materials.is_file() or not annotations.is_file():
         return {"status": "INCOMPLETE", "reason": "SQLITE_OWNER_MISSING"}
     try:
-        with closing(sqlite3.connect(materials, timeout=5)) as database:
+        with closing(sqlite3.connect(
+            materials.resolve().as_uri() + "?mode=ro", uri=True, timeout=5
+        )) as database:
+            database.execute("PRAGMA query_only=ON")
             material_schema = int(database.execute("PRAGMA user_version").fetchone()[0])
-            log_table = database.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' "
-                "AND name='owner_change_meta'"
-            ).fetchone()
+            material_tables = {
+                str(row[0]) for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            required_material = {
+                "materials", "material_meta", "material_labels",
+                "material_annotation_scopes", "owner_change_log",
+                "owner_change_meta",
+            }
+            if not required_material <= material_tables:
+                return {"status": "INCOMPLETE", "reason": "MATERIAL_TABLES_MISSING"}
+            log_table = "owner_change_meta" in material_tables
             hwm = {
                 str(row[0]): int(row[1])
                 for row in database.execute(
                     "SELECT stream,last_sequence FROM owner_change_meta"
                 )
             } if log_table else {}
-        with closing(sqlite3.connect(annotations, timeout=5)) as database:
+        with closing(sqlite3.connect(
+            annotations.resolve().as_uri() + "?mode=ro", uri=True, timeout=5
+        )) as database:
+            database.execute("PRAGMA query_only=ON")
             annotation_schema = int(
                 database.execute("PRAGMA user_version").fetchone()[0]
             )
+            annotation_tables = {
+                str(row[0]) for row in database.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            if not {"annotations", "annotation_meta", "owner_change_log"} <= annotation_tables:
+                return {"status": "INCOMPLETE", "reason": "ANNOTATION_TABLES_MISSING"}
+        meta = {}
+        if (project / "meta.json").is_file():
+            import json
+            try:
+                meta = json.loads((project / "meta.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return {"status": "INCOMPLETE", "reason": "PROJECT_META_UNREADABLE"}
         return {
             "status": "AVAILABLE",
+            "project_id": str(meta.get("id") or "") if isinstance(meta, dict) else "",
             "materials_schema": material_schema,
             "annotations_schema": annotation_schema,
             "change_log": bool(log_table),

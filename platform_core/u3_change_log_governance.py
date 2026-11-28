@@ -30,7 +30,13 @@ def _owner_inventory(project_dir: Path, stream: str) -> dict[str, Any]:
             path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10
         )) as database:
             database.row_factory = sqlite3.Row
+            database.execute("BEGIN")
             hwm = high_water_marks(database)
+            if stream not in hwm:
+                return {
+                    "available": False, "reason": "HWM_STREAM_MISSING",
+                    "path": str(path),
+                }
             row = database.execute(
                 "SELECT MIN(sequence),MAX(sequence),COUNT(*) FROM owner_change_log "
                 "WHERE stream=?", (stream,)
@@ -48,7 +54,7 @@ def _owner_inventory(project_dir: Path, stream: str) -> dict[str, Any]:
             "file_bytes": path.stat().st_size,
             "wal_bytes": (path.with_name(path.name + "-wal")).stat().st_size
             if path.with_name(path.name + "-wal").is_file() else 0,
-            "high_water_sequence": int(hwm.get(stream, 0)),
+            "high_water_sequence": int(hwm[stream]),
             "min_sequence": int(row[0]) if row and row[0] is not None else None,
             "max_sequence": int(row[1]) if row and row[1] is not None else None,
             "row_count": int(row[2]) if row else 0,
@@ -64,9 +70,21 @@ def owner_change_log_inventory(project_dir: str | Path) -> dict[str, Any]:
     streams = {
         stream: _owner_inventory(project, stream) for stream in STREAMS
     }
+    physical: dict[str, int] = {}
+    for row in streams.values():
+        path = str(row.get("path") or "")
+        if path:
+            physical[path] = int(row.get("file_bytes") or 0)
+    shared = {
+        stream: stream in {"materials", "negative_pool"}
+        for stream in STREAMS
+    }
     return {
         "project_dir": str(project),
         "streams": streams,
+        "shared_physical_database": shared,
+        "physical_database_bytes": physical,
+        "physical_total_bytes": sum(physical.values()),
         "available": all(row.get("available") for row in streams.values()),
     }
 
