@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import sqlite3
 import uuid
 
 from PIL import Image
@@ -176,6 +177,48 @@ def test_filtered_delete_estimate_keeps_exclusions_in_frozen_range(client, tmp_p
     })
     assert clear.status_code == 409
     assert "清空项目" in str(clear.json().get("detail"))
+
+
+def governed_delete_selection(client, pid, selection):
+    import app as app_module
+    from platform_core.task_runtime import Scheduler, TaskStatus
+    from platform_core.worker_registry import build_worker_registration
+    base = f'/api/v62/projects/{pid}/material-batches'
+    estimated = client.post(base + '/estimate', json={'operation': 'DELETE_INDEX', 'selection_spec': selection})
+    estimated.raise_for_status()
+    preview = estimated.json()['deletion_preview']
+    response = client.post(base, json={'operation': 'DELETE_INDEX', 'selection_spec': estimated.json()['selection_spec'],
+        'options': {'deletion_plan_id': preview['plan_id'], 'confirmation_credential': preview['confirmation_credential']}})
+    assert response.status_code == 202, response.text
+    repository, artifacts = app_module.shared_task_repository(), app_module.shared_task_artifacts()
+    handlers, capabilities = build_worker_registration(app_module.DATA_DIR, {'materials'})
+    scheduler = Scheduler(repository, artifacts, f'governance-filtered-{uuid.uuid4().hex}', handlers, capabilities,
+        lease_seconds=5, poll_seconds=0.01)
+    task_id = response.json()['task_id']
+    for _ in range(50):
+        if repository.get(task_id).status in {TaskStatus.SUCCEEDED, TaskStatus.FAILED}:
+            break
+        assert scheduler.run_once()
+    assert repository.get(task_id).status is TaskStatus.SUCCEEDED
+    return response.json()
+
+
+def test_filtered_delete_executes_exclusions_and_retains_excluded_material(client, tmp_path):
+    project_id, _source_id, _root, first = create_external_material(client, tmp_path)
+    second = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("c.jpg", jpg(), "image/jpeg"))],
+        data={"storage_source_id": _source_id},
+    ).json()["uploaded"][0]
+    governed_delete_selection(client, project_id, {
+        "scope": "FILTERED", "filters": {}, "excluded_image_ids": [first["id"]],
+    })
+    with sqlite3.connect(app_module.project_dir(project_id) / "materials.sqlite3") as database:
+        retired = {row[0] for row in database.execute(
+            "SELECT image_id FROM material_retirements"
+        )}
+    assert second["id"] in retired
+    assert first["id"] not in retired
 
 
 def governed_delete(client, pid, image_ids):
