@@ -25,7 +25,36 @@ MATERIAL_STREAM = "materials"
 ANNOTATION_STREAM = "annotations"
 NEGATIVE_POOL_STREAM = "negative_pool"
 STREAMS = (MATERIAL_STREAM, ANNOTATION_STREAM, NEGATIVE_POOL_STREAM)
-EVENT_SCHEMA_VERSION = 1
+EVENT_SCHEMA_VERSION = 2
+
+#: Real SQLite primary-key columns of every historical evidence table. The
+#: order must match ``PRAGMA table_info`` (the P0 exporter uses that order), so
+#: the incremental evidence row identity is byte-for-byte the same hash.
+EVIDENCE_KEY_COLUMNS: dict[str, tuple[str, ...]] = {
+    "material_migrations": ("source",),
+    "material_storage_audit": ("task_id", "image_id"),
+    "material_retirements": ("task_id", "image_id"),
+    "material_cleanup_deferred": ("cleanup_id",),
+    "material_assignment_receipts": ("task_id", "image_id"),
+    "negative_pool_operations": ("operation_id",),
+    "annotation_delete_backup": ("token", "image_id"),
+    "annotation_candidate_commits": ("task_id", "image_id"),
+    "annotation_negative_reviews": (
+        "image_id", "source_version", "actor_id",
+        "reviewed_scope_json", "source_content_sha256",
+    ),
+    "task_negative_confirmations": ("receipt_id",),
+}
+
+
+def evidence_row_key(table: str, row: Mapping[str, Any]) -> str:
+    """P0-compatible evidence identity: SHA256 of the real primary-key values."""
+    columns = EVIDENCE_KEY_COLUMNS[str(table)]
+    values = [row.get(name) for name in columns]
+    body = json.dumps(
+        values, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 _DDL = (
     """
@@ -45,6 +74,7 @@ _DDL = (
         schema_version INTEGER NOT NULL,
         payload_json TEXT NOT NULL,
         payload_digest TEXT NOT NULL,
+        event_digest TEXT,
         created_at TEXT NOT NULL,
         PRIMARY KEY(stream, sequence)
     )
@@ -80,6 +110,20 @@ def payload_digest(payload: Any) -> str:
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
+def event_envelope_digest(event: Mapping[str, Any]) -> str:
+    """Digest over the full immutable event envelope and its payload."""
+    return payload_digest({
+        "stream": str(event["stream"]),
+        "sequence": int(event["sequence"]),
+        "event_kind": str(event["event_kind"]),
+        "entity_type": str(event["entity_type"]),
+        "entity_id": str(event["entity_id"]),
+        "project_id": str(event["project_id"]),
+        "schema_version": int(event["schema_version"]),
+        "payload": event["payload"],
+    })
+
+
 def project_id_for_database(database: sqlite3.Connection) -> str:
     """Derive the owner project id from the database file location."""
     row = database.execute(
@@ -105,6 +149,14 @@ def ensure_change_log(
     """Create the append-only log additively; safe on an existing database."""
     for statement in _DDL:
         database.execute(statement)
+    columns = {
+        str(row[1])
+        for row in database.execute("PRAGMA table_info(owner_change_log)")
+    }
+    if "event_digest" not in columns:
+        # v1 log rows have no envelope digest; they remain readable and are
+        # verified with the historical payload-only digest contract.
+        database.execute("ALTER TABLE owner_change_log ADD COLUMN event_digest TEXT")
     for stream in streams:
         database.execute(
             "INSERT OR IGNORE INTO owner_change_meta(stream, last_sequence) "
@@ -149,8 +201,9 @@ def append_events(
     if not prepared:
         return 0
     project = str(project_id or project_id_for_database(database))
-    encoded = []
-    for event in prepared:
+    first = _allocate(database, stream, len(prepared))
+    rows = []
+    for index, event in enumerate(prepared):
         kind = str(event.get("event_kind") or "upsert")
         if kind not in {"upsert", "delete"}:
             raise ValueError(f"unsupported owner change event kind: {kind}")
@@ -161,29 +214,32 @@ def append_events(
         payload = event.get("payload")
         if not isinstance(payload, Mapping):
             raise ValueError("owner change event payload must be an object")
+        sequence = first + index
         payload_json = canonical_json(dict(payload))
-        encoded.append((
-            stream,
-            kind,
-            entity_type,
-            entity_id,
-            project,
-            int(schema_version),
-            payload_json,
+        envelope = {
+            "stream": stream,
+            "sequence": sequence,
+            "event_kind": kind,
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "project_id": project,
+            "schema_version": int(schema_version),
+            "payload": dict(payload),
+        }
+        rows.append((
+            stream, sequence, kind, entity_type, entity_id, project,
+            int(schema_version), payload_json,
             hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+            payload_digest(envelope),
         ))
-    first = _allocate(database, stream, len(encoded))
     database.executemany(
         "INSERT INTO owner_change_log("
         "stream, sequence, event_kind, entity_type, entity_id, project_id, "
-        "schema_version, payload_json, payload_digest, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
-        (
-            (event[0], first + index, *event[1:])
-            for index, event in enumerate(encoded)
-        ),
+        "schema_version, payload_json, payload_digest, event_digest, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
+        rows,
     )
-    return len(encoded)
+    return len(rows)
 
 
 def append_event(
@@ -210,23 +266,26 @@ def append_event(
 
 
 def change_log_ready(database: sqlite3.Connection) -> bool:
-    """Cheap probe used by low-level writers that may run before initialization."""
+    """True when the log table and the v2 envelope digest column exist."""
     try:
-        return database.execute(
+        if database.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='owner_change_log'"
-        ).fetchone() is not None
+        ).fetchone() is None:
+            return False
+        return any(
+            str(row[1]) == "event_digest"
+            for row in database.execute("PRAGMA table_info(owner_change_log)")
+        )
     except sqlite3.Error:
         return False
 
 
 def high_water_marks(database: sqlite3.Connection) -> dict[str, int]:
-    try:
-        rows = database.execute(
-            "SELECT stream, last_sequence FROM owner_change_meta ORDER BY stream"
-        ).fetchall()
-    except sqlite3.Error:
-        return {}
+    """Strict high-water read: a SQL failure must not look like an empty log."""
+    rows = database.execute(
+        "SELECT stream, last_sequence FROM owner_change_meta ORDER BY stream"
+    ).fetchall()
     return {str(row[0]): int(row[1]) for row in rows}
 
 
@@ -243,8 +302,8 @@ def read_events(
         raise ValueError("owner change page size must be between 1 and 1000")
     rows = database.execute(
         "SELECT stream, sequence, event_kind, entity_type, entity_id, "
-        "project_id, schema_version, payload_json, payload_digest, created_at "
-        "FROM owner_change_log WHERE stream=? AND sequence>? "
+        "project_id, schema_version, payload_json, payload_digest, event_digest, "
+        "created_at FROM owner_change_log WHERE stream=? AND sequence>? "
         "ORDER BY sequence LIMIT ?",
         (str(stream), int(after_sequence), int(limit)),
     ).fetchall()
@@ -261,12 +320,20 @@ def read_events(
             "payload": json.loads(row[7]),
             "payload_json": str(row[7]),
             "payload_digest": str(row[8]),
-            "created_at": str(row[9]),
+            "event_digest": str(row[9]) if row[9] else None,
+            "created_at": str(row[10]),
         }
         if project_id is not None and event["project_id"] != str(project_id):
             raise ValueError("owner change event belongs to another project")
         if payload_digest(event["payload"]) != event["payload_digest"]:
-            raise ValueError("owner change event digest does not match its payload")
+            raise ValueError("owner change event payload digest does not match")
+        if event["schema_version"] >= 2:
+            if not event["event_digest"]:
+                raise ValueError("v2 owner change event has no envelope digest")
+            if event_envelope_digest(event) != event["event_digest"]:
+                raise ValueError("owner change event envelope digest does not match")
+        elif event["event_digest"] is not None:
+            raise ValueError("v1 owner change event unexpectedly carries an envelope digest")
         result.append(event)
     return result
 
@@ -546,20 +613,21 @@ def append_evidence_event(
     database: sqlite3.Connection,
     store: str,
     table: str,
-    row_key: str,
     row: Mapping[str, Any],
     *,
     event_kind: str = "upsert",
     project_id: str | None = None,
 ) -> None:
+    key = evidence_row_key(table, row)
+    schema_version = int(database.execute("PRAGMA user_version").fetchone()[0])
     append_event(
         database,
         MATERIAL_STREAM if store == "materials" else ANNOTATION_STREAM,
         event_kind,
         f"evidence:{table}",
-        str(row_key),
-        {"store": str(store), "table": str(table), "row_key": str(row_key),
-         "row": dict(row)},
+        key,
+        {"store": str(store), "table": str(table), "row_key": key,
+         "schema_version": schema_version, "row": dict(row)},
         project_id=project_id,
     )
 
@@ -567,25 +635,27 @@ def append_evidence_event(
 def append_evidence_events(
     database: sqlite3.Connection,
     store: str,
-    entries: Iterable[tuple[str, str, Mapping[str, Any]]],
+    entries: Iterable[tuple[str, Mapping[str, Any]]],
     *,
     event_kind: str = "upsert",
     project_id: str | None = None,
 ) -> int:
-    prepared = [
-        {
+    prepared = []
+    schema_version = int(database.execute("PRAGMA user_version").fetchone()[0])
+    for table, row in entries:
+        key = evidence_row_key(table, row)
+        prepared.append({
             "event_kind": event_kind,
             "entity_type": f"evidence:{table}",
-            "entity_id": str(row_key),
+            "entity_id": key,
             "payload": {
                 "store": str(store),
                 "table": str(table),
-                "row_key": str(row_key),
+                "row_key": key,
+                "schema_version": schema_version,
                 "row": dict(row),
             },
-        }
-        for table, row_key, row in entries
-    ]
+        })
     return append_events(
         database,
         MATERIAL_STREAM if store == "materials" else ANNOTATION_STREAM,

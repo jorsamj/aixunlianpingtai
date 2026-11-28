@@ -32,10 +32,26 @@ from .u3_owner_change_log import (
     MATERIAL_STREAM,
     NEGATIVE_POOL_STREAM,
     STREAMS,
+    EVIDENCE_KEY_COLUMNS,
+    evidence_row_key,
+    high_water_marks,
     payload_digest,
     read_events,
 )
-from .u3_shadow import SCHEMA_NAME
+from .u3_shadow import (
+    REVISION_STORES,
+    SCHEMA_NAME,
+    _declared_snapshot_id,
+    _revision_vector,
+    _store_digest,
+    export_project_snapshot,
+    import_project_snapshot,
+    read_target_snapshot,
+    reconcile,
+    snapshot_evidence_streams,
+    snapshot_integrity_error,
+    _insert_import_ledger,
+)
 
 _STREAM_DATABASE = {
     MATERIAL_STREAM: "materials.sqlite3",
@@ -53,8 +69,20 @@ _SCHEMA_DDL = (
         entity_type TEXT NOT NULL,
         entity_id TEXT NOT NULL,
         payload_digest CHAR(64) NOT NULL,
+        event_digest CHAR(64),
         applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (project_id, store, sequence)
+    )
+    """,
+    f"""
+    CREATE TABLE IF NOT EXISTS {SCHEMA_NAME}.u3_projection_baseline (
+        project_id TEXT NOT NULL,
+        store TEXT NOT NULL,
+        baseline_id TEXT NOT NULL,
+        snapshot_id TEXT NOT NULL,
+        high_water_sequence BIGINT NOT NULL,
+        established_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (project_id, store)
     )
     """,
 )
@@ -68,9 +96,22 @@ class U3IncrementalSyncError(RuntimeError):
 
 
 def ensure_incremental_schema(connection) -> None:
-    """Create the B2-only consumption evidence table (additive, idempotent)."""
+    """Create the B2/B3-only consumption evidence tables (additive, idempotent)."""
     for statement in _SCHEMA_DDL:
         connection.execute(statement)
+    columns = {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema=%s AND table_name='u3_applied_owner_event'",
+            (SCHEMA_NAME,),
+        ).fetchall()
+    }
+    if "event_digest" not in columns:
+        connection.execute(
+            f"ALTER TABLE {SCHEMA_NAME}.u3_applied_owner_event "
+            "ADD COLUMN event_digest CHAR(64)"
+        )
 
 
 def _open_owner_database(project_dir: str | Path, stream: str) -> sqlite3.Connection:
@@ -89,7 +130,34 @@ def _open_owner_database(project_dir: str | Path, stream: str) -> sqlite3.Connec
     return connection
 
 
-def _cursor(connection, project_id: str, stream: str) -> int:
+def _project_transaction_lock(connection, project_id: str) -> None:
+    """The same project-level advisory lock used by full snapshot import."""
+    connection.execute(
+        "SELECT pg_advisory_xact_lock(hashtext(%s))",
+        (f"u3_import:{project_id}",),
+    )
+
+
+def _baseline(connection, project_id: str, stream: str) -> dict[str, Any] | None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT baseline_id, snapshot_id, high_water_sequence "
+            f"FROM {SCHEMA_NAME}.u3_projection_baseline "
+            "WHERE project_id=%s AND store=%s",
+            (project_id, stream),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        return None
+    return {
+        "baseline_id": str(row[0]),
+        "snapshot_id": str(row[1]),
+        "high_water_sequence": int(row[2]),
+    }
+
+
+def _cursor(connection, project_id: str, stream: str) -> tuple[int, dict[str, Any] | None]:
+    baseline = _baseline(connection, project_id, stream)
     with connection.cursor() as cursor:
         cursor.execute(
             f"SELECT last_applied_seq FROM {SCHEMA_NAME}.u3_projection_cursor "
@@ -97,18 +165,129 @@ def _cursor(connection, project_id: str, stream: str) -> int:
             (project_id, stream),
         )
         row = cursor.fetchone()
-    return int(row[0]) if row is not None and row[0] is not None else 0
+    if row is not None and row[0] is not None:
+        return int(row[0]), baseline
+    if baseline is not None:
+        return int(baseline["high_water_sequence"]), baseline
+    return 0, None
 
 
-def _applied_digest(connection, project_id: str, stream: str, sequence: int) -> str | None:
+def establish_baseline_from_snapshot(
+    connection, project_id: str, snapshot: Mapping[str, Any],
+    revisions: Mapping[str, Any],
+) -> bool:
+    """Bind a full import to the snapshot's per-stream high-water marks.
+
+    Called inside the full-import transaction, so data, READY state, initial
+    cursors and baseline evidence either all commit or all roll back. A legacy
+    snapshot without B3 high-water marks returns ``False`` and does not create a
+    baseline; incremental consumption then fails closed until a B3 export is
+    imported.
+    """
+    marks = snapshot.get("change_high_water_marks")
+    present = snapshot.get("change_log_present")
+    if not isinstance(marks, Mapping) or not isinstance(present, Mapping):
+        return False
+    ensure_incremental_schema(connection)
+    from .u3_shadow import _baseline_identity
+    snapshot_id = _declared_snapshot_id(snapshot)
+    baseline_id = _baseline_identity(snapshot_id, marks, present)
+    for stream in STREAMS:
+        sequence = marks.get(stream)
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:
+            raise U3IncrementalSyncError(
+                "U3_BASELINE_HIGH_WATER_INVALID",
+                "the snapshot high-water mark is invalid",
+                detail=f"stream={stream} value={sequence!r}",
+            )
+        connection.execute(
+            f"SELECT high_water_sequence FROM {SCHEMA_NAME}.u3_projection_baseline "
+            "WHERE project_id=%s AND store=%s",
+            (project_id, stream),
+        )
+        prior = connection.fetchone()
+        if prior is not None and int(prior[0]) > int(sequence):
+            raise U3IncrementalSyncError(
+                "U3_BASELINE_CURSOR_REGRESSION",
+                "the snapshot baseline is behind the established baseline",
+                detail=f"stream={stream} existing={prior[0]} incoming={sequence}",
+            )
+        connection.execute(
+            f"INSERT INTO {SCHEMA_NAME}.u3_projection_baseline"
+            "(project_id,store,baseline_id,snapshot_id,high_water_sequence,established_at) "
+            "VALUES (%s,%s,%s,%s,%s,now()) "
+            "ON CONFLICT (project_id,store) DO UPDATE SET "
+            "baseline_id=EXCLUDED.baseline_id, snapshot_id=EXCLUDED.snapshot_id, "
+            "high_water_sequence=EXCLUDED.high_water_sequence, established_at=now()",
+            (project_id, stream, baseline_id, snapshot_id, int(sequence)),
+        )
+        connection.execute(
+            f"INSERT INTO {SCHEMA_NAME}.u3_projection_cursor"
+            "(project_id,store,last_applied_seq,source_revision,updated_at) "
+            "VALUES (%s,%s,%s,%s,now()) "
+            "ON CONFLICT (project_id,store) DO UPDATE SET "
+            "last_applied_seq=GREATEST("
+            f"{SCHEMA_NAME}.u3_projection_cursor.last_applied_seq, EXCLUDED.last_applied_seq"
+            "), source_revision=EXCLUDED.source_revision, updated_at=now()",
+            (project_id, stream, int(sequence), revisions.get(stream)),
+        )
+    return True
+
+
+def read_owner_change_marks(project_dir: str | Path) -> dict[str, Any]:
+    """Strict, read-only Owner high-water marks for B3 diagnostics.
+
+    A missing/unreadable owner is reported as unavailable, never as zero.
+    """
+    result: dict[str, Any] = {}
+    for stream, filename in (
+        (MATERIAL_STREAM, "materials.sqlite3"),
+        (NEGATIVE_POOL_STREAM, "materials.sqlite3"),
+        (ANNOTATION_STREAM, "annotations.sqlite3"),
+    ):
+        path = Path(project_dir) / filename
+        if not path.is_file():
+            result[stream] = {"available": False, "reason": "OWNER_MISSING"}
+            continue
+        try:
+            with closing(_open_owner_database(project_dir, stream)) as owner:
+                marks = high_water_marks(owner)
+        except (sqlite3.Error, U3IncrementalSyncError) as error:
+            result[stream] = {"available": False, "reason": str(error)}
+            continue
+        if stream not in marks:
+            result[stream] = {"available": False, "reason": "STREAM_MISSING"}
+            continue
+        result[stream] = {
+            "available": True,
+            "high_water_sequence": int(marks[stream]),
+        }
+    return result
+
+
+def _applied_digest(connection, project_id: str, stream: str, sequence: int) -> tuple[str | None, str | None]:
     with connection.cursor() as cursor:
         cursor.execute(
-            f"SELECT payload_digest FROM {SCHEMA_NAME}.u3_applied_owner_event "
+            f"SELECT payload_digest, event_digest "
+            f"FROM {SCHEMA_NAME}.u3_applied_owner_event "
             "WHERE project_id=%s AND store=%s AND sequence=%s",
             (project_id, stream, sequence),
         )
         row = cursor.fetchone()
-    return str(row[0]) if row is not None else None
+    if row is None:
+        return None, None
+    return str(row[0]), (str(row[1]) if row[1] else None)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"SELECT payload_digest, event_digest "
+            f"FROM {SCHEMA_NAME}.u3_applied_owner_event "
+            "WHERE project_id=%s AND store=%s AND sequence=%s",
+            (project_id, stream, sequence),
+        )
+        row = cursor.fetchone()
+    if row is None:
+        return None, None
+    return str(row[0]), (str(row[1]) if row[1] else None)
 
 
 def _mark_projection_stale(connection, project_id: str) -> None:
@@ -126,30 +305,47 @@ def _advance_cursor(connection, project_id: str, stream: str, last_sequence: int
         "(project_id, store, last_applied_seq, source_revision, updated_at) "
         "VALUES (%s, %s, %s, NULL, now()) "
         "ON CONFLICT (project_id, store) DO UPDATE SET "
-        "last_applied_seq=EXCLUDED.last_applied_seq, updated_at=now()",
+        "last_applied_seq=GREATEST("
+        f"{SCHEMA_NAME}.u3_projection_cursor.last_applied_seq, EXCLUDED.last_applied_seq"
+        "), updated_at=now()",
         (project_id, stream, int(last_sequence)),
     )
 
 
 def _record_applied(connection, project_id: str, stream: str, event: Mapping[str, Any]) -> None:
-    connection.execute(
-        f"INSERT INTO {SCHEMA_NAME}.u3_applied_owner_event"
-        "(project_id, store, sequence, event_kind, entity_type, entity_id, payload_digest) "
-        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
-        "ON CONFLICT (project_id, store, sequence) DO UPDATE SET "
-        "event_kind=EXCLUDED.event_kind, entity_type=EXCLUDED.entity_type, "
-        "entity_id=EXCLUDED.entity_id, payload_digest=EXCLUDED.payload_digest",
-        (
-            project_id, stream, int(event["sequence"]), str(event["event_kind"]),
-            str(event["entity_type"]), str(event["entity_id"]),
-            str(event["payload_digest"]),
-        ),
-    )
+    event_digest = event.get("event_digest") or event["payload_digest"]
+    with connection.cursor() as cursor:
+        cursor.execute(
+            f"INSERT INTO {SCHEMA_NAME}.u3_applied_owner_event"
+            "(project_id, store, sequence, event_kind, entity_type, entity_id, "
+            "payload_digest, event_digest) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (project_id, store, sequence) DO NOTHING",
+            (
+                project_id, stream, int(event["sequence"]), str(event["event_kind"]),
+                str(event["entity_type"]), str(event["entity_id"]),
+                str(event["payload_digest"]), str(event_digest),
+            ),
+        )
+        if int(cursor.rowcount) != 1:
+            cursor.execute(
+                f"SELECT payload_digest, event_digest "
+                f"FROM {SCHEMA_NAME}.u3_applied_owner_event "
+                "WHERE project_id=%s AND store=%s AND sequence=%s",
+                (project_id, stream, int(event["sequence"])),
+            )
+            existing = cursor.fetchone()
+            if existing is None or str(existing[0]) != str(event["payload_digest"]):
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_EVENT_DIGEST_CONFLICT",
+                    "the applied-event evidence already has a different digest",
+                    detail=f"stream={stream} sequence={event['sequence']}",
+                )
 
 
 def _upsert_evidence_row(
     connection, project_id: str, store: str, table: str, row_key: str,
-    row: Mapping[str, Any],
+    row: Mapping[str, Any], *, schema_version: int | None = None,
 ) -> None:
     with connection.cursor() as cursor:
         cursor.execute(
@@ -174,10 +370,24 @@ def _upsert_evidence_row(
             )
         else:
             cursor.execute(
-                f"UPDATE {SCHEMA_NAME}.table_state SET row_count=row_count+1 "
+                f"UPDATE {SCHEMA_NAME}.table_state SET present=true, "
+                "row_count=row_count+1 "
                 "WHERE project_id=%s AND store=%s AND table_name=%s",
                 (project_id, store, table),
             )
+            if int(cursor.rowcount) == 0:
+                cursor.execute(
+                    f"INSERT INTO {SCHEMA_NAME}.table_state"
+                    "(project_id,store,table_name,present,schema_version,row_count) "
+                    "VALUES (%s,%s,%s,true,%s,1)",
+                    (project_id, store, table, schema_version),
+                )
+            elif schema_version is not None:
+                cursor.execute(
+                    f"UPDATE {SCHEMA_NAME}.table_state SET schema_version=%s "
+                    "WHERE project_id=%s AND store=%s AND table_name=%s",
+                    (schema_version, project_id, store, table),
+                )
 
 
 def _delete_evidence_row(
@@ -342,14 +552,6 @@ def _apply_confirmation(connection, project_id: str, payload: Mapping[str, Any])
             json.dumps(dict(evidence), ensure_ascii=False, sort_keys=True),
         ),
     )
-    _upsert_evidence_row(
-        connection, project_id, "annotations", "task_negative_confirmations",
-        receipt_id,
-        {
-            "receipt_id": receipt_id, "context_key": context_key,
-            "evidence_json": json.dumps(dict(evidence), ensure_ascii=False, sort_keys=True),
-        },
-    )
 
 
 def _apply_negative_pool_member(
@@ -470,6 +672,7 @@ def _apply_event(connection, project_id: str, event: Mapping[str, Any]) -> None:
                 connection, project_id, str(payload["store"]),
                 str(payload["table"]), str(payload["row_key"]),
                 payload.get("row") or {},
+                schema_version=payload.get("schema_version"),
             )
     else:
         raise U3IncrementalSyncError(
@@ -493,7 +696,7 @@ def _validate_batch(
                     f"actual={event['sequence']}"
                 ),
             )
-        if int(event["schema_version"]) != EVENT_SCHEMA_VERSION:
+        if int(event["schema_version"]) not in {1, EVENT_SCHEMA_VERSION}:
             raise U3IncrementalSyncError(
                 "U3_INCREMENTAL_SCHEMA_UNSUPPORTED",
                 "the change event schema version is not supported",
@@ -511,6 +714,90 @@ def _validate_batch(
                 "U3_INCREMENTAL_EVENT_DIGEST_CONFLICT",
                 "the persisted change event digest does not match its payload",
                 detail=f"stream={stream} sequence={event['sequence']}",
+            )
+        if str(event["event_kind"]) not in {"upsert", "delete"}:
+            raise U3IncrementalSyncError(
+                "U3_INCREMENTAL_EVENT_UNSUPPORTED",
+                "the change event kind is not supported",
+                detail=f"sequence={event['sequence']} kind={event['event_kind']}",
+            )
+        entity_type = str(event["entity_type"])
+        entity_id = str(event["entity_id"])
+        payload = event["payload"]
+        if entity_type == "material":
+            if str(payload.get("id") or "") != entity_id:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "material event entity and payload identity differ",
+                    detail=f"sequence={event['sequence']}",
+                )
+        elif entity_type == "annotation":
+            if str(payload.get("image_id") or "") != entity_id:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "annotation event entity and payload identity differ",
+                    detail=f"sequence={event['sequence']}",
+                )
+        elif entity_type == "task_negative_confirmation":
+            if str(payload.get("receipt_id") or "") != entity_id:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "confirmation event entity and payload identity differ",
+                    detail=f"sequence={event['sequence']}",
+                )
+        elif entity_type == "negative_pool_member":
+            if str(payload.get("material_id") or "") != entity_id:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "pool member event entity and payload identity differ",
+                    detail=f"sequence={event['sequence']}",
+                )
+        elif entity_type == "negative_pool_category":
+            if str(payload.get("id") or "") != entity_id:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "pool category event entity and payload identity differ",
+                    detail=f"sequence={event['sequence']}",
+                )
+        elif entity_type.startswith("evidence:"):
+            table = entity_type.partition(":")[2]
+            if str(payload.get("table") or "") != table:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "evidence event table and entity type differ",
+                    detail=f"sequence={event['sequence']}",
+                )
+            row_key = str(payload.get("row_key") or "")
+            row = payload.get("row")
+            if not isinstance(row, Mapping) or not row_key:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "evidence event has no full row identity",
+                    detail=f"sequence={event['sequence']} table={table}",
+                )
+            if row_key != entity_id:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "evidence event row key and entity id differ",
+                    detail=f"sequence={event['sequence']} table={table}",
+                )
+            if table not in EVIDENCE_KEY_COLUMNS:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_EVENT_UNSUPPORTED",
+                    "the evidence table is not a known owner evidence table",
+                    detail=f"sequence={event['sequence']} table={table}",
+                )
+            if evidence_row_key(table, row) != row_key:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_ENTITY_MISMATCH",
+                    "evidence row identity does not match its real primary key",
+                    detail=f"sequence={event['sequence']} table={table}",
+                )
+        else:
+            raise U3IncrementalSyncError(
+                "U3_INCREMENTAL_EVENT_UNSUPPORTED",
+                "the change event entity type is not supported",
+                detail=f"sequence={event['sequence']} entity_type={entity_type}",
             )
         expected += 1
 
@@ -548,8 +835,36 @@ def apply_incremental_batch(
         )
     with closing(_open_owner_database(project_dir, stream)) as owner:
         with connection.transaction():
+            _project_transaction_lock(connection, project)
             ensure_incremental_schema(connection)
-            cursor = _cursor(connection, project, stream)
+            cursor, baseline = _cursor(connection, project, stream)
+            if baseline is None:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_BASELINE_MISSING",
+                    "the stream has no trusted baseline; import a full snapshot first",
+                    detail=f"stream={stream}",
+                )
+            try:
+                marks = high_water_marks(owner)
+            except sqlite3.Error as error:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_OWNER_UNAVAILABLE",
+                    "the owner high-water mark cannot be read",
+                    detail=str(error),
+                ) from error
+            owner_hwm = marks.get(stream)
+            if owner_hwm is None:
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_LOG_MISSING",
+                    "the owner change stream is missing",
+                    detail=f"stream={stream} marks={sorted(marks)}",
+                )
+            if cursor > int(owner_hwm):
+                raise U3IncrementalSyncError(
+                    "U3_INCREMENTAL_CURSOR_AHEAD",
+                    "the projection cursor is ahead of the owner log",
+                    detail=f"stream={stream} cursor={cursor} owner={owner_hwm}",
+                )
             try:
                 events = read_events(owner, stream, cursor, int(limit))
             except ValueError as error:
@@ -559,9 +874,18 @@ def apply_incremental_batch(
                     detail=str(error),
                 ) from error
             if not events:
+                if cursor != int(owner_hwm):
+                    raise U3IncrementalSyncError(
+                        "U3_INCREMENTAL_LOG_TAIL_MISSING",
+                        "the owner high-water mark is ahead but no events are readable",
+                        detail=(
+                            f"stream={stream} cursor={cursor} owner={owner_hwm}"
+                        ),
+                    )
                 return {
                     "stream": stream, "applied": 0, "skipped": 0,
                     "last_sequence": cursor, "has_more": False,
+                    "caught_up": True,
                 }
             _validate_batch(events, {stream: cursor}, project, stream)
             applied = 0
@@ -570,15 +894,23 @@ def apply_incremental_batch(
             stale_marked = False
             for event in events:
                 sequence = int(event["sequence"])
-                prior = _applied_digest(connection, project, stream, sequence)
-                if prior is not None:
-                    if prior != str(event["payload_digest"]):
+                prior_payload, prior_event = _applied_digest(
+                    connection, project, stream, sequence
+                )
+                if prior_payload is not None:
+                    expected_digest = str(
+                        event.get("event_digest") or event["payload_digest"]
+                    )
+                    if prior_payload != str(event["payload_digest"]) or (
+                        prior_event is not None and prior_event != expected_digest
+                    ):
                         raise U3IncrementalSyncError(
                             "U3_INCREMENTAL_EVENT_DIGEST_CONFLICT",
                             "the same event identity has a different digest",
                             detail=(
                                 f"stream={stream} sequence={sequence} "
-                                f"prior={prior} current={event['payload_digest']}"
+                                f"prior={prior_payload}/{prior_event} "
+                                f"current={event['payload_digest']}/{expected_digest}"
                             ),
                         )
                     skipped += 1
@@ -589,6 +921,12 @@ def apply_incremental_batch(
                         "U3_INCREMENTAL_CURSOR_EVIDENCE_MISSING",
                         "the cursor is ahead of the applied event evidence",
                         detail=f"stream={stream} sequence={sequence} cursor={cursor}",
+                    )
+                if int(sequence) > int(owner_hwm):
+                    raise U3IncrementalSyncError(
+                        "U3_INCREMENTAL_EVENT_BEYOND_HIGH_WATER",
+                        "an event is beyond the verified owner high-water mark",
+                        detail=f"stream={stream} sequence={sequence} owner={owner_hwm}",
                     )
                 if not stale_marked:
                     _mark_projection_stale(connection, project)
@@ -603,5 +941,192 @@ def apply_incremental_batch(
                 "applied": applied,
                 "skipped": skipped,
                 "last_sequence": previous,
-                "has_more": bool(events) and len(events) == int(limit),
+                "has_more": previous < int(owner_hwm),
+                "caught_up": previous >= int(owner_hwm),
             }
+
+
+def _publish_ready_state(connection, project_id: str, snapshot: Mapping[str, Any]) -> None:
+    from .u3_shadow import _revision_vector, _store_digest, snapshot_evidence_streams
+
+    revisions = snapshot.get("revisions") or {}
+    digests = snapshot.get("digests") or {}
+    streams = snapshot_evidence_streams(snapshot)
+    store_digests = {
+        store: _store_digest(digests, store) for store in REVISION_STORES
+    }
+    revision_vector = _revision_vector(revisions, store_digests, streams)
+    confirmation = streams["negative_confirmation"]
+    connection.execute(
+        f"INSERT INTO {SCHEMA_NAME}.picker_snapshot_state(project_id,snapshot_id,"
+        "content_digest,material_revision,annotation_revision,negative_pool_revision,"
+        "materials_digest,annotations_digest,negative_pool_digest,"
+        "negative_confirmation_revision,negative_confirmation_generation,"
+        "negative_confirmation_digest,revision_vector,status,captured_at,published_at) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,'READY',NULL,now()) "
+        "ON CONFLICT (project_id) DO UPDATE SET snapshot_id=EXCLUDED.snapshot_id,"
+        "content_digest=EXCLUDED.content_digest,"
+        "material_revision=EXCLUDED.material_revision,"
+        "annotation_revision=EXCLUDED.annotation_revision,"
+        "negative_pool_revision=EXCLUDED.negative_pool_revision,"
+        "materials_digest=EXCLUDED.materials_digest,"
+        "annotations_digest=EXCLUDED.annotations_digest,"
+        "negative_pool_digest=EXCLUDED.negative_pool_digest,"
+        "negative_confirmation_revision=EXCLUDED.negative_confirmation_revision,"
+        "negative_confirmation_generation=EXCLUDED.negative_confirmation_generation,"
+        "negative_confirmation_digest=EXCLUDED.negative_confirmation_digest,"
+        "revision_vector=EXCLUDED.revision_vector,status='READY',published_at=now()",
+        (
+            project_id, str(snapshot["snapshot_id"]),
+            str(snapshot.get("content_digest") or ""),
+            revisions.get("materials"), revisions.get("annotations"),
+            revisions.get("negative_pool"),
+            store_digests["materials"], store_digests["annotations"],
+            store_digests["negative_pool"],
+            int(confirmation["revision"]), int(confirmation["generation"]),
+            str(confirmation["digest"]),
+            json.dumps(revision_vector, ensure_ascii=False, sort_keys=True),
+        ),
+    )
+    for store, revision in revisions.items():
+        connection.execute(
+            f"INSERT INTO {SCHEMA_NAME}.store_revision(project_id,store,revision) "
+            "VALUES(%s,%s,%s) ON CONFLICT (project_id,store) DO UPDATE SET "
+            "revision=EXCLUDED.revision, recorded_at=now()",
+            (project_id, store, revision),
+        )
+        connection.execute(
+            f"UPDATE {SCHEMA_NAME}.u3_projection_cursor SET source_revision=%s, "
+            "updated_at=now() WHERE project_id=%s AND store=%s",
+            (revision, project_id, store),
+        )
+    with connection.cursor() as cursor:
+        _insert_import_ledger(
+            cursor,
+            project_id=project_id,
+            snapshot_id=str(snapshot["snapshot_id"]),
+            snapshot_digest=str(snapshot.get("content_digest") or ""),
+            revision_vector=revision_vector,
+            mode="incremental-publish",
+            outcome="APPLIED",
+        )
+
+
+def publish_ready(
+    connection, *, project_dir: str | Path, project_id: str,
+) -> dict[str, Any]:
+    """Publish a new READY identity after all streams are caught up.
+
+    The lifecycle fence keeps Owner writes out while the final Owner snapshot and
+    target projection are compared. The publication transaction re-checks the
+    persisted cursors and baseline before writing state, revisions and identity.
+    """
+    from .material_repository import material_annotation_lifecycle_fence
+
+    project = str(project_id or "").strip()
+    if not project:
+        raise U3IncrementalSyncError(
+            "U3_INCREMENTAL_PROJECT_MISSING", "project_id is required"
+        )
+    with material_annotation_lifecycle_fence(project_dir, timeout=60):
+        snapshot = export_project_snapshot(project_dir, project)
+        integrity = snapshot_integrity_error(snapshot)
+        if integrity:
+            raise U3IncrementalSyncError(
+                "U3_READY_SNAPSHOT_INTEGRITY",
+                "the owner snapshot does not match its own identity",
+                detail=str(integrity),
+            )
+        marks = snapshot.get("change_high_water_marks") or {}
+        target = read_target_snapshot(connection, project)
+        compare_target = dict(target)
+        compare_target["revisions"] = dict(snapshot.get("revisions") or {})
+        report = reconcile(snapshot, compare_target)
+        if not report["same"]:
+            return {
+                "published": False,
+                "code": "U3_READY_PROJECTION_MISMATCH",
+                "blocking_findings": report["blocking_findings"],
+            }
+        with connection.transaction():
+            _project_transaction_lock(connection, project)
+            ensure_incremental_schema(connection)
+            for stream in STREAMS:
+                cursor_value, baseline = _cursor(connection, project, stream)
+                if baseline is None:
+                    return {
+                        "published": False,
+                        "code": "U3_READY_BASELINE_MISSING",
+                        "stream": stream,
+                    }
+                if int(marks.get(stream, -1)) != cursor_value:
+                    return {
+                        "published": False,
+                        "code": "U3_READY_STREAM_NOT_ALIGNED",
+                        "stream": stream,
+                        "cursor": cursor_value,
+                        "owner": marks.get(stream),
+                    }
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM {SCHEMA_NAME}.task_negative_confirmation c "
+                    f"LEFT JOIN {SCHEMA_NAME}.annotation a "
+                    "ON a.project_id=c.project_id AND a.image_id=c.image_id "
+                    "WHERE c.project_id=%s AND a.image_id IS NULL",
+                    (project,),
+                )
+                if int(cursor.fetchone()[0]):
+                    return {
+                        "published": False,
+                        "code": "U3_READY_CONFIRMATION_WITHOUT_ANNOTATION",
+                    }
+            _publish_ready_state(connection, project, snapshot)
+        return {
+            "published": True,
+            "snapshot_id": str(snapshot["snapshot_id"]),
+            "baseline_id": str(snapshot.get("baseline_id") or ""),
+            "change_high_water_marks": dict(marks),
+            "revisions": dict(snapshot.get("revisions") or {}),
+        }
+
+
+def synchronize_project(
+    connection, *, project_dir: str | Path, project_id: str,
+    limit: int = 200, max_batches: int = 100,
+) -> dict[str, Any]:
+    """Drain all streams in bounded batches, then publish READY if aligned."""
+    if int(max_batches) < 1:
+        raise U3IncrementalSyncError(
+            "U3_INCREMENTAL_LIMIT_INVALID", "max_batches must be positive"
+        )
+    applied = 0
+    batches = 0
+    while batches < int(max_batches):
+        progressed = False
+        for stream in STREAMS:
+            result = apply_incremental_batch(
+                connection, project_dir=project_dir,
+                project_id=project_id, stream=stream, limit=limit,
+            )
+            applied += int(result["applied"])
+            batches += 1
+            if result.get("has_more"):
+                progressed = True
+        if not progressed:
+            published = publish_ready(
+                connection, project_dir=project_dir, project_id=project_id
+            )
+            return {
+                "status": "READY" if published.get("published") else "NOT_READY",
+                "applied": applied,
+                "batches": batches,
+                "publication": published,
+            }
+    return {
+        "status": "INCOMPLETE",
+        "applied": applied,
+        "batches": batches,
+        "publication": {
+            "published": False, "code": "U3_INCREMENTAL_BATCH_LIMIT"
+        },
+    }

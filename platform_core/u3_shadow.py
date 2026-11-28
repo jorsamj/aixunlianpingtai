@@ -380,6 +380,8 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
 
     table_state: dict[str, dict[str, Any]] = {}
     stores: dict[str, Any] = {}
+    materials_change: dict[str, Any] = {}
+    annotations_change: dict[str, Any] = {}
     with material_annotation_lifecycle_fence(project, timeout=60):
         with closing(_open_read_only(materials_db)) as database:
             materials_schema_version = _require_schema(
@@ -461,6 +463,9 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 "SELECT revision FROM negative_pool_meta WHERE id=1"
             ).fetchone()
             pool_revision = int(pool_row[0]) if pool_row else None
+            materials_change = _owner_change_marks(
+                database, ("materials", "negative_pool")
+            )
             materials_schema = materials_schema_version
         if not annotations_db.is_file():
             raise U3MigrationError(
@@ -549,6 +554,9 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 if annotations_structure_generation_row else 0
             )
             annotations_schema = annotations_schema_version
+            annotations_change = _owner_change_marks(
+                database, ("annotations",)
+            )
         # The owner must be able to prove its evidence-table set. A table created or
         # dropped outside the owner (raw SQL, external migration) is not inferred to
         # be safe: the export fails closed until the owner certifies it.
@@ -614,6 +622,9 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
             )
             after_materials_revision = int(after_row[0]) if after_row else None
             after_pool_revision = int(after_pool[0]) if after_pool else None
+            after_materials_change = _owner_change_marks(
+                database, ("materials", "negative_pool")
+            )
             after_material_evidence_generation = (
                 int(after_generation[0]) if after_generation else 0
             )
@@ -662,6 +673,9 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
                 int(after_annotation_structure_generation[0])
                 if after_annotation_structure_generation else 0
             )
+            after_annotations_change = _owner_change_marks(
+                database, ("annotations",)
+            )
     if (after_materials_revision, after_pool_revision, after_annotation_revision) != (
         material_revision, pool_revision, annotation_revision
     ) or (
@@ -681,6 +695,10 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         materials_observed, annotations_observed,
         materials_structure_generation, annotations_structure_generation,
         materials_recorded, annotations_recorded,
+    ) or (
+        after_materials_change, after_annotations_change
+    ) != (
+        materials_change, annotations_change
     ):
         raise U3MigrationError(
             "U3_SNAPSHOT_SOURCE_CHANGED",
@@ -737,6 +755,17 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         "structure_generation": annotations_structure_generation,
         "structure_certified": annotations_structure_certified,
     })
+    change_marks = {
+        **materials_change["marks"],
+        **annotations_change["marks"],
+    }
+    change_log_present = {
+        "materials": bool(materials_change["present"]),
+        "annotations": bool(annotations_change["present"]),
+    }
+    snapshot_id = _snapshot_identity(
+        project_id, content_digest, revisions, evidence_streams
+    )
     return {
         "contract_version": CONTRACT_VERSION,
         "project_id": str(project_id),
@@ -747,12 +776,15 @@ def _export_project_snapshot(project_dir: str | Path, project_id: str) -> dict[s
         "schema_versions": {"materials": materials_schema, "annotations": annotations_schema},
         "revisions": revisions,
         "evidence_streams": evidence_streams,
+        "change_high_water_marks": change_marks,
+        "change_log_present": change_log_present,
         "consistency": "MATERIAL_ANNOTATION_LIFECYCLE_FENCE+REVISION_RECHECK",
         "content_digest": content_digest,
         # Deterministic identity: the same owner state always names the same
         # snapshot, so a replay is recognisable without a random token.
-        "snapshot_id": _snapshot_identity(
-            project_id, content_digest, revisions, evidence_streams
+        "snapshot_id": snapshot_id,
+        "baseline_id": _baseline_identity(
+            snapshot_id, change_marks, change_log_present
         ),
     }
 
@@ -1836,6 +1868,44 @@ def _snapshot_identity(
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "u3-shadow:" + body))
 
 
+def _owner_change_marks(database, streams: tuple[str, ...]) -> dict[str, Any]:
+    """Read B1 change-log high-water marks inside the caller's read transaction.
+
+    An owner database created before P3-B1 has no log table. That is recorded as
+    ``present=False`` and a zero baseline; it is never interpreted as "no data".
+    """
+    table = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='owner_change_meta'"
+    ).fetchone()
+    if table is None:
+        return {"present": False, "marks": {stream: 0 for stream in streams}}
+    rows = {
+        str(row[0]): int(row[1])
+        for row in database.execute(
+            "SELECT stream,last_sequence FROM owner_change_meta"
+        ).fetchall()
+    }
+    return {
+        "present": True,
+        "marks": {stream: int(rows.get(stream, 0)) for stream in streams},
+    }
+
+
+def _baseline_identity(
+    snapshot_id: str, marks: Mapping[str, Any], present: Mapping[str, Any],
+) -> str:
+    body = json.dumps(
+        {
+            "snapshot_id": str(snapshot_id),
+            "change_high_water_marks": dict(marks or {}),
+            "change_log_present": dict(present or {}),
+        },
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "u3-baseline:" + body))
+
+
 def _declared_snapshot_id(snapshot: Mapping[str, Any]) -> str:
     declared = str(snapshot.get("snapshot_id") or "")
     if declared:
@@ -2153,6 +2223,7 @@ def _record_refusal(connection, snapshot: Mapping[str, Any], mode: str,
 
 def import_project_snapshot(
     connection, snapshot: Mapping[str, Any], *, mode: str = "full",
+    status_override: str | None = None,
 ) -> dict[str, Any]:
     """Import one snapshot in a single transaction.
 
@@ -2171,7 +2242,9 @@ def import_project_snapshot(
     """
     ensure_schema(connection)
     try:
-        return _apply_project_snapshot(connection, snapshot, str(mode))
+        return _apply_project_snapshot(
+            connection, snapshot, str(mode), status_override=status_override
+        )
     except U3MigrationError as error:
         if error.code in REFUSAL_LEDGER_CODES:
             _record_refusal(connection, snapshot, str(mode), error)
@@ -2180,6 +2253,7 @@ def import_project_snapshot(
 
 def _apply_project_snapshot(
     connection, snapshot: Mapping[str, Any], mode: str,
+    *, status_override: str | None = None,
 ) -> dict[str, Any]:
     """Apply one validated snapshot inside a single PostgreSQL transaction."""
     if str(mode) not in {"full", "incremental"}:
@@ -2689,7 +2763,16 @@ def _apply_project_snapshot(
             confirmation_digest = str(streams["negative_confirmation"]["digest"])
             complete, _reason = pending_clear_eligible(snapshot, project_id)
             if mode == "full":
-                status = "READY" if complete else "INCOMPLETE"
+                if status_override is not None:
+                    if str(status_override) not in {"READY", "STALE", "INCOMPLETE"}:
+                        raise U3MigrationError(
+                            "U3_IMPORT_STATUS_INVALID",
+                            "the requested publication status is invalid",
+                            detail=str(status_override),
+                        )
+                    status = str(status_override)
+                else:
+                    status = "READY" if complete else "INCOMPLETE"
             else:
                 # An incremental apply only proves that the target contains the
                 # snapshot; it cannot prove that the target equals it.
@@ -2730,17 +2813,26 @@ def _apply_project_snapshot(
                     status,
                 ),
             )
-            # The cursors are part of the same commit: a failed import cannot leave
-            # a cursor ahead of the data. ``last_applied_seq`` stays NULL until the
-            # P3 change log defines per-stream sequence numbers.
-            for store in REVISION_STORES:
-                cursor.execute(
-                    f"INSERT INTO {SCHEMA_NAME}.u3_projection_cursor"
-                    "(project_id,store,last_applied_seq,source_revision) "
-                    "VALUES(%s,%s,NULL,%s) ON CONFLICT (project_id,store) DO UPDATE SET "
-                    "source_revision=EXCLUDED.source_revision, updated_at=now()",
-                    (project_id, store, revisions.get(store)),
+            # The cursors and baseline are part of the same commit: a failed
+            # import cannot leave a cursor ahead of the data. A B3 snapshot binds
+            # each stream to its high-water mark; a legacy snapshot without marks
+            # keeps the nullable cursor and no incremental baseline.
+            if mode == "full":
+                from .u3_incremental_sync import establish_baseline_from_snapshot
+                baseline_established = establish_baseline_from_snapshot(
+                    cursor, project_id, snapshot, revisions
                 )
+            else:
+                baseline_established = False
+            if not baseline_established:
+                for store in REVISION_STORES:
+                    cursor.execute(
+                        f"INSERT INTO {SCHEMA_NAME}.u3_projection_cursor"
+                        "(project_id,store,last_applied_seq,source_revision) "
+                        "VALUES(%s,%s,NULL,%s) ON CONFLICT (project_id,store) DO UPDATE SET "
+                        "source_revision=EXCLUDED.source_revision, updated_at=now()",
+                        (project_id, store, revisions.get(store)),
+                    )
             _insert_import_ledger(
                 cursor, project_id=project_id, snapshot_id=snapshot_identity,
                 snapshot_digest=str(snapshot.get("content_digest") or ""),

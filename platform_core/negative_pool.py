@@ -109,7 +109,6 @@ class NegativePool:
                     db.execute('INSERT INTO negative_pool_operations VALUES (?,?,?)', (member_receipt['operation_id'], member_receipt['identity'], json.dumps(result)))
                     append_evidence_event(
                         db, "materials", "negative_pool_operations",
-                        str(member_receipt['operation_id']),
                         {
                             "operation_id": str(member_receipt['operation_id']),
                             "identity": str(member_receipt['identity']),
@@ -169,7 +168,7 @@ class NegativePool:
                 self.materials._ensure_evidence_generation(db)
                 db.execute('INSERT INTO negative_pool_operations VALUES (?,?,?)',(str(operation_id),identity,json.dumps(result)))
                 append_evidence_event(
-                    db, "materials", "negative_pool_operations", str(operation_id),
+                    db, "materials", "negative_pool_operations",
                     {
                         "operation_id": str(operation_id),
                         "identity": identity,

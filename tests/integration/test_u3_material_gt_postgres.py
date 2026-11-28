@@ -149,8 +149,8 @@ def _fixture(tmp_path, project_id="p1"):
 
 def _clear(connection):
     with connection.cursor() as cursor:
-        for table in ("u3_shadow_import", "u3_projection_cursor", "picker_snapshot_state",
-                      "task_negative_confirmation",
+        for table in ("u3_shadow_import", "u3_projection_cursor", "u3_projection_baseline",
+                      "picker_snapshot_state", "task_negative_confirmation",
                       "negative_pool_algorithm_member", "negative_pool_link", "negative_pool_member",
                       "negative_pool_category", "annotation_label_reference", "annotation",
                       "material_annotation_scope", "material_label", "material", "store_revision"):
@@ -1252,9 +1252,11 @@ def test_failed_import_rolls_back_rows_cursors_state_and_ledger(pg, tmp_path):
         state_before = _state(connection, "q5")
         cursors_before = _cursors(connection, "q5")
         ledger_before = _ledger(connection, "q5")
-        # Every cursor was committed with the data.
+        # Every cursor was committed with the data and the B3 baseline.
         assert cursors_before == [
-            ("annotations", None, 4), ("materials", None, 7), ("negative_pool", None, 0),
+            ("annotations", snapshot["change_high_water_marks"]["annotations"], 4),
+            ("materials", snapshot["change_high_water_marks"]["materials"], 7),
+            ("negative_pool", snapshot["change_high_water_marks"]["negative_pool"], 0),
         ]
 
         newer = copy.deepcopy(snapshot)
@@ -1440,6 +1442,7 @@ def _u3_rows(connection, project_id):
         ("store_revision", "store"),
         ("picker_snapshot_state", "project_id"),
         ("u3_projection_cursor", "store"),
+        ("u3_projection_baseline", "store"),
         ("task_negative_confirmation", "receipt_id"),
     )
     rows = {}

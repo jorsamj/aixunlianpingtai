@@ -614,6 +614,10 @@ class MaterialRepository:
                     # A lazily created evidence table (e.g. negative_pool_operations)
                     # predating the trigger contract must still get its triggers.
                     return None
+                if version == _SCHEMA_VERSION and not change_log_ready(database):
+                    # A v1 change log without the envelope digest column must enter
+                    # the additive initializer once.
+                    return None
                 return version
         except sqlite3.Error:
             return None
@@ -933,15 +937,16 @@ class MaterialRepository:
                     self._write_row(database, source, _previous_payload=None)
                 if rows:
                     self._bump_revision(database)
+                imported_at = _now()
                 database.execute(
                     "INSERT INTO material_migrations(source, signature, imported_count, imported_at) VALUES (?, ?, ?, ?)",
-                    ("images.json", signature, len(rows), _now()),
+                    ("images.json", signature, len(rows), imported_at),
                 )
                 append_evidence_event(
-                    database, "materials", "material_migrations", "images.json",
+                    database, "materials", "material_migrations",
                     {
                         "source": "images.json", "signature": signature,
-                        "imported_count": len(rows), "imported_at": _now(),
+                        "imported_count": len(rows), "imported_at": imported_at,
                     },
                     project_id=self.project_path.name,
                 )
@@ -1967,12 +1972,11 @@ class MaterialRepository:
                 database.execute('INSERT INTO material_cleanup_deferred(cleanup_id,image_id,owner,payload_json,last_error,recorded_at) VALUES (?,?,?,?,?,?) ON CONFLICT(cleanup_id) DO UPDATE SET last_error=excluded.last_error',
                     (identity,str(record.get('id') or ''),str(owner),payload,str(error),_now()))
                 append_evidence_event(
-                    database, "materials", "material_cleanup_deferred", identity,
-                    {
-                        "cleanup_id": identity, "image_id": str(record.get("id") or ""),
-                        "owner": str(owner), "payload_json": payload,
-                        "last_error": str(error),
-                    },
+                    database, "materials", "material_cleanup_deferred",
+                    dict(database.execute(
+                        "SELECT * FROM material_cleanup_deferred WHERE cleanup_id=?",
+                        (identity,),
+                    ).fetchone()),
                     project_id=self.project_path.name,
                 )
                 database.execute("COMMIT")
@@ -1998,7 +2002,6 @@ class MaterialRepository:
                 if cursor.rowcount:
                     append_evidence_event(
                         database, "materials", "material_storage_audit",
-                        f"physical_{operation_id}:{image_id}",
                         {
                             "task_id": "physical_" + operation_id,
                             "image_id": str(image_id), "action": action,
@@ -2068,7 +2071,7 @@ class MaterialRepository:
                     append_evidence_events(
                         database, "materials",
                         (
-                            ("material_retirements", f"{row['task_id']}:{row['image_id']}", row)
+                            ("material_retirements", row)
                             for row in retirement_rows
                         ),
                         project_id=self.project_path.name,
@@ -2204,7 +2207,7 @@ class MaterialRepository:
                     append_evidence_events(
                         db, "materials",
                         (
-                            ("material_storage_audit", f"{audit[0]}:{audit[1]}", {
+                            ("material_storage_audit", {
                                 "task_id": audit[0], "image_id": audit[1],
                                 "action": audit[2], "old_sha256": audit[3],
                                 "new_sha256": audit[4], "recorded_at": audit[5],
@@ -2319,8 +2322,7 @@ class MaterialRepository:
                 append_evidence_events(
                     database, "materials",
                     (
-                        ("material_assignment_receipts",
-                         f"{row['task_id']}:{row['image_id']}", row)
+                        ("material_assignment_receipts", row)
                         for row in receipt_rows
                     ),
                     project_id=self.project_path.name,

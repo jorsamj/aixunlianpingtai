@@ -22,6 +22,7 @@ from .u3_owner_change_log import (
     append_confirmation_event,
     append_evidence_event,
     append_evidence_events,
+    change_log_ready,
     ensure_change_log,
     project_id_for_database,
 )
@@ -255,6 +256,8 @@ class AnnotationRepository:
                     "SELECT 1 FROM sqlite_master WHERE type='table' "
                     "AND name='owner_change_log'"
                 ).fetchone() is None:
+                    return False
+                if not change_log_ready(db):
                     return False
                 recorded = db.execute(
                     "SELECT value FROM annotation_meta WHERE key=?",
@@ -1488,7 +1491,6 @@ class AnnotationRepository:
                     json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
         append_evidence_event(
             db, "annotations", "annotation_candidate_commits",
-            f"{intent['task_id']}:{image_id}",
             {
                 "task_id": str(intent['task_id']),
                 "operation_id": str(intent['operation_id']),
@@ -1695,7 +1697,6 @@ class AnnotationRepository:
                                 if review_cursor.rowcount:
                                     append_evidence_event(
                                         db, "annotations", "annotation_negative_reviews",
-                                        f"{image_id}:{expected_version}:{actor}",
                                         {
                                             "image_id": str(image_id),
                                             "source_version": int(expected_version),
@@ -1848,7 +1849,6 @@ class AnnotationRepository:
                             )
                             append_evidence_event(
                                 db, "annotations", "task_negative_confirmations",
-                                str(evidence['receipt_id']),
                                 {
                                     "receipt_id": str(evidence['receipt_id']),
                                     "context_key": str(context_key),
@@ -1921,7 +1921,7 @@ class AnnotationRepository:
                 append_evidence_events(
                     db, "annotations",
                     (
-                        ("annotation_delete_backup", f"{row['token']}:{row['image_id']}", dict(row))
+                        ("annotation_delete_backup", dict(row))
                         for row in db.execute(
                             "SELECT * FROM annotation_delete_backup WHERE token=?",
                             (token,),
@@ -2073,8 +2073,7 @@ class AnnotationRepository:
                     append_evidence_events(
                         db, "annotations",
                         (
-                            ("annotation_delete_backup",
-                             f"{row['token']}:{row['image_id']}", dict(row))
+                            ("annotation_delete_backup", dict(row))
                             for row in removed
                         ),
                         event_kind="delete",

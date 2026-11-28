@@ -55,6 +55,7 @@ from platform_core.u3_shadow import (
     export_project_snapshot,
     import_project_snapshot,
 )
+from platform_core.u3_incremental_sync import ensure_incremental_schema
 
 
 class _ExternalPostgres:
@@ -181,7 +182,8 @@ _PROJECT_TABLES = (
     "negative_pool_category", "material_label", "material_annotation_scope",
     "annotation_label_reference", "annotation", "material", "evidence_row",
     "table_state", "store_revision", "picker_snapshot_state",
-    "u3_projection_cursor", "task_negative_confirmation", "u3_shadow_import",
+    "u3_projection_cursor", "u3_projection_baseline",
+    "task_negative_confirmation", "u3_shadow_import",
 )
 
 
@@ -190,6 +192,7 @@ def _reset(pg, project_id: str) -> None:
     with psycopg.connect(pg.get_uri()) as connection:
         ensure_schema(connection)
         with connection.transaction():
+            ensure_incremental_schema(connection)
             with connection.cursor() as cursor:
                 for table in _PROJECT_TABLES:
                     cursor.execute(

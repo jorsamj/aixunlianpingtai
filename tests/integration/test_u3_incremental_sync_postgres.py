@@ -25,6 +25,7 @@ psycopg = _require_or_skip("psycopg", "psycopg 3 is required for PostgreSQL cont
 _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 
 from platform_core import u3_incremental_sync as sync
+from platform_core import material_repository_batch as material_batch_module
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.negative_pool import NegativePool
@@ -39,6 +40,8 @@ from platform_core.u3_shadow import (
     ensure_schema,
     export_project_snapshot,
     import_project_snapshot,
+    read_target_snapshot,
+    reconcile,
 )
 
 
@@ -107,17 +110,18 @@ def _project(tmp_path, name="p1"):
 def _baseline(connection, project, project_id="p1"):
     snapshot = export_project_snapshot(project, project_id)
     import_project_snapshot(connection, snapshot)
-    with sqlite3.connect(project / "materials.sqlite3") as database:
-        marks = high_water_marks(database)
-    with sqlite3.connect(project / "annotations.sqlite3") as database:
-        marks.update(high_water_marks(database))
+    marks = snapshot["change_high_water_marks"]
     for stream, sequence in marks.items():
         connection.execute(
-            f"INSERT INTO {SCHEMA_NAME}.u3_projection_cursor"
-            "(project_id,store,last_applied_seq,source_revision,updated_at) "
-            "VALUES (%s,%s,%s,NULL,now()) "
-            "ON CONFLICT (project_id,store) DO UPDATE SET last_applied_seq=EXCLUDED.last_applied_seq",
-            (project_id, stream, sequence),
+            f"INSERT INTO {SCHEMA_NAME}.u3_projection_baseline"
+            "(project_id,store,baseline_id,snapshot_id,high_water_sequence) "
+            "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (project_id,store) DO UPDATE SET "
+            "baseline_id=EXCLUDED.baseline_id, snapshot_id=EXCLUDED.snapshot_id, "
+            "high_water_sequence=EXCLUDED.high_water_sequence",
+            (
+                project_id, stream, snapshot["baseline_id"],
+                snapshot["snapshot_id"], sequence,
+            ),
         )
     connection.commit()
     return marks
@@ -345,3 +349,59 @@ def test_failure_before_cursor_advance_rolls_back_the_projection(pg, tmp_path, m
         assert connection.execute(
             f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p5' AND id='m1'"
         ).fetchone()[0] == "rollback.jpg"
+
+
+def test_b3_publish_ready_after_all_streams_align(pg, tmp_path):
+    project, materials, annotations, pool, category = _project(tmp_path, "p6")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        _baseline(connection, project, "p6")
+        before = connection.execute(
+            f"SELECT snapshot_id FROM {SCHEMA_NAME}.picker_snapshot_state WHERE project_id='p6'"
+        ).fetchone()[0]
+        connection.commit()
+
+        row = materials.get("m1")
+        row.update(filename="ready-after-sync.jpg")
+        materials.upsert(row)
+        gt = annotations.get("m1")
+        annotations.upsert(
+            "m1", [{"label": "fire", "bbox": [2, 3, 4, 5]}],
+            annotation_scope=["fire"], expected_version=gt["version"],
+            project_material=False,
+        )
+        NegativePool(materials).category(category, name="fire-ready")
+
+        early = sync.publish_ready(connection, project_dir=project, project_id="p6")
+        assert early["published"] is False
+        result = sync.synchronize_project(
+            connection, project_dir=project, project_id="p6", limit=10
+        )
+        assert result["status"] == "READY", result
+        state = connection.execute(
+            f"SELECT snapshot_id,status FROM {SCHEMA_NAME}.picker_snapshot_state "
+            "WHERE project_id='p6'"
+        ).fetchone()
+        assert state[1] == "READY" and state[0] != before
+        marks = _marks(project)
+        for stream, sequence in marks.items():
+            assert _cursor(connection, "p6", stream) == sequence
+
+def test_b3_export_high_water_then_new_event_is_not_lost(pg, tmp_path):
+    project, materials, _, _, _ = _project(tmp_path, "p7")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        baseline = export_project_snapshot(project, "p7")
+        assert baseline["change_high_water_marks"][MATERIAL_STREAM] >= 1
+        import_project_snapshot(connection, baseline)
+        baseline_marks = baseline["change_high_water_marks"]
+
+        row = materials.get("m1")
+        row.update(filename="after-export.jpg")
+        materials.upsert(row)
+        assert _marks(project)[MATERIAL_STREAM] > baseline_marks[MATERIAL_STREAM]
+
+        _apply(connection, project, MATERIAL_STREAM, "p7")
+        assert connection.execute(
+            f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p7' AND id='m1'"
+        ).fetchone()[0] == "after-export.jpg"

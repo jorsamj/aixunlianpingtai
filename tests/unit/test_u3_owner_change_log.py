@@ -9,11 +9,20 @@ from platform_core.material_repository import MaterialRepository
 from platform_core.negative_pool import NegativePool
 from platform_core.u3_owner_change_log import (
     ANNOTATION_STREAM,
+    EVIDENCE_KEY_COLUMNS,
     MATERIAL_STREAM,
     NEGATIVE_POOL_STREAM,
+    evidence_row_key,
     high_water_marks,
     read_events,
 )
+from platform_core.u3_shadow import _evidence_identity
+
+
+def test_evidence_row_identity_matches_p0_primary_key_hash():
+    for table, columns in EVIDENCE_KEY_COLUMNS.items():
+        row = {name: f"value-{index}" for index, name in enumerate(columns)}
+        assert evidence_row_key(table, row) == _evidence_identity(list(columns), row)
 
 
 def _events(path, stream):
