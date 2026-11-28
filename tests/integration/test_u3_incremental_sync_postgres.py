@@ -26,6 +26,7 @@ _EXTERNAL_DSN_ENV = "MC_TEST_POSTGRES_DSN"
 
 from platform_core import u3_incremental_sync as sync
 from platform_core import material_repository_batch as material_batch_module
+from platform_core.u3_sync_runner import SyncRunnerConfig, run_once
 from platform_core.annotation_repository import AnnotationRepository
 from platform_core.material_repository import MaterialRepository
 from platform_core.negative_pool import NegativePool
@@ -573,6 +574,32 @@ def test_b3_legacy_project_without_log_gets_zero_baseline(pg, tmp_path):
         assert connection.execute(
             f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p11' AND id='m3'"
         ).fetchone()[0] == "m3.jpg"
+
+
+def test_controlled_sync_runner_is_disabled_by_default_and_bounded(pg, tmp_path):
+    project, materials, _, _, _ = _project(tmp_path, "p13")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        _baseline(connection, project, "p13")
+        disabled = run_once(
+            connection, data_dir=project, config=SyncRunnerConfig()
+        )
+        assert disabled["status"] == "DISABLED"
+        row = materials.get("m1")
+        row.update(filename="runner-sync.jpg")
+        materials.upsert(row)
+        result = run_once(
+            connection, data_dir=project,
+            config=SyncRunnerConfig(
+                enabled=True, project_ids=("p13",), batch_limit=10,
+                max_batches=10, max_seconds=30,
+            ),
+        )
+        assert result["status"] == "COMPLETED"
+        assert result["projects"][0]["status"] == "READY"
+        assert connection.execute(
+            f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p13' AND id='m1'"
+        ).fetchone()[0] == "runner-sync.jpg"
 
 
 def test_b3_publish_failure_keeps_previous_identity_and_stale(pg, tmp_path, monkeypatch):

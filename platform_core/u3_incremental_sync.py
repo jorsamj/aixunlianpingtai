@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Mapping
@@ -1101,15 +1102,33 @@ def publish_ready(
 def synchronize_project(
     connection, *, project_dir: str | Path, project_id: str,
     limit: int = 200, max_batches: int = 100,
+    max_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Drain all streams in bounded batches, then publish READY if aligned."""
     if int(max_batches) < 1:
         raise U3IncrementalSyncError(
             "U3_INCREMENTAL_LIMIT_INVALID", "max_batches must be positive"
         )
+    if max_seconds is not None and float(max_seconds) <= 0:
+        raise U3IncrementalSyncError(
+            "U3_INCREMENTAL_LIMIT_INVALID", "max_seconds must be positive"
+        )
+    deadline = (
+        time.monotonic() + float(max_seconds)
+        if max_seconds is not None else None
+    )
     applied = 0
     batches = 0
     while batches < int(max_batches):
+        if deadline is not None and time.monotonic() >= deadline:
+            return {
+                "status": "INCOMPLETE",
+                "applied": applied,
+                "batches": batches,
+                "publication": {
+                    "published": False, "code": "U3_SYNC_TIME_LIMIT"
+                },
+            }
         progressed = False
         for stream in STREAMS:
             result = apply_incremental_batch(
