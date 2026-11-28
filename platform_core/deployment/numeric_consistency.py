@@ -1724,6 +1724,8 @@ def assert_delivery_quality_eligibility(directory, *, expected_identity=None) ->
         "bmodel_required": False,
         "bmodel": {"numeric_status": "", "detection_status": "", "error": ""},
         "sample_count": None,
+        "label_identity_status": "unknown",
+        "label_contract_required": False,
         "hardware_verified": False,
         "ground_truth_used": False,
         "source_pt_sha256": "",
@@ -1848,6 +1850,11 @@ def assert_delivery_quality_eligibility(directory, *, expected_identity=None) ->
     metrics = summary.get("metrics") if isinstance(summary.get("metrics"), Mapping) else {}
     detection = summary.get("detection") if isinstance(summary.get("detection"), Mapping) else {}
     bmodel = summary.get("bmodel") if isinstance(summary.get("bmodel"), Mapping) else {}
+    label_status = _clean(summary.get("label_identity_status"))
+    label_contract_required = bool(
+        request.get("label_codes") or request.get("label_schema")
+        or request.get("label_binding")
+    )
     observed_verdict = _clean(summary.get("verdict"))
     observed_detection = _clean(summary.get("detection_status"))
     sample_count = summary.get("sample_count")
@@ -1870,6 +1877,8 @@ def assert_delivery_quality_eligibility(directory, *, expected_identity=None) ->
             "error": str(bmodel.get("error") or "")[:300],
         },
         sample_count=sample_count if type(sample_count) is int else None,
+        label_identity_status=label_status or "unknown",
+        label_contract_required=label_contract_required,
         hardware_verified=summary.get("hardware_verified") is True,
         ground_truth_used=summary.get("ground_truth_used") is True,
     )
@@ -1904,6 +1913,12 @@ def assert_delivery_quality_eligibility(directory, *, expected_identity=None) ->
         failures.append(("VERDICT_REJECTED", "冻结结论包含不可比拒绝原因"))
     if _clean(summary.get("label_identity_status")) in {"conflict", "mismatch"}:
         failures.append(("LABEL_IDENTITY_CONFLICT", "冻结标签身份冲突"))
+    if label_contract_required and label_status != "verified":
+        failures.append((
+            "LABEL_IDENTITY_UNVERIFIED",
+            "该转换冻结了类别合同，但验证证据未证明类别顺序/code 与源模型一致"
+            f"（status={label_status or 'unknown'}）；类别 unknown 不能表述为验证通过",
+        ))
     if summary.get("deployment_preprocessing_aligned") is not True:
         failures.append(("PREPROCESSING_ALIGNMENT_UNVERIFIED", "部署前处理未证明与比较合同一致"))
     if failures:

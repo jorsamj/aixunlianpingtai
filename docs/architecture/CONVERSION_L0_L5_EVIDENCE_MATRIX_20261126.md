@@ -149,7 +149,7 @@ PT/ONNX/Paddle 源
 
 | 编号 | 缺口 | 代码证据 | 现状 |
 |---|---|---|---|
-| G1 | 类别顺序/标签集合只在 Sophon 转换冻结；其它转换的数值验证 `label_identity=unknown`，L5 仍判 eligible | `conversion_management_service.py:803`；`numeric_consistency.py:303-323,1905` | **未解决**（历史文档 42.24.523 已列为 P0 类别身份，需要独立补证流程；本轮未动，避免把历史证据静默作废） |
+| G1 | 类别顺序/标签集合仅在 Sophon 转换冻结；其它转换的数值验证 `label_identity=unknown`，L5 仍判 eligible | `conversion_management_service.py`（Q1 已改为全目标冻结 `label_binding`）；`numeric_consistency.py`（Q3 对冻结类别合同要求 `verified`） | **新任务已关闭（历史证据仍为 unknown）**：新转换的所有目标都冻结 `label_binding`；验证请求携带类别合同时，unknown/mismatch/conflict 拒绝质量准入；无历史类别合同的旧任务保持 unknown，不被伪补证 |
 | G2 | BMODEL 交付物的 PT/ONNX 证据即可让 `assert_delivery_quality_eligibility` 返回 `eligible=true`，即使 BMODEL 从未比较 | `numeric_consistency.py:1679-1938`（修复前无 bmodel 判定） | **本轮已关闭**（§7） |
 | G3 | ONNX↔BMODEL 比较依赖可选本机 Sophon 模拟器；不可用时 `unavailable` 是常态 | `numeric_consistency.py:404-425,670-691`；`deployment_worker.py:636-652` | 未解决；现在会阻止正式交付（fail closed），真实比较仍 HARDWARE_PENDING |
 | G4 | `threshold_crossings` 只统计不门禁 | `numeric_consistency.py:194,299` | 有意设计（NMS 压制的无害跨越） |
@@ -210,4 +210,38 @@ PT/ONNX/Paddle 源
   - `python -m pytest -q tests/unit/test_conversion_numeric_consistency.py tests/unit/test_conversion_tasks.py tests/api/test_conversion_numeric_validation.py` → **62 passed**
   - `python -m pytest -q tests/integration/test_real_pt_onnx_numeric.py -k delivery_eligible` → **1 passed**（真实 PT→ONNX→真实图片→证据→准入）
   - `python -m py_compile platform_core/deployment/numeric_consistency.py tests/unit/test_conversion_consistency_matrix.py` → OK；`git diff --check` → 0
-- 未运行：任何厂商 SDK、真实 BMODEL/RKNN/OM 设备、生产环境；这些仍为 NOT VERIFIED。
+- 未运行：任何厂商 SDK、真实 BMODEL/RKNN/OM 设备、生产环境；这些仍为 NOT VERIFIED。\n\n
+---
+
+## 10. Q1–Q3 交付质量整改（2026-11-28）
+
+### Q1 统一类别身份
+
+- `conversion_management_service.py` 不再只对 `sophon` 冻结类别；所有能从源模型版本取得
+  类别信息的目标（ONNX/RKNN/TensorRT/Ascend 等）都写入 `source_trace.label_binding`。
+- `label_binding` 冻结：`status`（verified/unknown/conflict）、`class_count`、`class_ids`、
+  `mapping_sha256`、`schema_sha256`、`source_sha256`、`algorithm_id`、`version_id` 和原因。
+- `label_codes` 只在验证通过时写入；`label_schema` 保留原始 class_id/code/显示名。
+- `build_source_manifest` 把 `label_binding`、`preprocessing_contract`、`output_contract`
+  写入不可变 source manifest。
+- 历史任务缺少类别合同时保持 unknown，不按当前算法标签排序猜测补证。
+
+### Q2 预处理与检测一致性
+
+- 转换任务新增 `preprocessing_contract`（pixel_format/channel_format/letterbox/
+  letterbox_mode/pad_value/interpolation/mean/scale/shape/batch/dynamic）和
+  `output_contract`（声明的输出布局或 unsupported）。
+- 验证请求携带 label_binding/preprocessing_contract/output_contract，作为不可变证据的一部分。
+- 继续复用现有 `is_canonical_rgb_preprocessing`、`verify_images`、`compare_yolo_detections`；
+  非 canonical 预处理仍为 `deployment_preprocessing_aligned=false/None`，L5 拒绝。
+- 不支持的输出布局仍返回 not_comparable/unsupported；本轮未扩大支持所有模型架构。
+
+### Q3 准入边界
+
+- `assert_delivery_quality_eligibility` 返回 `label_identity_status` 与
+  `label_contract_required`。
+- 验证请求携带类别合同（label_codes/label_schema/label_binding）时，冻结摘要的
+  `label_identity_status` 必须为 `verified`；unknown/mismatch/conflict 均拒绝，新增
+  `LABEL_IDENTITY_UNVERIFIED`。
+- 无类别合同的历史证据保持 unknown，不被表述为类别验证通过；未批量撤销历史发布。
+- 硬件 `hardware_verified` 仍独立，编译/ONNX Runtime/合成对照仍不等于板端验证。

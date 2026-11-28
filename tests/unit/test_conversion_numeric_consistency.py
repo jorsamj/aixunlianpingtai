@@ -743,7 +743,7 @@ def _full_numeric_layout(tmp_path, *, directory_name="nv_0123456789abcdef0123456
             "source_sha": source_sha, "onnx_sha": onnx_sha, "image_names": names}
 
 
-def _stub_numeric_result(*, verdict="consistent", unmatched=0):
+def _stub_numeric_result(*, verdict="consistent", unmatched=0, label_status="verified"):
     return {
         "protocol": _STUB_PROTOCOL, "status": "completed",
         "raw_verdict": "consistent" if verdict == "consistent" else "difference_detected",
@@ -753,7 +753,7 @@ def _stub_numeric_result(*, verdict="consistent", unmatched=0):
         "hardware_verified": False, "ground_truth_used": False, "bmodel_verified": False,
         "bmodel_numeric_status": "not_applicable", "bmodel_detection_status": "not_applicable",
         "bmodel_numeric_error": "", "deployment_preprocessing_aligned": True,
-        "label_identity": {"status": "verified", "mapping_sha256": "a" * 64},
+        "label_identity": {"status": label_status, "mapping_sha256": "a" * 64},
         "input_color_space": "rgb",
         "input_contract": {"status": "resolved", "resolved_input_shape": [1, 3, 64, 64],
                            "input_shape_source": "frozen_manifest"},
@@ -1025,6 +1025,19 @@ def _published_numeric_layout(tmp_path, monkeypatch, *, directory_name="nv_01234
     layout["evidence_path"] = (layout["verification"] / "evidence" /
                                (layout["verification_id"] + ".json"))
     return layout
+
+
+def test_delivery_quality_rejects_label_unknown_when_contract_frozen(tmp_path, monkeypatch):
+    from platform_core.deployment import numeric_consistency as numeric
+
+    layout = _full_numeric_layout(tmp_path)
+    _stub_verify(monkeypatch, _stub_numeric_result(label_status="unknown"))
+    numeric.run_verification_directory(layout["verification"])
+    verdict = numeric.assert_delivery_quality_eligibility(layout["verification"])
+    assert verdict["eligible"] is False
+    assert verdict["code"] == "LABEL_IDENTITY_UNVERIFIED"
+    assert verdict["label_contract_required"] is True
+    assert verdict["label_identity_status"] == "unknown"
 
 
 def test_delivery_quality_eligibility_requires_complete_bound_evidence(tmp_path, monkeypatch):

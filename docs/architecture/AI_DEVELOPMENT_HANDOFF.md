@@ -1,5 +1,16 @@
 # AI 开发接续入口
 
+> **2026-11-28 / 模型转换 Q1–Q3 质量整改（本批）**：Q1 将源模型冻结类别
+> `label_binding` 从仅 Sophon 扩展到所有可取得类别信息的转换目标，并冻结
+> class_id/order/code/schema/source SHA；manifest 保留 label/preprocessing/output 合同。
+> Q2 将 preprocessing_contract/output_contract 纳入转换证据，继续复用 canonical RGB
+> LetterBox、compare_tensors、compare_yolo_detections；非 canonical/不支持布局仍不可比。
+> Q3 在 `assert_delivery_quality_eligibility` 中新增 label_identity_status 与
+> label_contract_required：新转换冻结类别合同时 unknown/mismatch/conflict 一律拒绝
+> （`LABEL_IDENTITY_UNVERIFIED`），历史无类别合同保持 unknown、不伪补证。
+> 定向测试：conversion matrix 5 passed + numeric consistency 48 passed。硬件仍
+> HARDWARE_PENDING；未操作板卡、生产或 U3/P4 代码。VERSION 42.24.592。
+>
 > **2026-11-28 / U3-P4-A 测量能力（本批）**：新增
 > `tests/performance/test_u3_p4_scale.py`，复用既有 200k 确定性夹具并补充负池、确认回执、
 > Test 预留、退役证据；对 SQLite/PG BusinessReadProvider、正式 `/page` 基线、cursor、

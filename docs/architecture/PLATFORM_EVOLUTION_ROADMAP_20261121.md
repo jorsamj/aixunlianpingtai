@@ -592,4 +592,14 @@ flowchart TB
 | U3-P4-B/C | 未开始 | 须先取得 200k 真实测量；P5 为 NOT_VERIFIED |
 | U3-P5 | 未授权 | 生产读取切换 |
 
-SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。
+SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。\n\n
+## 模型转换一致性 Q1–Q3 状态（2026-11-28）
+
+| 专项 | 状态 | 证据 |
+|---|---|---|
+| Q1 类别身份 | 已实现、待独立验收 | 所有可取得类别信息的目标冻结 `label_binding`（class_id/order/code/schema/source SHA）；manifest 不可变携带 |
+| Q2 预处理/检测合同 | 部分实现、待独立验收 | `preprocessing_contract`/`output_contract` 进入证据；复用 canonical RGB LetterBox 与检测差异比较；不扩展全部架构 |
+| Q3 准入边界 | 已实现、待独立验收 | 冻结类别合同下 unknown/mismatch/conflict 拒绝；历史 unknown 保留不伪补证 |
+| 真实硬件 | HARDWARE_PENDING | 无 BM1684/RKNN/Ascend 板端证据，编译/ONNX Runtime 不等于硬件验证 |
+
+VERSION 42.24.592；未启用正式 PG Picker，未操作生产或 4070/A800。
