@@ -555,4 +555,23 @@ L2 必须先声明**验收范围**，逐项列出"必需项"与"排除项"；不
 - P2 定向 24 项通过。优化后 200k 复测待 `[p4-scale]` CI。
 
 未解决：exact 仍需全候选业务判定；PG 连接/事务固定开销、role/history 查询次数、增量
-READY 全量 reconcile 成本仍待分段测量。P4-C 未开始。
+READY 全量 reconcile 成本仍待分段测量。P4-C 未开始。\n\n
+### P4-B 第二轮（2026-11-28）
+
+第二次 200k artifact（SHA `e17d75f4`）确认首轮 payload 复用后 exact 仍约 4–6s，deferred
+50/99ms；增量 31 事件 + READY 35.24s。主要剩余成本：
+
+- exact 在页面已满后仍继续水合/构建全部匹配对象；
+- 每批仍执行 GT、PG GT、回执、usage/Task 判定；
+- READY 发布仍执行完整 Owner 导出 + PG target 读取 + reconcile。
+
+本轮最小优化：
+
+- exact 页面填满后停止 materialize，改用 count-only 批次从页面末尾 cursor 继续计数；
+- count-only 跳过仅用于页面对象的 PG annotation 水合和 BusinessMaterial 构造；
+- 仍执行 GT、回执、usage、Task、角色过滤和最终 Owner/Task 验证；精确总数不变。
+- P2 真实 PG 24 项通过。
+- 20 万级复测待集中 CI。
+
+未解决：exact 仍必须遍历除页面外的全部匹配候选；增量全量对账未改；confirmed_negative、
+pending_review、test_role 夹具仍为空命中。

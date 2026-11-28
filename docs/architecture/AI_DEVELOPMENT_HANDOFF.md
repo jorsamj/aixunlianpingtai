@@ -1,5 +1,12 @@
 # AI 开发接续入口
 
+> **2026-11-28 / 转换最后收口 + P4-B 第二轮（本批）**：转换侧补齐 mapping/schema 摘要
+> 真实重算、schema 按 class_id 规范化、验证请求使用 label_binding/output_contract，
+> 非 verified 绑定、不可比布局失败关闭。P4-B 基于第二次 200k artifact（exact 约
+> 4–6s、deferred 50/99ms、增量 35.24s）：exact 页面填满后改为 count-only 游标续算，
+> 跳过仅页面对象需要的 PG GT 水合物化；GT/回执/history/Task/角色与精确总数不变。
+> 真实 PG 定向 24 项通过；20 万级集中复测待 CI。硬件 HARDWARE_PENDING。
+>
 > **2026-11-28 / 转换合同执行链 + P4-B 首批优化（本批）**：A 批次把
 > preprocessing_contract/output_contract 接入真实 Worker manifest，verified label_binding
 > 校验 class_ids/source SHA/算法/版本，未验证历史 label_codes 在 manifest 边界丢弃，

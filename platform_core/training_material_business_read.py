@@ -475,7 +475,7 @@ class BusinessReadProvider:
             record["annotation_hash"] = str(annotation.get("content_digest") or "")
         return record
 
-    def _evaluate_batch(self, query: BusinessQuery, session, batch: Sequence[PickerMaterial]):
+    def _evaluate_batch(self, query: BusinessQuery, session, batch: Sequence[PickerMaterial], *, materialize: bool = True):
         filters = query.filters
         ids = [item.id for item in batch]
         # The candidate page already carries the owner payload when available.
@@ -492,7 +492,7 @@ class BusinessReadProvider:
                 str(row.get("id")): row for row in self.materials.get_many(missing_ids)
             })
         annotation_rows = self.annotations.get_many(ids)
-        pg_annotations = session.annotations(ids)
+        pg_annotations = session.annotations(ids) if materialize else None
         contract = self._contract(filters)
         receipts = session.receipts(task_negative_context(contract), ids)
         contract = {
@@ -505,8 +505,9 @@ class BusinessReadProvider:
         by_id = facts.get("by_image_id") or {}
         receipt_ids = {str(receipt.get("receipt_id") or "") for receipt in
                        contract["task_negative_confirmations"]}
-        unproven_legacy = set(pg_annotations.unproven_legacy_ids)
+        unproven_legacy = set(pg_annotations.unproven_legacy_ids) if pg_annotations is not None else set()
         items: list[BusinessMaterial] = []
+        matched = 0
         for item in batch:
             material = material_rows.get(item.id)
             if material is None:
@@ -550,6 +551,9 @@ class BusinessReadProvider:
                 sample_role = "pending_negative"
             if filters.sample_role and sample_role != filters.sample_role:
                 continue
+            matched += 1
+            if not materialize:
+                continue
             base = PickerMaterial(
                 id=str(material.get("id") or item.id),
                 filename=str(material.get("filename") or item.filename),
@@ -579,7 +583,7 @@ class BusinessReadProvider:
                 confirmation_receipt=receipt,
                 legacy_unproven=item.id in unproven_legacy,
             ))
-        return items
+        return items if materialize else matched
 
     # -- read session ----------------------------------------------------
     @contextmanager
@@ -753,11 +757,33 @@ class BusinessReadProvider:
                     elif query.count_mode == "deferred":
                         has_more = True
                         break
-                if has_more:
+                    else:
+                        # The page is complete. Do not materialize the remaining
+                        # exact matches; they are counted below with a count-only
+                        # pass from this item's cursor.
+                        break
+                if has_more or (
+                    query.count_mode == "exact"
+                    and last is not None
+                    and len(items) >= size
+                ):
                     break
+            if query.count_mode == "exact" and last is not None:
+                matched = skipped + len(items)
+                if last.material.created_at:
+                    count_cursor = _picker_cursor_for(
+                        session, query,
+                        (last.material.created_at, last.material.id),
+                    )
+                    for count in session.batches(
+                        cursor=count_cursor, materialize=False,
+                    ):
+                        matched += int(count)
+                has_more = matched > skipped + len(items)
+            elif query.count_mode == "exact":
+                has_more = matched > skipped + len(items)
             if query.count_mode == "exact":
                 total = matched
-                has_more = matched > skipped + len(items)
             # ``session.verify()`` runs on context exit and fails closed if the
             # owner, history or Task status evidence changed -- even for an early
             # deferred stop.
@@ -845,10 +871,12 @@ class _PostgresSession(_BusinessSession):
     def receipts(self, context_key, ids):
         return self.inner.receipts(context_key, ids)
 
-    def batches(self, *, batch_size=MAX_PAGE_SIZE, cursor=None):
+    def batches(self, *, batch_size=MAX_PAGE_SIZE, cursor=None, materialize=True):
         base = self.provider._base_query(self.query, cursor=cursor)
         for batch in self.inner.candidates(base, batch_size=batch_size):
-            yield self.provider._evaluate_batch(self.query, self, batch)
+            yield self.provider._evaluate_batch(
+                self.query, self, batch, materialize=materialize
+            )
 
     def verify(self) -> None:
         # The P1 session verifies the Owner on exit; re-check the business facts
@@ -874,10 +902,12 @@ class _SQLiteSession(_BusinessSession):
             self.provider.project_id, context_key, ids,
         )
 
-    def batches(self, *, batch_size=MAX_PAGE_SIZE, cursor=None):
+    def batches(self, *, batch_size=MAX_PAGE_SIZE, cursor=None, materialize=True):
         base = self.provider._base_query(self.query, cursor=cursor)
         for batch in self.provider.picker.iter_candidates(base, batch_size=batch_size):
-            yield self.provider._evaluate_batch(self.query, self, batch)
+            yield self.provider._evaluate_batch(
+                self.query, self, batch, materialize=materialize
+            )
 
 
 def _role_row(material: Mapping[str, Any], annotation: Mapping[str, Any] | None) -> dict[str, Any]:
