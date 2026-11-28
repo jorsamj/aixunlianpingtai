@@ -1,5 +1,11 @@
 # AI 开发接续入口
 
+> **2026-11-28 / L1 按场景分段 + 素材上下文 + 并发隔离（本批）**：P4_PROFILE 现在
+> 按 base_label/combo_source/deep_page/deferred 独立记录 evaluate/history；素材列表
+> 绑定查询上下文，筛选/页码变化失效旧页，删除后先移除已确认 ID；BusinessReadProvider
+> 对默认 usage 使用请求级实例，同一 Provider 并发不再互相拒绝，Task 固定读事务保留。
+> P2 26 项通过；AI 审核、训练创建/任务、M1/M2/M4、L2 未完成。
+>
 > **2026-11-28 / 产品修复 + L1 分段诊断（本批）**：素材库刷新失败不再清空已有页面，
 > 保留上次结果并显示刷新态；训练报告切换任务时重置 history/evaluation/class 偏移；
 > Service Nodes 测试等待 fixtureReady；新增 `P4_PROFILE=1` 分段计时，小规模实测

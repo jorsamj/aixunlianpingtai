@@ -597,7 +597,9 @@ flowchart TB
 | Service Nodes 前端 | 定向修复 | Playwright setPage 前等待 fixtureReady；失败用例通过 |
 | 素材库刷新 | 已修复 | 刷新失败保留已加载页面，不再清空 |
 | 训练报告分页 | 已修复 | 切换任务重置 history/evaluation/class 偏移 |
-| P4 分段诊断 | 小规模已实现、完整未完成 | P4_PROFILE evaluate/history 计时；SQL/GT/回执/READY 待补 |
+| P4 分段诊断 | 按场景 evaluate/history 已实现；完整未完成 | 4 场景独立数据；SQL/GT/回执/READY 待补 |
+| 素材库查询上下文 | 已修复 | 旧页只在同查询保留；筛选/页码切换失效旧响应 |
+| 同 Provider 并发 | 已修复 | 请求级 usage，Task 固定事务保留；P2 26 项通过 |
 | U3-P5 | 未授权 | 生产读取切换 |
 
 SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。\n\n
