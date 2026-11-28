@@ -232,10 +232,37 @@ def test_u3_p4_scale_measurement(tmp_path):
                 profile[label] = {
                     "read_page_ms": 0.0, "evaluate_ms": 0.0,
                     "history_ms": 0.0, "evaluate_calls": 0.0,
-                    "history_calls": 0.0,
+                    "history_calls": 0.0, "owner_gt_ms": 0.0,
+                    "owner_gt_calls": 0.0, "usage_ms": 0.0,
+                    "pg_gt_ms": 0.0, "pg_gt_calls": 0.0,
+                    "receipts_ms": 0.0, "receipts_calls": 0.0,
                 }
                 original_evaluate = provider._evaluate_batch
                 original_history = provider._history_facts
+                original_owner_gt = provider.annotations.get_many
+                original_usage_query = provider.usage.query_filter
+
+                def timed_owner_gt(*args, _label=label, _fn=original_owner_gt, **kwargs):
+                    began = time.perf_counter()
+                    try:
+                        return _fn(*args, **kwargs)
+                    finally:
+                        profile[_label]["owner_gt_ms"] += (
+                            time.perf_counter() - began
+                        ) * 1000
+                        profile[_label]["owner_gt_calls"] += 1
+
+                def timed_usage(*args, _label=label, _fn=original_usage_query, **kwargs):
+                    began = time.perf_counter()
+                    try:
+                        return _fn(*args, **kwargs)
+                    finally:
+                        profile[_label]["usage_ms"] += (
+                            time.perf_counter() - began
+                        ) * 1000
+
+                provider.annotations.get_many = timed_owner_gt
+                provider.usage.query_filter = timed_usage
 
                 def timed_evaluate(*args, _label=label, _fn=original_evaluate, **kwargs):
                     began = time.perf_counter()
@@ -259,6 +286,47 @@ def test_u3_p4_scale_measurement(tmp_path):
 
                 provider._evaluate_batch = timed_evaluate
                 provider._history_facts = timed_history
+
+            from platform_core.training_material_business_read import (
+                _PostgresSession, _SQLiteSession,
+            )
+            original_pg_annotations = _PostgresSession.annotations
+            original_pg_receipts = _PostgresSession.receipts
+            original_sqlite_receipts = _SQLiteSession.receipts
+
+            def timed_pg_annotations(self, *args):
+                began = time.perf_counter()
+                try:
+                    return original_pg_annotations(self, *args)
+                finally:
+                    profile["postgres"]["pg_gt_ms"] += (
+                        time.perf_counter() - began
+                    ) * 1000
+                    profile["postgres"]["pg_gt_calls"] += 1
+
+            def timed_pg_receipts(self, *args):
+                began = time.perf_counter()
+                try:
+                    return original_pg_receipts(self, *args)
+                finally:
+                    profile["postgres"]["receipts_ms"] += (
+                        time.perf_counter() - began
+                    ) * 1000
+                    profile["postgres"]["receipts_calls"] += 1
+
+            def timed_sqlite_receipts(self, *args):
+                began = time.perf_counter()
+                try:
+                    return original_sqlite_receipts(self, *args)
+                finally:
+                    profile["sqlite"]["receipts_ms"] += (
+                        time.perf_counter() - began
+                    ) * 1000
+                    profile["sqlite"]["receipts_calls"] += 1
+
+            _PostgresSession.annotations = timed_pg_annotations
+            _PostgresSession.receipts = timed_pg_receipts
+            _SQLiteSession.receipts = timed_sqlite_receipts
 
         def business_query(
             *, labels=("fire",), sources=(), pool_only=False,
@@ -319,7 +387,10 @@ def test_u3_p4_scale_measurement(tmp_path):
                     label: {
                         key: round(values[key] - before[label][key], 3)
                         for key in ("evaluate_ms", "evaluate_calls",
-                                    "history_ms", "history_calls")
+                                    "history_ms", "history_calls",
+                                    "owner_gt_ms", "owner_gt_calls",
+                                    "usage_ms", "pg_gt_ms", "pg_gt_calls",
+                                    "receipts_ms", "receipts_calls")
                     }
                     for label, values in profile.items()
                 }

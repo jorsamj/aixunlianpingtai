@@ -609,4 +609,26 @@ pending_review、test_role 夹具仍为空命中。\n\n
 
 - 每场景 3 次 evaluate/history 调用（2 个采样加 1 次 profile 单次读取）。
 - history 占 evaluate 约 15–27%。
-- 仍是小规模；未拆分 SQLite GT、PG GT、回执、角色、SQL 次数/计划及 READY 发布。
+- 仍是小规模；未拆分 SQLite GT、PG GT、回执、角色、SQL 次数/计划及 READY 发布。\n\n
+### G10 分段诊断增补（2026-11-29）
+
+P4_PROFILE=1 新增 owner GT、PG GT、确认回执、usage 包装计时，按场景独立记录。
+
+300 素材/100 GT/2 样本/每场景 3 次调用：
+
+| 场景 | SQLite owner GT | SQLite 回执 | PG owner GT | PG GT | PG 回执 | history |
+|---|---:|---:|---:|---:|---:|---:|
+| base_label | 9.6 ms | 9.9 ms | 8.6 ms | 12.1 ms | 8.4 ms | 9.2 ms |
+| combo_source | 8.5 ms | 8.2 ms | 9.0 ms | 12.7 ms | 9.0 ms | 9.3 ms |
+| deep_page | 8.2 ms | 9.1 ms | 8.0 ms | 11.6 ms | 9.8 ms | 9.7 ms |
+| deferred | 9.2 ms | 8.4 ms | 8.2 ms | 11.8 ms | 7.4 ms | 9.3 ms |
+
+结论（小规模）：
+
+- evaluate 总计约 47–53 ms，仍是最大块。
+- PG GT 约 12 ms，高于 owner GT 的 8–10 ms。
+- 回执约 7–10 ms；history 约 9–10 ms。
+- usage 计时未单独归因：业务会话使用请求级 usage 实例，包装 provider.usage 捕获不到；当前 usage 成本包含在 history 内。
+- 仍缺：连接/事务、候选 SQL、SQL 次数/计划、对象构造、count-only、最终复核、READY 发布分段。
+
+不触发 20 万级。
