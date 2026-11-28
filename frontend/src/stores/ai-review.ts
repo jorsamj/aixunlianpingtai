@@ -536,9 +536,10 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     formalOperation.value=undefined;
     if(receipt.status==='completed'){
       for(const id of ids)explicitSelection.value.delete(id);
+      invalidateSelection();
       formalNotice.value=`正式入库完成 · ${ids.length} 张`;
     }else{
-      explicitSelection.value.clear();
+      invalidateSelection();
     }
   }
   async function verifyFormal(operation:FormalOperation,signal:AbortSignal){
