@@ -274,10 +274,12 @@ class TrainingMaterialUsage:
             return not (project / 'algorithms.json').exists()
         return has_versions is False
 
-    def read_revision(self):
+    def read_revision(self, connection=None):
         """O(1) invalidation token; no source file or usage-row enumeration."""
         if not self.path.is_file():
             return 'unknown'
+        if connection is not None:
+            return self._read_revision(connection)
         with closing(self._connect()) as db:
             return self._read_revision(db)
 

@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+import sys
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -571,67 +572,101 @@ class BusinessReadProvider:
     # -- read session ----------------------------------------------------
     @contextmanager
     def read_session(self, query: BusinessQuery) -> Iterator["_BusinessSession"]:
-        """One business read session.
+        """One business read session with a single, exclusively borrowed Task read.
 
-        The central Task store is opened in ONE read-only transaction: every
-        batch reuses it for usage/tokens/coverage/status, and the initial
-        history revision and active-Task digest come from that same snapshot.
-        After the batch phase the transaction is closed and a NEW connection
-        re-checks the current versions; only then may results be published.
-        A PostgreSQL picker additionally keeps one P1 transaction for
-        candidates/GT/receipts.
+        The central Task store is opened in ONE read-only transaction and every
+        batch reuses it. A second overlapping session on the same provider is
+        rejected (the borrow is exclusive); release happens on normal and error
+        exit. The final current-version recheck uses ONE new Task transaction.
         """
         self._require_project(query.project_id)
+        if not query.verify_owner:
+            raise PickerUnsupportedFilter(
+                "formal business sessions require current-owner verification",
+            )
         _validate_business_query(replace(query, page=None, count_mode="deferred"))
         tasks = self._tasks_connection()
         tasks.execute("BEGIN")
-        self.usage._borrowed_connection = tasks
-        closed = {"value": False}
+        try:
+            token = self._borrow_tasks(tasks)
+        except BusinessReadError:
+            tasks.close()
+            raise
 
         def end_task_transaction() -> None:
-            if closed["value"]:
-                return
-            closed["value"] = True
-            self.usage._borrowed_connection = None
+            self._release_tasks(token)
             try:
                 tasks.execute("COMMIT")
             except sqlite3.Error:
                 pass
             finally:
                 tasks.close()
-        inner_context = (
-            self.picker.read_session(query.project_id, verify_owner=query.verify_owner)
-            if hasattr(self.picker, "read_session") else None
-        )
-        try:
-            context = self._picker_context()
-            token = str(context.snapshot_id)
-            usage_revision = self._usage_revision()
-            task_evidence = self._task_evidence_digest(tasks)
-            if inner_context is not None:
-                with inner_context as inner:
-                    session = _PostgresSession(
-                        self, query, inner, token, usage_revision, task_evidence,
-                    )
-                    session._context = context
-                    yield session
-                    end_task_transaction()
-                    session.verify()
-            else:
-                session = _SQLiteSession(
-                    self, query, token, usage_revision, task_evidence,
-                )
-                session._context = context
-                yield session
-                end_task_transaction()
-                session.verify()
-        finally:
+
+        closed = {"value": False}
+
+        def close_once() -> None:
             if not closed["value"]:
+                closed["value"] = True
                 end_task_transaction()
 
+        inner_context = None
+        try:
+            if hasattr(self.picker, "read_session"):
+                inner_context = self.picker.read_session(
+                    query.project_id, verify_owner=query.verify_owner,
+                )
+                inner = inner_context.__enter__()
+                picker_snapshot = inner.snapshot
+                session = _PostgresSession(
+                    self, query, inner, picker_snapshot,
+                    self._usage_revision(), self._task_evidence_digest(tasks),
+                )
+            else:
+                picker_snapshot = self._picker_context()
+                session = _SQLiteSession(
+                    self, query, picker_snapshot,
+                    self._usage_revision(), self._task_evidence_digest(tasks),
+                )
+            session._picker_snapshot = picker_snapshot
+            yield session
+            close_once()
+            session.verify()
+        finally:
+            close_once()
+            if inner_context is not None:
+                inner_context.__exit__(*sys.exc_info())
+
+    def _borrow_tasks(self, connection):
+        """Exclusive borrow: an overlapping session must not reuse the connection."""
+        if getattr(self.usage, "_borrowed_connection", None) is not None:
+            raise BusinessReadError(
+                "another business read session is already using the Task store",
+            )
+        token = object()
+        self.usage._borrowed_connection = connection
+        self.usage._borrowed_token = token
+        return token
+
+    def _release_tasks(self, token) -> None:
+        if getattr(self.usage, "_borrowed_token", None) is token:
+            self.usage._borrowed_connection = None
+            self.usage._borrowed_token = None
+
     def _verify_current(self) -> tuple[str, str]:
-        """Fresh-connection recheck of the current history/Task versions."""
-        return self._usage_revision(), self._task_evidence_digest()
+        """One new Task read transaction: revision + active Task digest together."""
+        connection = self._tasks_connection()
+        try:
+            connection.execute("BEGIN")
+            return self.usage.read_revision(connection), self._task_evidence_digest(connection)
+        except sqlite3.Error as error:
+            raise BusinessHistoryUnavailable(
+                "the current Task version could not be re-read", detail=str(error),
+            ) from error
+        finally:
+            try:
+                connection.execute("COMMIT")
+            finally:
+                connection.close()
 
     def iter_candidates(
         self, query: BusinessQuery, *, batch_size: int = MAX_PAGE_SIZE,
@@ -730,6 +765,7 @@ class _BusinessSession:
         self.usage_revision = usage_revision
         self.task_evidence = task_evidence
         self._owner_equivalent = owner_equivalent
+        self._picker_snapshot = None
 
     # -- recording -------------------------------------------------------
     @property
@@ -759,7 +795,7 @@ class _BusinessSession:
             )
 
     def snapshot(self) -> BusinessSnapshot:
-        context = self._context
+        context = self._picker_snapshot
         return BusinessSnapshot(
             project_id=self.provider.project_id,
             source=str(getattr(self.provider.picker, "name", "")),
@@ -773,12 +809,13 @@ class _BusinessSession:
 
 
 class _PostgresSession(_BusinessSession):
-    def __init__(self, provider, query, inner, token, usage_revision, task_evidence):
+    def __init__(self, provider, query, inner, picker_snapshot, usage_revision, task_evidence):
         super().__init__(
-            provider, query, token, usage_revision, task_evidence,
-            owner_equivalent=bool(getattr(inner, "owner_equivalent", False)),
+            provider, query, picker_snapshot.snapshot_id, usage_revision, task_evidence,
+            owner_equivalent=bool(getattr(picker_snapshot, "owner_equivalent", False)),
         )
         self.inner = inner
+        self._picker_snapshot = picker_snapshot
 
     def annotations(self, ids):
         return self.inner.get_annotations(ids)
@@ -798,13 +835,14 @@ class _PostgresSession(_BusinessSession):
 
 
 class _SQLiteSession(_BusinessSession):
-    def __init__(self, provider, query, token, usage_revision, task_evidence):
+    def __init__(self, provider, query, picker_snapshot, usage_revision, task_evidence):
         super().__init__(
-            provider, query, token, usage_revision, task_evidence,
+            provider, query, picker_snapshot.snapshot_id, usage_revision, task_evidence,
             # The SQLite picker re-reads the owner; the token comparison in
             # verify() is what proves current equivalence.
             owner_equivalent=bool(query.verify_owner),
         )
+        self._picker_snapshot = picker_snapshot
 
     def annotations(self, ids):
         return self.provider.picker.get_annotations(self.provider.project_id, ids)
@@ -893,7 +931,7 @@ def _collect(provider: BusinessReadProvider, query: BusinessQuery, limit: int):
         meta = {
             "owner_equivalent": bool(session.owner_equivalent),
             "owner_vector": _canonical_vector(
-                getattr(session._context, "revision_vector", None)
+                getattr(session._picker_snapshot, "revision_vector", None)
             ),
             "usage_revision": session.usage_revision,
             "task_evidence": session.task_evidence,

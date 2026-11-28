@@ -36,6 +36,7 @@ from platform_core.training_label_tasks import task_negative_context, task_negat
 from platform_core.training_material_business_read import (
     BusinessFilter,
     BusinessHistoryChanged,
+    BusinessReadError,
     BusinessHistoryUnavailable,
     BusinessQuery,
     BusinessReadProvider,
@@ -844,22 +845,57 @@ def test_session_holds_one_fixed_task_snapshot_across_batches(tmp_path):
 
 
 def test_status_change_and_restore_between_batches_is_not_mixed(tmp_path):
-    project, _usage = _business_project(tmp_path)
+    project, usage = _business_project(tmp_path)
     tasks_path = project.parent.parent / "task_runtime" / "tasks.sqlite3"
     _insert_task(tasks_path, "t-live", "RUNNING")
+    material = {str(row["id"]): row for row in MaterialRepository(project).get_many(["m000"])}["m000"]
+    # m000 holds a selected Test row: while t-live is active it is test_reserved.
+    usage.record_selected(
+        "p1", ALGORITHM, "t-live",
+        {"snapshot_id": "snap-live",
+         "images": [{"image_id": "m000", "role": "test",
+                     "content_sha256": material["content_sha256"]}]},
+    )
     provider = BusinessReadProvider(
         SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
     )
     with provider.read_session(_query(filters=_filter())) as session:
         first = [(item.material.id, item.history_state)
                  for batch in session.batches() for item in batch]
+        assert "m000" not in {image_id for image_id, _state in first}
         with sqlite3.connect(tasks_path) as database:
             database.execute("UPDATE tasks SET status='CANCELLED' WHERE task_id='t-live'")
+        # The fixed snapshot must keep m000 test_reserved for this session.
+        between = [(item.material.id, item.history_state)
+                   for batch in session.batches() for item in batch]
+        assert between == first
         with sqlite3.connect(tasks_path) as database:
             database.execute("UPDATE tasks SET status='RUNNING' WHERE task_id='t-live'")
         second = [(item.material.id, item.history_state)
                   for batch in session.batches() for item in batch]
-    assert first == second
+    assert second == first
+
+
+def test_overlapping_sessions_are_rejected_and_released(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    with provider.read_session(_query(filters=_filter())) as first:
+        assert list(first.batches())
+        with pytest.raises(BusinessReadError):
+            with provider.read_session(_query(filters=_filter())):
+                pass
+        # The live session keeps its exclusive borrow.
+        assert list(first.batches())
+    with provider.read_session(_query(filters=_filter())) as third:
+        assert list(third.batches())
+    with pytest.raises(RuntimeError):
+        with provider.read_session(_query(filters=_filter())):
+            raise RuntimeError("boom")
+    with provider.read_session(_query(filters=_filter())) as fourth:
+        assert list(fourth.batches())
+    assert provider.usage._borrowed_connection is None
 
 
 def test_status_change_without_restore_between_batches_fails_closed(tmp_path):

@@ -128,3 +128,13 @@ SQLite 历史 → 角色/用途 → 最终过滤 → 分页/统计。SQLite 权�
 - `BusinessSnapshot.read_identity` 与 owner 版本取自会话打开时捕获的 picker 上下文，不再重新
   `snapshot_context()`。
 - 正式候选流与冻结比较禁止 `verify_owner=False`；诊断读取继续使用原 P1 Provider。
+
+## 10. 会话生命周期最终修补（2026-11-28）
+
+- Task 连接借用改为**独占 + 所有权 token**：重叠会话在借用处被显式拒绝（不是文档约定），
+  正常/异常退出都按 token 释放；借出失败时关闭新连接。
+- PG 会话的 `snapshot_id`、`revision_vector`、`read_identity`、`owner_equivalent` 直接取
+  `inner.snapshot`（P1 会话），不再使用会话外提前获取的 context。
+- `_verify_current()` 在**同一个**新的中央 Task 只读事务内读取 usage revision 与活跃 Task 摘要。
+- `read_session()` 自身拒绝 `verify_owner=False`，无法绕过正式读取保护；诊断继续使用 P1 Provider。
+
