@@ -631,4 +631,15 @@ P4_PROFILE=1 新增 owner GT、PG GT、确认回执、usage 包装计时，按�
 - usage 计时未单独归因：业务会话使用请求级 usage 实例，包装 provider.usage 捕获不到；当前 usage 成本包含在 history 内。
 - 仍缺：连接/事务、候选 SQL、SQL 次数/计划、对象构造、count-only、最终复核、READY 发布分段。
 
-不触发 20 万级。
+不触发 20 万级。\n\n
+### G10 候选批次增补（2026-11-29）
+
+300 素材/100 GT/2 样本，base_label 与 deferred 每场景 3 次 evaluate：
+
+| Provider | evaluate | 批次数 | 候选行 | materialized | count-only |
+|---|---:|---:|---:|---:|---:|
+| SQLite | 50.2 ms | 3 | 54 | 3 | 0 |
+| PostgreSQL | 49.0 ms | 3 | 54 | 3 | 0 |
+
+- 小夹具总候选少，未触发 count-only；需用中规模夹具验证 count-only 分段。
+- 仍未记录连接/事务、候选 SQL 单独耗时、SQL 计划、对象构造和最终复核。

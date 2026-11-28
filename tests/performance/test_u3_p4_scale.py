@@ -236,6 +236,8 @@ def test_u3_p4_scale_measurement(tmp_path):
                     "owner_gt_calls": 0.0, "usage_ms": 0.0,
                     "pg_gt_ms": 0.0, "pg_gt_calls": 0.0,
                     "receipts_ms": 0.0, "receipts_calls": 0.0,
+                    "candidate_batches": 0.0, "candidate_rows": 0.0,
+                    "materialized_batches": 0.0, "count_only_batches": 0.0,
                 }
                 original_evaluate = provider._evaluate_batch
                 original_history = provider._history_facts
@@ -273,6 +275,13 @@ def test_u3_p4_scale_measurement(tmp_path):
                             time.perf_counter() - began
                         ) * 1000
                         profile[_label]["evaluate_calls"] += 1
+                        batch = args[2] if len(args) > 2 else ()
+                        profile[_label]["candidate_batches"] += 1
+                        profile[_label]["candidate_rows"] += len(batch)
+                        if kwargs.get("materialize", True):
+                            profile[_label]["materialized_batches"] += 1
+                        else:
+                            profile[_label]["count_only_batches"] += 1
 
                 def timed_history(*args, _label=label, _fn=original_history, **kwargs):
                     began = time.perf_counter()
@@ -390,7 +399,9 @@ def test_u3_p4_scale_measurement(tmp_path):
                                     "history_ms", "history_calls",
                                     "owner_gt_ms", "owner_gt_calls",
                                     "usage_ms", "pg_gt_ms", "pg_gt_calls",
-                                    "receipts_ms", "receipts_calls")
+                                    "receipts_ms", "receipts_calls",
+                                    "candidate_batches", "candidate_rows",
+                                    "materialized_batches", "count_only_batches")
                     }
                     for label, values in profile.items()
                 }
