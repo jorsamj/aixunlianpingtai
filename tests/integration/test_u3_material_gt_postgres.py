@@ -148,6 +148,8 @@ def _fixture(tmp_path, project_id="p1"):
 
 
 def _clear(connection):
+    from platform_core.u3_incremental_sync import ensure_incremental_schema
+    ensure_incremental_schema(connection)
     with connection.cursor() as cursor:
         for table in ("u3_shadow_import", "u3_projection_cursor", "u3_projection_baseline",
                       "picker_snapshot_state", "task_negative_confirmation",
