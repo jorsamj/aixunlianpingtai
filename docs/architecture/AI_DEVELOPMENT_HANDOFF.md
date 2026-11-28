@@ -1,5 +1,20 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P3-B1 事务内变更日志（a8421f41）**：新增 `u3_owner_change_log.py`，
+> `materials.sqlite3` 内 `materials`/`negative_pool` 两流、`annotations.sqlite3` 内
+> `annotations` 流各自单调 sequence；业务写、完整投影事件、摘要与 sequence 同事务提交，
+> 删除/退役/关系移除写 tombstone，旧库幂等补建且不改 P0 证据结构。覆盖 Material
+> upsert/patch/批量 transform/删除/退役/存储对账/证据、NegativePool members/category/
+> restore、Annotation upsert/确认回执/删除恢复/证据。定向 **5 passed**，历史 schema5
+> 兼容 **3 passed**。未改 VERSION、未启 Worker/生产读取。
+>
+> **2026-11-28 / U3-P3-B2 PostgreSQL 增量消费核心（本批）**：新增
+> `u3_incremental_sync.py`，按流有界读取、校验摘要/项目/schema/连续性，在一个 PG 事务内
+> 应用业务/关联/证据/确认回执，写 `u3_applied_owner_event` 并推进
+> `u3_projection_cursor`；READY 同事务置 STALE；重复消费幂等、摘要冲突/缺口/应用后失败
+> 均失败关闭且不改 Owner。真实 PostgreSQL 定向 **5 passed / 0 skipped**。B3 基线衔接/
+> READY 发布与 B4 恢复重建仍未实现；未启用生产 Picker 读取，VERSION 保持 42.24.592。
+>
 > **2026-11-28 / U3-P3-B0 借用原子性（9a9d85a8）**：`TrainingMaterialUsage` 增加 borrow 锁，
 > `_borrow_tasks/_release_tasks` 在锁内检查与赋值；PG 上下文仅在成功进入后退出。定向
 > **24 passed / 0 skipped**。**P3-B1–B4（Change Log、增量消费、基线衔接、恢复）本轮未实现**，
