@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {trainingTaskRow} from '../../static/modules/training-task-runtime.js';
+import {trainingTaskPresentationRow as trainingTaskRow} from '../../static/modules/training-task-visibility-runtime.js';
 
 
 test('completed 180/300 patience stop is terminal and explains why it stopped', () => {

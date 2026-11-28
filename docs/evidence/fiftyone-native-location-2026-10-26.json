@@ -1,0 +1,170 @@
+{
+  "scope": "real FiftyOne API; controlled GT/prediction fixture, not a production model",
+  "result": {
+    "schema_version": 1,
+    "project_id": "isolated",
+    "task_id": "poc",
+    "execution_generation": 0,
+    "input_digest": "b00504aa5b2fad01ec7b45a4d1cd461b4d79bfb71aac72dcff0818e24ea55edb",
+    "engine": "fiftyone",
+    "feature": "hog-color-v1",
+    "feature_description": "HOG形状与颜色直方图，非语义模型；仅供人工复核",
+    "total": 3,
+    "scanned": 3,
+    "failed": 0,
+    "failures": [],
+    "similar_pairs": [
+      {
+        "image_ids": [
+          "image-0",
+          "image-1"
+        ],
+        "distance": 0.33038732409477234,
+        "issue_type": "visual_similarity",
+        "requires_confirmation": true
+      }
+    ],
+    "uniqueness": [
+      {
+        "image_id": "image-0",
+        "value": 1.0,
+        "status": "computed",
+        "reason": null
+      },
+      {
+        "image_id": "image-1",
+        "value": 1.0,
+        "status": "computed",
+        "reason": null
+      },
+      {
+        "image_id": "image-2",
+        "value": 1.0,
+        "status": "computed",
+        "reason": null
+      }
+    ],
+    "checks": {
+      "visual_similarity": {
+        "status": "completed",
+        "checked": 3
+      },
+      "leakage": {
+        "status": "completed",
+        "checked": 3,
+        "evidence": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "image_ids": [
+          "image-0",
+          "image-1"
+        ]
+      },
+      "mistakenness": {
+        "status": "completed",
+        "checked": 3,
+        "not_checked": 0,
+        "location_evidence": true
+      },
+      "hardness": {
+        "status": "not_checked",
+        "reason": "不生成缺少logits依据的困难度分数"
+      }
+    },
+    "database_cleaned": true,
+    "threshold": 0.4,
+    "metric": "unit_normalized_euclidean",
+    "distance_description": "单位特征欧氏距离，越小越相似；不是相似百分比",
+    "automatic_execution": false,
+    "requires_confirmation": true,
+    "source_images_copied": 0,
+    "succeeded": 3,
+    "duplicate_count": 1,
+    "annotation_candidates": [
+      {
+        "image_id": "image-0",
+        "issue_type": "suspected_annotation",
+        "possible_missing": 0,
+        "possible_spurious": 0,
+        "mistakenness": 0.0050000000000000044,
+        "mistakenness_loc": 0.7970000000000005,
+        "native_box_signals": [
+          {
+            "gt_box_index": 0,
+            "mistakenness": 0.0050000000000000044,
+            "mistakenness_loc": 0.7970000000000005,
+            "possible_spurious": false
+          }
+        ],
+        "native_box_signals_truncated": false,
+        "annotation_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "prediction_evidence": {
+          "evaluation_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "model_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "benchmark_scope_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "image_content_sha256": "9fce86cd329a68c97834649c294691727726aec986a7b399cbd6c68efd9a87e1",
+          "image_width": 96,
+          "image_height": 72
+        },
+        "reason": "模型与GT存在差异，仅为疑似问题，需人工复核；不改变正式评测统计",
+        "requires_confirmation": true
+      },
+      {
+        "image_id": "image-1",
+        "issue_type": "suspected_annotation",
+        "possible_missing": 0,
+        "possible_spurious": 0,
+        "mistakenness": 0.0050000000000000044,
+        "mistakenness_loc": 0.7970000000000005,
+        "native_box_signals": [
+          {
+            "gt_box_index": 0,
+            "mistakenness": 0.0050000000000000044,
+            "mistakenness_loc": 0.7970000000000005,
+            "possible_spurious": false
+          }
+        ],
+        "native_box_signals_truncated": false,
+        "annotation_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "prediction_evidence": {
+          "evaluation_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "model_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "benchmark_scope_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "image_content_sha256": "8298e47e6b7405bbee519bde53abf6d0214b993d9c3305682d9f0474657b7777",
+          "image_width": 192,
+          "image_height": 144
+        },
+        "reason": "模型与GT存在差异，仅为疑似问题，需人工复核；不改变正式评测统计",
+        "requires_confirmation": true
+      },
+      {
+        "image_id": "image-2",
+        "issue_type": "suspected_annotation",
+        "possible_missing": 0,
+        "possible_spurious": 0,
+        "mistakenness": 0.0050000000000000044,
+        "mistakenness_loc": 0.7970000000000005,
+        "native_box_signals": [
+          {
+            "gt_box_index": 0,
+            "mistakenness": 0.0050000000000000044,
+            "mistakenness_loc": 0.7970000000000005,
+            "possible_spurious": false
+          }
+        ],
+        "native_box_signals_truncated": false,
+        "annotation_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "prediction_evidence": {
+          "evaluation_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "model_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "benchmark_scope_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "image_content_sha256": "d04384cc251206e4d3b470fc9034f44b2ba344f34e9fc631359d246e31a92bbe",
+          "image_width": 96,
+          "image_height": 72
+        },
+        "reason": "模型与GT存在差异，仅为疑似问题，需人工复核；不改变正式评测统计",
+        "requires_confirmation": true
+      }
+    ],
+    "complete": true,
+    "elapsed_seconds": 4.5939999999827705
+  }
+}

@@ -1,0 +1,4090 @@
+"""HTTP Agent execution control-plane protocol.
+
+Remote Agents never open the control-plane SQLite database.  The control plane
+owns assignment, the one QUEUED->RUNNING transition, execution generation, lease
+fencing, progress/log persistence, cancellation truth, and terminal completion.
+
+This module intentionally transports only control metadata + JSON task request
+payloads. Large training/material/model bytes require the later object-storage
+transport layer; do not replace that layer with SQLite/NFS access from Agents.
+"""
+from __future__ import annotations
+
+import hmac
+import hashlib
+import json
+import math
+import os
+import re
+import secrets
+import sqlite3
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from typing import Any, Mapping
+
+from .service_nodes import (
+    HEARTBEAT_TTL_SECONDS,
+    ServiceNodeError,
+    ServiceNodeRepository,
+    verify_service_node_token,
+)
+from .node_agent_settlement import canonical_digest, no_launch_evidence, stop_proof_digests
+from .task_node_assignments import CentralTaskAllocator, _node_capacity_signature
+from .task_runtime import TaskKind, TaskStatus
+from .task_runtime.fenced_repository import FencedTaskRepository
+from .task_runtime.repository import TERMINAL_STATUSES, _from_row
+
+
+DEFAULT_EXECUTION_LEASE_SECONDS = 30
+MAX_REMOTE_LOG_BYTES = 64 * 1024
+MAX_REMOTE_RESULT_METADATA_BYTES = 64 * 1024
+MAX_REMOTE_RESOURCE_RESOLUTION_BYTES = 64 * 1024
+
+
+class AgentExecutionError(RuntimeError):
+    def __init__(self, code: str, message: str, status_code: int = 409):
+        self.code = str(code)
+        self.status_code = int(status_code)
+        super().__init__(str(message))
+
+
+def _iso_now() -> tuple[datetime, str]:
+    current = datetime.now(timezone.utc)
+    return current, current.isoformat()
+
+
+def _agent_worker_id(node_id: str) -> str:
+    return f"agent:{node_id}"
+
+
+def _remote_result_state_ref(execution_generation: int) -> str:
+    return f"remote-results/{int(execution_generation)}/upload.json"
+
+
+def _remote_result_ref(execution_generation: int) -> str:
+    return f"remote-results/{int(execution_generation)}/result.json"
+
+
+def _remote_training_models_state_ref(execution_generation: int) -> str:
+    return f"remote-results/{int(execution_generation)}/training-models.json"
+
+
+def _json(value: object, fallback):
+    try:
+        return json.loads(str(value or ""))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _execution_slots_for_worker(database, worker_id: str) -> int:
+    value = str(worker_id or "")
+    node_id = value.split(":", 1)[1] if value.startswith("agent:") else value
+    row = database.execute(
+        "SELECT allowed_capabilities,reported_capabilities FROM service_nodes WHERE node_id=?",
+        (node_id,),
+    ).fetchone()
+    if row is None:
+        return 1
+    allowed = set(_json(row["allowed_capabilities"], []))
+    reported = set(_json(row["reported_capabilities"], []))
+    return 2 if "execution-slots:2" in allowed and "execution-slots:2" in reported else 1
+
+
+def _ensure_resource_hold_schema(database) -> None:
+    row = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_resource_holds'"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("execution_resource_holds schema is not initialized")
+
+
+def _lease_valid(value: object) -> bool:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed > datetime.now(timezone.utc)
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _node_effective_capabilities(database, node_id: str) -> list[str]:
+    """Read-only capability projection safe to expose to the owning Agent.
+
+    Only capability *names* that are both allowed and currently reported are
+    returned. No node token material, resource inventory or provider credential
+    is included.
+    """
+    row = database.execute(
+        "SELECT allowed_capabilities,reported_capabilities FROM service_nodes WHERE node_id=?",
+        (str(node_id),),
+    ).fetchone()
+    if row is None:
+        return []
+    allowed = set(_json(row["allowed_capabilities"], []))
+    reported = set(_json(row["reported_capabilities"], []))
+    return sorted(str(item) for item in (allowed & reported))
+
+
+def _recovery_projection(hold) -> tuple[str, str | None]:
+    """Read-only recovery state and its blocking reason for one execution.
+
+    The projection never exposes a forced-release verdict: a HELD execution is
+    blocked until an authentic stop proof is recorded, and a STOP_VERIFIED
+    execution is blocked until the fenced terminal finish commits.
+    """
+    if hold is None:
+        return "NO_HOLD", None
+    state = str(hold["state"])
+    if state == "HELD":
+        return "HELD", "PROCESS_STOP_UNPROVEN"
+    if state == "STOP_VERIFIED":
+        return "STOP_VERIFIED", "TERMINAL_FINISH_PENDING"
+    if state == "RELEASED":
+        return "RELEASED", None
+    return "UNKNOWN", "HOLD_STATE_UNKNOWN"
+
+
+def _persistent_evidence_sha256(
+    *,
+    task_id: str,
+    execution_attempt: int,
+    assignment_state: str | None,
+    assignment_generation: int | None,
+    hold_state: str | None,
+    hold_execution_attempt: int | None,
+    hold_assignment_generation: int | None,
+    gpu_uuid: str | None,
+    proof_type: str | None,
+    proof_sha256: str | None,
+    process_identity_sha256: str | None,
+) -> str:
+    """Stable digest over durable recovery evidence (never tokens/secrets).
+
+    Operators can compare this across Agent restarts to detect evidence drift
+    without reading mutable rows or being handed any credential material.
+    """
+    return hashlib.sha256(_canonical_json({
+        "task_id": str(task_id),
+        "execution_attempt": int(execution_attempt),
+        "assignment_state": assignment_state,
+        "assignment_generation": assignment_generation,
+        "hold_state": hold_state,
+        "hold_execution_attempt": hold_execution_attempt,
+        "hold_assignment_generation": hold_assignment_generation,
+        "gpu_uuid": gpu_uuid,
+        "proof_type": proof_type,
+        "proof_sha256": proof_sha256,
+        "process_identity_sha256": process_identity_sha256,
+    }).encode("utf-8")).hexdigest()
+
+
+def _sanitize_training_resource_resolution(
+    value: object,
+    *,
+    node_id: str,
+    execution_generation: int,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution must be an object",
+            422,
+        )
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        clean = json.loads(encoded.decode("utf-8"))
+    except (TypeError, ValueError, OverflowError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution must contain finite JSON values",
+            422,
+        ) from error
+    if len(encoded) > MAX_REMOTE_RESOURCE_RESOLUTION_BYTES:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_TOO_LARGE",
+            "resource_resolution exceeds 64 KiB",
+            413,
+        )
+
+    stack = [clean]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for raw_key, item in current.items():
+                key = str(raw_key).strip().lower()
+                if any(
+                    marker in key
+                    for marker in (
+                        "authorization",
+                        "credential",
+                        "password",
+                        "secret",
+                        "token",
+                    )
+                ):
+                    raise AgentExecutionError(
+                        "REMOTE_RESOURCE_RESOLUTION_INVALID",
+                        "resource_resolution contains forbidden credential fields",
+                        422,
+                    )
+                stack.append(item)
+        elif isinstance(current, list):
+            stack.extend(current)
+
+    try:
+        generation = int(clean.get("execution_generation") or 0)
+        resolved_batch = int(clean.get("resolved_batch") or 0)
+        resolved_workers = int(
+            clean.get("resolved_workers")
+            if clean.get("resolved_workers") is not None
+            else -1
+        )
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution contains invalid numeric fields",
+            422,
+        ) from error
+
+    assigned_device = str(clean.get("assigned_device") or "").strip()
+    resolution_node = str(clean.get("node_id") or "").strip()
+    strategy = str(clean.get("resource_strategy") or "").strip().lower()
+    if (
+        generation != int(execution_generation)
+        or resolution_node != str(node_id)
+        or strategy not in {"auto", "manual"}
+        or not assigned_device
+        or resolved_batch <= 0
+        or resolved_workers < 0
+        or "resolved_cache" not in clean
+    ):
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "resource_resolution does not match the current execution contract",
+            422,
+        )
+    if assigned_device.startswith("cuda:") and not str(clean.get("gpu_uuid") or "").strip():
+        raise AgentExecutionError(
+            "REMOTE_RESOURCE_RESOLUTION_INVALID",
+            "CUDA resource_resolution must bind the selected GPU UUID",
+            422,
+        )
+    return clean
+
+
+def _sanitize_training_runtime_resources(
+    value: object,
+    *,
+    node_id: str,
+    execution_generation: int,
+    resolved_resources: object,
+) -> dict[str, Any] | None:
+    """Validate Agent-observed Trainer resources against the frozen plan."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_INVALID",
+            "runtime_resources must be an object",
+            422,
+        )
+    if not isinstance(resolved_resources, dict) or not resolved_resources:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_UNRESOLVED",
+            "runtime resources cannot be published before resolved resources",
+            409,
+        )
+    try:
+        generation = int(value.get("execution_generation") or 0)
+        actual_batch = int(value.get("actual_batch") if value.get("actual_batch") is not None else value.get("runtime_batch"))
+        actual_workers = int(value.get("actual_workers") if value.get("actual_workers") is not None else value.get("runtime_workers"))
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_INVALID",
+            "runtime_resources contains invalid numeric fields",
+            422,
+        ) from error
+    if "actual_cache" in value:
+        actual_cache = value.get("actual_cache")
+    elif "runtime_cache" in value:
+        actual_cache = value.get("runtime_cache")
+    else:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_INVALID",
+            "runtime_resources is missing actual_cache",
+            422,
+        )
+    actual_device = str(value.get("actual_device") or "").strip()
+    actual_precision = str(value.get("actual_precision") or value.get("runtime_precision") or "").strip().lower()
+    runtime_node = str(value.get("node_id") or "").strip()
+    if (
+        generation != int(execution_generation)
+        or runtime_node != str(node_id)
+        or not actual_device
+        or actual_batch <= 0
+        or actual_workers < 0
+        or actual_precision not in {"fp16", "fp32"}
+    ):
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_INVALID",
+            "runtime_resources does not match the current execution identity",
+            422,
+        )
+    try:
+        expected_batch = int(resolved_resources.get("resolved_batch"))
+        expected_workers = int(resolved_resources.get("resolved_workers"))
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_UNRESOLVED",
+            "resolved resource truth is incomplete",
+            409,
+        ) from error
+    if "resolved_cache" not in resolved_resources:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_UNRESOLVED",
+            "resolved resource cache truth is missing",
+            409,
+        )
+    expected_cache = resolved_resources.get("resolved_cache")
+    expected_device = str(resolved_resources.get("assigned_device") or "").strip()
+    expected_precision = str(resolved_resources.get("resolved_precision") or "").strip().lower()
+    if not expected_device or expected_precision not in {"fp16", "fp32"}:
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_UNRESOLVED",
+            "resolved device/precision truth is incomplete",
+            409,
+        )
+    aliases = {
+        "runtime_batch": actual_batch,
+        "runtime_workers": actual_workers,
+        "runtime_cache": actual_cache,
+    }
+    for key, expected in aliases.items():
+        if key in value and value.get(key) != expected:
+            raise AgentExecutionError(
+                "REMOTE_RUNTIME_RESOURCES_INVALID",
+                f"{key} conflicts with the corresponding actual runtime value",
+                422,
+            )
+    if (
+        actual_batch != expected_batch
+        or actual_workers != expected_workers
+        or actual_cache != expected_cache
+        or actual_device != expected_device
+        or actual_precision != expected_precision
+    ):
+        raise AgentExecutionError(
+            "REMOTE_RUNTIME_RESOURCES_MISMATCH",
+            "Trainer runtime resources diverged from the frozen resolved contract",
+            409,
+        )
+    return {
+        "node_id": runtime_node,
+        "execution_generation": generation,
+        "actual_device": actual_device,
+        "actual_batch": actual_batch,
+        "actual_workers": actual_workers,
+        "actual_cache": actual_cache,
+        "actual_precision": actual_precision,
+        **aliases,
+    }
+
+
+def _sanitize_runtime_result_metadata(value: object) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise AgentExecutionError(
+            "REMOTE_RESULT_METADATA_INVALID",
+            "runtime_result must be an object",
+            422,
+        )
+
+    result: dict[str, Any] = {}
+    # Authenticated TRAINING result evidence must survive transport normalization.
+    # A truthy string is not execution evidence.
+    for key in ('training_started', 'usage_completed_epoch', 'usage_validation_observed'):
+        if key in value:
+            if type(value[key]) is not bool:
+                raise AgentExecutionError('REMOTE_RESULT_METADATA_INVALID', f'{key} must be boolean', 422)
+            result[key] = value[key]
+    if "ok" in value:
+        result["ok"] = bool(value.get("ok"))
+
+    for key in (
+        "preprocess_ms",
+        "inference_ms",
+        "postprocess_ms",
+        "elapsed_ms",
+        "total_elapsed_ms",
+    ):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                f"{key} must be numeric",
+                422,
+            )
+        result[key] = float(raw)
+
+    for key, maximum in (
+        ("engine", 120),
+        ("model", 240),
+        ("runtime_format", 40),
+        ("chip", 40),
+        ("runtime_version", 120),
+        ("rknn_lite_version", 120),
+        ("note", 2000),
+    ):
+        raw = value.get(key)
+        if raw is None:
+            continue
+        text = str(raw)
+        if len(text) > maximum:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                f"{key} exceeds maximum length",
+                422,
+            )
+        if key == "model" and ("/" in text or "\\" in text):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "model must not disclose a local path",
+                422,
+            )
+        result[key] = text
+
+    evidence = value.get("execution_evidence")
+    if evidence is not None:
+        if not isinstance(evidence, dict):
+            raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "execution_evidence must be an object", 422)
+        clean = {}
+        for key in ("source_training_precision", "resolved_precision", "compiler_precision", "onnx_export", "sdk_version"):
+            if key not in evidence:
+                continue
+            raw = evidence[key]
+            if raw is not None and (not isinstance(raw, str) or len(raw) > 120):
+                raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"execution_evidence.{key} is invalid", 422)
+            clean[key] = raw
+        for key in ("compiler_completed", "onnx_export_parameters_applied"):
+            if key in evidence:
+                if type(evidence[key]) is not bool:
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"execution_evidence.{key} must be boolean", 422)
+                clean[key] = evidence[key]
+        # Keep verified channel adaptation facts when Agent transports the result.
+        for field in ("source_color_order", "input_color_order"):
+            if field in evidence:
+                value_color = evidence[field]
+                if value_color is not None and value_color not in ("rgb", "bgr"):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", f"invalid {field}", 422)
+                clean[field] = value_color
+        adapter = evidence.get("color_adapter")
+        if adapter is not None:
+            if not isinstance(adapter, dict) or set(adapter) - {
+                "source_color_order", "input_color_order", "status", "applied",
+                "verified", "method", "check"
+            }:
+                raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid color adapter evidence", 422)
+            for field in ("source_color_order", "input_color_order"):
+                if field in adapter and adapter[field] not in ("rgb", "bgr"):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter color order", 422)
+            for field in ("applied", "verified"):
+                if field in adapter and type(adapter[field]) is not bool:
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter verification", 422)
+            for field in ("status", "method", "check"):
+                if field in adapter and (not isinstance(adapter[field], str) or len(adapter[field]) > 120):
+                    raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "invalid adapter method", 422)
+            clean["color_adapter"] = dict(adapter)
+        shape = evidence.get("onnx_input_shape")
+        if shape is not None:
+            if not isinstance(shape, list) or len(shape)!=4 or any(type(d) is not int or not 0<d<=8192 for d in shape):
+                raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "ONNX input shape evidence is invalid", 422)
+            clean["onnx_input_shape"] = list(shape)
+        if evidence.get("artifact_precision") is not None:
+            raise AgentExecutionError("REMOTE_RESULT_METADATA_INVALID", "artifact dtype requires independent inspection evidence", 422)
+        clean["artifact_precision"] = None
+        result["execution_evidence"] = clean
+
+    labels = value.get("labels")
+    if labels is not None:
+        if not isinstance(labels, list) or len(labels) > 1000:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "labels must be a list with at most 1000 entries",
+                422,
+            )
+        clean_labels = []
+        for item in labels:
+            text = str(item)
+            if len(text) > 256:
+                raise AgentExecutionError(
+                    "REMOTE_RESULT_METADATA_INVALID",
+                    "label exceeds maximum length",
+                    422,
+                )
+            clean_labels.append(text)
+        result["labels"] = clean_labels
+
+    output_count = value.get("output_count")
+    if output_count is not None:
+        if isinstance(output_count, bool) or not isinstance(output_count, int):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "output_count must be an integer",
+                422,
+            )
+        if output_count < 0 or output_count > 1000:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "output_count is out of range",
+                422,
+            )
+        result["output_count"] = int(output_count)
+
+    output_shapes = value.get("output_shapes")
+    if output_shapes is not None:
+        if not isinstance(output_shapes, list) or len(output_shapes) > 32:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "output_shapes must contain at most 32 output shapes",
+                422,
+            )
+        clean_shapes = []
+        for shape in output_shapes:
+            if not isinstance(shape, list) or len(shape) > 8:
+                raise AgentExecutionError(
+                    "REMOTE_RESULT_METADATA_INVALID",
+                    "each output shape must contain at most 8 dimensions",
+                    422,
+                )
+            clean_shape = []
+            for dimension in shape:
+                if isinstance(dimension, bool) or not isinstance(dimension, int):
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_METADATA_INVALID",
+                        "output shape dimensions must be integers",
+                        422,
+                    )
+                if dimension < 0 or dimension > 10**9:
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_METADATA_INVALID",
+                        "output shape dimension is out of range",
+                        422,
+                    )
+                clean_shape.append(int(dimension))
+            clean_shapes.append(clean_shape)
+        result["output_shapes"] = clean_shapes
+
+    detections = value.get("detections")
+    if detections is not None:
+        if not isinstance(detections, list) or len(detections) > 1000:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_METADATA_INVALID",
+                "detections must be a list with at most 1000 entries",
+                422,
+            )
+        clean_detections = []
+        allowed_numeric = ("class_id", "confidence", "x1", "y1", "x2", "y2")
+        for item in detections:
+            if not isinstance(item, dict):
+                raise AgentExecutionError(
+                    "REMOTE_RESULT_METADATA_INVALID",
+                    "each detection must be an object",
+                    422,
+                )
+            clean: dict[str, Any] = {}
+            if "label" in item:
+                label = str(item.get("label") or "")
+                if len(label) > 256:
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_METADATA_INVALID",
+                        "detection label exceeds maximum length",
+                        422,
+                    )
+                clean["label"] = label
+            for key in allowed_numeric:
+                raw = item.get(key)
+                if raw is None:
+                    continue
+                if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_METADATA_INVALID",
+                        f"detection {key} must be numeric",
+                        422,
+                    )
+                clean[key] = int(raw) if key == "class_id" else float(raw)
+            clean_detections.append(clean)
+        result["detections"] = clean_detections
+
+    encoded = json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_REMOTE_RESULT_METADATA_BYTES:
+        raise AgentExecutionError(
+            "REMOTE_RESULT_METADATA_TOO_LARGE",
+            "runtime_result exceeds 64 KiB",
+            413,
+        )
+    return result
+
+
+def _task_public(task) -> dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "project_id": task.project_id,
+        "kind": task.kind.value,
+        "status": task.status.value,
+        "priority": task.priority,
+        "resource_key": task.resource_key,
+        "required_capabilities": list(task.required_capabilities),
+        "payload_ref": task.payload_ref,
+        "log_ref": task.log_ref,
+        "progress": task.progress,
+        "stage": task.stage,
+        "current_item": task.current_item,
+        "attempt": task.attempt,
+        "worker_id": task.worker_id,
+        "lease_expires_at": task.lease_expires_at,
+    }
+
+
+class AgentExecutionService:
+    def __init__(
+        self,
+        repository,
+        artifacts,
+        *,
+        heartbeat_ttl_seconds: int = HEARTBEAT_TTL_SECONDS,
+        execution_lease_seconds: int = DEFAULT_EXECUTION_LEASE_SECONDS,
+        auto_assign_enabled: bool = False,
+        execution_payload_resolver=None,
+        result_upload_preparer=None,
+        result_upload_confirmer=None,
+        result_commit_handler=None,
+        training_model_upload_preparer=None,
+        training_model_upload_confirmer=None,
+        material_scan_page_provider=None,
+        material_scan_read_provider=None,
+        clean_selection_page_provider=None,
+        clean_selection_read_provider=None,
+        training_inputs_provider=None,
+        model_install_asset_provider=None,
+    ):
+        self.repository = repository
+        self.artifacts = artifacts
+        self.heartbeat_ttl_seconds = max(10, int(heartbeat_ttl_seconds))
+        self.execution_lease_seconds = max(5, int(execution_lease_seconds))
+        self.auto_assign_enabled = bool(auto_assign_enabled)
+        self.execution_payload_resolver = execution_payload_resolver
+        self.result_upload_preparer = result_upload_preparer
+        self.result_upload_confirmer = result_upload_confirmer
+        self.result_commit_handler = result_commit_handler
+        self.training_model_upload_preparer = training_model_upload_preparer
+        self.training_model_upload_confirmer = training_model_upload_confirmer
+        self.material_scan_page_provider = material_scan_page_provider
+        self.material_scan_read_provider = material_scan_read_provider
+        self.clean_selection_page_provider = clean_selection_page_provider
+        self.clean_selection_read_provider = clean_selection_read_provider
+        self.training_inputs_provider = training_inputs_provider
+        self.model_install_asset_provider = model_install_asset_provider
+        self.nodes = ServiceNodeRepository(
+            repository,
+            heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
+        )
+        self.allocator = CentralTaskAllocator(
+            repository,
+            artifacts,
+            heartbeat_ttl_seconds=self.heartbeat_ttl_seconds,
+        )
+        self.fenced = FencedTaskRepository(repository.path)
+
+    def _authenticate_node(
+        self,
+        node_id: str,
+        node_token: str,
+        *,
+        require_online: bool,
+        require_enabled: bool = True,
+        required_capability: str | None = None,
+    ) -> dict[str, Any]:
+        self.nodes.authenticate(node_id, node_token)
+        node = self.nodes.get_execution_admission(node_id)
+        if require_enabled and not node["enabled"]:
+            raise AgentExecutionError("NODE_DISABLED", "service node is disabled", 409)
+        if require_online and not node["reachable"]:
+            raise AgentExecutionError("NODE_OFFLINE", "service node heartbeat is stale", 409)
+        if required_capability and required_capability not in set(node["effective_capabilities"]):
+            raise AgentExecutionError(
+                "NODE_CAPABILITY_UNAVAILABLE",
+                f"service node cannot execute capability {required_capability}",
+                409,
+            )
+        return node
+
+    def claim_assignment(self, node_id: str, node_token: str) -> dict[str, Any] | None:
+        node = self._authenticate_node(node_id, node_token, require_online=True)
+        claimed = self.allocator.claim_for_node(node_id)
+        if (
+            claimed is None
+            and self.auto_assign_enabled
+            and str(node.get("connection_mode") or "") == "agent"
+            and node.get("effective_capabilities")
+        ):
+            # Opt-in and Agent-poll driven: no second scheduler process or
+            # independent queue owner. The existing allocator serializes
+            # reservations transactionally and may select a different Agent
+            # when its capacity/strict node affinity is a better match.
+            # Never auto-reserve a local-Worker task.
+            self.allocator.assign_next(agent_only=True)
+            claimed = self.allocator.claim_for_node(node_id)
+        if claimed is None:
+            return None
+        capability = str(claimed["capability"])
+        if capability not in set(node["effective_capabilities"]):
+            # Desired/reported capability changed between assignment and claim.
+            self.allocator.release(claimed["task_id"], "node_capability_changed_before_claim")
+            raise AgentExecutionError(
+                "NODE_CAPABILITY_UNAVAILABLE",
+                f"service node cannot execute capability {capability}",
+                409,
+            )
+        task = self.repository.get(claimed["task_id"])
+        if task is None:
+            self.allocator.release(claimed["task_id"], "task_missing_before_execution")
+            raise AgentExecutionError("TASK_NOT_FOUND", "assigned task no longer exists", 404)
+        return {
+            "assignment": claimed,
+            "task": _task_public(task),
+        }
+
+    def remote_recovery_diagnosis(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+    ) -> dict[str, Any]:
+        """Read-only stop-proof preflight, scoped to the original Agent.
+
+        No lease token, process credential or mutable recovery action is
+        exposed here. A new start/requeue requires a separate verified stop
+        protocol; node heartbeat alone is never such proof.
+        """
+        self._authenticate_node(
+            node_id, node_token, require_online=False, require_enabled=False,
+        )
+        task = self.repository.get(task_id)
+        if task is None or str(task.worker_id or "") != _agent_worker_id(node_id):
+            raise AgentExecutionError(
+                "TASK_NOT_FOUND", "no remote execution owned by this node", 404,
+            )
+        if (
+            task.status not in {TaskStatus.RUNNING, TaskStatus.CANCEL_REQUESTED}
+            or task.stage != "recovery_blocked_remote_agent_unverified"
+        ):
+            raise AgentExecutionError(
+                "REMOTE_RECOVERY_NOT_HELD",
+                "remote task is not awaiting a verified stop proof",
+                409,
+            )
+        with closing(self.repository._connect()) as database:
+            _ensure_resource_hold_schema(database)
+            hold = database.execute(
+                "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid,"
+                "proof_type,proof_sha256 "
+                "FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+            assignment = database.execute(
+                "SELECT node_id,state,generation,lease_expires_at FROM task_node_assignments "
+                "WHERE task_id=? ORDER BY generation DESC LIMIT 1", (str(task_id),)
+            ).fetchone()
+            execution_slots = self._persisted_execution_slots(
+                database, str(task_id), int(task.attempt),
+            )
+            if execution_slots == 0:
+                if hold is not None and int(hold["execution_attempt"]) == int(task.attempt):
+                    execution_slots = 2
+                else:
+                    execution_slots = 1
+            node_capabilities = _node_effective_capabilities(database, str(node_id))
+            identity = database.execute(
+                "SELECT process_pid,process_create_time,process_command_hash "
+                "FROM tasks WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+        identity_sha = None
+        if identity is not None and identity["process_pid"] is not None:
+            identity_sha = hashlib.sha256(_canonical_json({
+                "pid": int(identity["process_pid"]),
+                "create_time": float(identity["process_create_time"]),
+                "command_hash": str(identity["process_command_hash"]),
+            }).encode("utf-8")).hexdigest()
+        hold_state = str(hold["state"]) if hold is not None else None
+        recovery_state, recovery_blocked_reason = _recovery_projection(hold)
+        return {
+            "task_id": task.task_id,
+            "node_id": str(node_id),
+            "execution_generation": int(task.attempt),
+            "task_status": task.status.value,
+            "recovery_state": "STOP_PROOF_REQUIRED",
+            "automatic_reassignment_allowed": False,
+            "stop_proof_verified": False,
+            "resource_wait_reason": task.resource_wait_reason,
+            # Read-only durable evidence for the original execution. These are
+            # projections only: this endpoint can never release a Hold and never
+            # returns a lease/assignment token.
+            "execution_slots": int(execution_slots),
+            "node_capabilities": node_capabilities,
+            "assignment_state": str(assignment["state"]) if assignment is not None else None,
+            "assignment_generation": int(assignment["generation"]) if assignment is not None else None,
+            "hold_state": hold_state,
+            "hold_execution_attempt": int(hold["execution_attempt"]) if hold is not None else None,
+            "hold_assignment_generation": int(hold["assignment_generation"]) if hold is not None else None,
+            "hold_gpu_uuid": str(hold["gpu_uuid"]) if hold is not None else None,
+            "proof_type": (
+                None if hold is None or hold["proof_type"] is None else str(hold["proof_type"])
+            ),
+            "proof_sha256": (
+                None if hold is None or hold["proof_sha256"] is None else str(hold["proof_sha256"])
+            ),
+            "process_identity_sha256": identity_sha,
+            "execution_recovery_state": recovery_state,
+            "execution_recovery_blocked_reason": recovery_blocked_reason,
+            "evidence_sha256": _persistent_evidence_sha256(
+                task_id=str(task.task_id),
+                execution_attempt=int(task.attempt),
+                assignment_state=(
+                    str(assignment["state"]) if assignment is not None else None
+                ),
+                assignment_generation=(
+                    int(assignment["generation"]) if assignment is not None else None
+                ),
+                hold_state=hold_state,
+                hold_execution_attempt=(
+                    int(hold["execution_attempt"]) if hold is not None else None
+                ),
+                hold_assignment_generation=(
+                    int(hold["assignment_generation"]) if hold is not None else None
+                ),
+                gpu_uuid=str(hold["gpu_uuid"]) if hold is not None else None,
+                proof_type=(
+                    None if hold is None or hold["proof_type"] is None
+                    else str(hold["proof_type"])
+                ),
+                proof_sha256=(
+                    None if hold is None or hold["proof_sha256"] is None
+                    else str(hold["proof_sha256"])
+                ),
+                process_identity_sha256=identity_sha,
+            ),
+        }
+
+    def start_execution(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        assignment_lease_token: str,
+    ) -> dict[str, Any]:
+        self.nodes.authenticate(node_id, node_token)
+        node_public = self.nodes.get_public(node_id)
+        preflight_task = self.repository.get(task_id)
+        if preflight_task is None:
+            raise AgentExecutionError("TASK_NOT_FOUND", "assigned task no longer exists", 404)
+        missing_payload = object()
+        try:
+            payload = self.artifacts.read_json(
+                preflight_task.task_id,
+                preflight_task.payload_ref,
+                default=missing_payload,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise AgentExecutionError(
+                "TASK_PAYLOAD_UNAVAILABLE",
+                "assigned task payload cannot be read",
+                409,
+            ) from error
+        if payload is missing_payload:
+            raise AgentExecutionError(
+                "TASK_PAYLOAD_UNAVAILABLE",
+                "assigned task payload does not exist",
+                409,
+            )
+
+        current, now = _iso_now()
+        # Check assignment ownership before minting any short-lived transport
+        # credentials. The authoritative transaction below repeats these checks.
+        with closing(self.repository._connect()) as database:
+            preflight_assignment = database.execute(
+                """
+                SELECT * FROM task_node_assignments
+                 WHERE task_id=? AND node_id=? AND state='CLAIMED'
+                 ORDER BY generation DESC LIMIT 1
+                """,
+                (str(task_id), str(node_id)),
+            ).fetchone()
+        if preflight_assignment is None:
+            raise AgentExecutionError(
+                "ASSIGNMENT_NOT_CLAIMED",
+                "task has no claimed assignment for this node",
+                409,
+            )
+        preflight_assignment_token = str(preflight_assignment["lease_token"] or "")
+        supplied_assignment_token = str(assignment_lease_token or "")
+        if (
+            not preflight_assignment_token
+            or not supplied_assignment_token
+            or not hmac.compare_digest(preflight_assignment_token, supplied_assignment_token)
+        ):
+            raise AgentExecutionError(
+                "INVALID_ASSIGNMENT_LEASE",
+                "assignment lease token is invalid",
+                401,
+            )
+        if (
+            not preflight_assignment["lease_expires_at"]
+            or str(preflight_assignment["lease_expires_at"]) <= now
+        ):
+            raise AgentExecutionError(
+                "ASSIGNMENT_LEASE_EXPIRED",
+                "assignment lease expired before execution start",
+                409,
+            )
+        assignment_snapshot = {
+            "generation": int(preflight_assignment["generation"]),
+            "node_id": str(preflight_assignment["node_id"]),
+            "capability": str(preflight_assignment["capability"]),
+            "resolved_execution_config": _json(
+                preflight_assignment["resolved_execution_config"], {}
+            ),
+        }
+        assignment_config = assignment_snapshot["resolved_execution_config"]
+        if not isinstance(assignment_config, Mapping):
+            assignment_config = {}
+        if assignment_config.get("hard_admission") != "legacy":
+            frozen_digest = str(assignment_config.get("payload_digest") or "")
+            current_digest = hashlib.sha256(json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            if not frozen_digest or not hmac.compare_digest(frozen_digest, current_digest):
+                raise AgentExecutionError(
+                    "TASK_INPUT_CHANGED",
+                    "task payload changed after resource admission; reassign before start",
+                    409,
+                )
+
+        execution_payload = payload
+        self._verify_scenario_payload(preflight_task, payload)
+        if str(node_public.get("connection_mode") or "") == "agent":
+            if not isinstance(payload, dict):
+                raise AgentExecutionError(
+                    "REMOTE_EXECUTION_PAYLOAD_INVALID",
+                    "remote task payload must be an object",
+                    422,
+                )
+            if not callable(self.execution_payload_resolver):
+                raise AgentExecutionError(
+                    "REMOTE_EXECUTION_PAYLOAD_UNAVAILABLE",
+                    "remote Agent execution payload resolver is not configured",
+                    409,
+                )
+            try:
+                execution_payload = self.execution_payload_resolver(
+                    preflight_task,
+                    payload,
+                    assignment_snapshot,
+                )
+            except AgentExecutionError:
+                raise
+            except Exception as error:
+                code = str(getattr(error, "code", "") or "REMOTE_EXECUTION_PAYLOAD_FAILED")
+                status_code = int(getattr(error, "status_code", 409) or 409)
+                raise AgentExecutionError(code, str(error), status_code) from error
+            if not isinstance(execution_payload, dict):
+                raise AgentExecutionError(
+                    "REMOTE_EXECUTION_PAYLOAD_INVALID",
+                    "remote execution payload resolver returned a non-object",
+                    500,
+                )
+
+        execution_expires = (
+            current + timedelta(seconds=self.execution_lease_seconds)
+        ).isoformat()
+        execution_token = secrets.token_urlsafe(32)
+        worker_id = _agent_worker_id(node_id)
+
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            assignment = database.execute(
+                """
+                SELECT * FROM task_node_assignments
+                 WHERE task_id=? AND node_id=? AND state='CLAIMED'
+                 ORDER BY generation DESC LIMIT 1
+                """,
+                (str(task_id), str(node_id)),
+            ).fetchone()
+            if assignment is None:
+                database.rollback()
+                raise AgentExecutionError(
+                    "ASSIGNMENT_NOT_CLAIMED",
+                    "task has no claimed assignment for this node",
+                    409,
+                )
+            stored_assignment_token = str(assignment["lease_token"] or "")
+            supplied_assignment_token = str(assignment_lease_token or "")
+            if (
+                not stored_assignment_token
+                or not supplied_assignment_token
+                or not hmac.compare_digest(stored_assignment_token, supplied_assignment_token)
+            ):
+                database.rollback()
+                raise AgentExecutionError(
+                    "INVALID_ASSIGNMENT_LEASE",
+                    "assignment lease token is invalid",
+                    401,
+                )
+            if (
+                not assignment["lease_expires_at"]
+                or str(assignment["lease_expires_at"]) <= now
+            ):
+                database.rollback()
+                raise AgentExecutionError(
+                    "ASSIGNMENT_LEASE_EXPIRED",
+                    "assignment lease expired before execution start",
+                    409,
+                )
+
+            node = database.execute(
+                "SELECT enabled,last_heartbeat_at,allowed_capabilities,reported_capabilities,token_hash FROM service_nodes WHERE node_id=?",
+                (str(node_id),),
+            ).fetchone()
+            if node is None or not bool(node["enabled"]):
+                database.rollback()
+                raise AgentExecutionError("NODE_DISABLED", "service node is disabled", 409)
+            if not verify_service_node_token(
+                node_id,
+                node_token,
+                str(node["token_hash"] or ""),
+            ):
+                database.rollback()
+                raise AgentExecutionError(
+                    "INVALID_NODE_TOKEN",
+                    "service node token changed before execution start",
+                    401,
+                )
+            try:
+                heartbeat = datetime.fromisoformat(
+                    str(node["last_heartbeat_at"] or "").replace("Z", "+00:00")
+                )
+                if heartbeat.tzinfo is None:
+                    heartbeat = heartbeat.replace(tzinfo=timezone.utc)
+                heartbeat = heartbeat.astimezone(timezone.utc)
+            except ValueError:
+                heartbeat = None
+            if heartbeat is None or (current - heartbeat).total_seconds() > self.heartbeat_ttl_seconds:
+                database.rollback()
+                raise AgentExecutionError("NODE_OFFLINE", "service node heartbeat is stale", 409)
+            allowed = set(_json(node["allowed_capabilities"], []))
+            reported = set(_json(node["reported_capabilities"], []))
+            capability = str(assignment["capability"])
+            if capability not in allowed or capability not in reported:
+                database.rollback()
+                raise AgentExecutionError(
+                    "NODE_CAPABILITY_UNAVAILABLE",
+                    f"service node cannot execute capability {capability}",
+                    409,
+                )
+
+            task_row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if task_row is None:
+                database.rollback()
+                raise AgentExecutionError("TASK_NOT_FOUND", "assigned task no longer exists", 404)
+            if str(task_row["status"]) != TaskStatus.QUEUED.value:
+                database.rollback()
+                raise AgentExecutionError(
+                    "TASK_NOT_QUEUED",
+                    "assigned task is no longer queued",
+                    409,
+                )
+
+            # The current Agent implementation owns exactly one execution loop.
+            # Enforce that capacity in the same BEGIN IMMEDIATE transaction as
+            # task ownership; a local Agent mutex alone cannot stop two HTTP
+            # clients from starting two tasks on the same node.
+            _ensure_resource_hold_schema(database)
+            # Record this execution's original slot contract once, inside the
+            # same transaction that owns the start, and persist it with the
+            # released Assignment below. Recovery/finish adjudication must use
+            # the original contract, never the node's capabilities at a later
+            # time: a node downgraded to one slot must not thereby release a
+            # dual-slot execution whose Hold is missing.
+            execution_slots = _execution_slots_for_worker(database, worker_id)
+            active_executions = int(database.execute(
+                "SELECT COUNT(*) FROM ("
+                " SELECT task_id FROM tasks WHERE worker_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')"
+                " UNION SELECT task_id FROM execution_resource_holds"
+                " WHERE node_id=? AND state<>'RELEASED'"
+                ")",
+                (worker_id, str(node_id)),
+            ).fetchone()[0])
+            if active_executions >= execution_slots:
+                database.rollback()
+                raise AgentExecutionError(
+                    "EXECUTION_SLOT_BUSY",
+                    "the service node has no free authorized execution slot",
+                    409,
+                )
+            if execution_slots == 1:
+                # A requeued task may move from a dual-slot to a single-slot
+                # node. Its old released Hold is retained in the immutable
+                # Assignment receipt, not projected as the new attempt's Hold.
+                old_hold = database.execute("SELECT state FROM execution_resource_holds WHERE task_id=?",
+                                            (str(task_id),)).fetchone()
+                if old_hold is not None:
+                    if str(old_hold["state"]) != "RELEASED":
+                        database.rollback()
+                        raise AgentExecutionError("RESOURCE_HOLD_CONFLICT", "previous execution still owns its Hold", 409)
+                    database.execute("DELETE FROM execution_resource_holds WHERE task_id=?", (str(task_id),))
+            if execution_slots == 2:
+                config = _json(assignment["resolved_execution_config"], {})
+                selected = config.get("selected_gpu") if isinstance(config, dict) else None
+                gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
+                if not gpu_uuid:
+                    database.rollback()
+                    raise AgentExecutionError("DUAL_SLOT_GPU_UUID_MISSING", "selected GPU UUID is missing", 409)
+                conflict = database.execute(
+                    "SELECT 1 FROM execution_resource_holds WHERE node_id=? AND gpu_uuid=? "
+                    "AND task_id<>? AND state<>'RELEASED' LIMIT 1",
+                    (str(node_id), gpu_uuid, str(task_id)),
+                ).fetchone()
+                if conflict is not None:
+                    database.rollback()
+                    raise AgentExecutionError("GPU_UUID_BUSY", "selected GPU is already reserved", 409)
+
+            latest = _from_row(task_row)
+            if any(getattr(latest, field) != getattr(preflight_task, field) for field in (
+                'project_id','kind','payload_ref','resource_key','required_capabilities',
+                'priority','queue_rank','attempt','stage','accepted',
+            )):
+                raise AgentExecutionError('TASK_CHANGED_RETRY',
+                    'task inputs changed during transport preparation; retry assignment start',409)
+
+            changed = database.execute(
+                """
+                UPDATE tasks
+                   SET status='RUNNING',
+                       stage=CASE
+                           WHEN kind='MATERIAL_IMPORT' AND accepted=1 AND stage='indexing_queued'
+                               THEN 'indexing'
+                           ELSE 'running'
+                       END,
+                       worker_id=?,lease_token=?,lease_expires_at=?,
+                       attempt=attempt+1,updated_at=?,finished_at=NULL,
+                       resource_wait_reason=NULL,
+                       process_pid=NULL,process_create_time=NULL,process_command_hash=NULL
+                 WHERE task_id=? AND status='QUEUED'
+                """,
+                (worker_id, execution_token, execution_expires, now, str(task_id)),
+            ).rowcount
+            if changed != 1:
+                database.rollback()
+                raise AgentExecutionError(
+                    "EXECUTION_START_RACE",
+                    "task execution ownership changed before start",
+                    409,
+                )
+
+            execution_attempt = int(task_row["attempt"]) + 1
+            released = database.execute(
+                """
+                UPDATE task_node_assignments
+                   SET state='RELEASED',updated_at=?,released_at=?,
+                       release_reason='execution_started',
+                       resolved_execution_config=json_set(
+                           resolved_execution_config, '$.execution_attempt', ?,
+                           '$.execution_slots', ?
+                       ),
+                       lease_token=NULL,lease_expires_at=NULL
+                 WHERE task_id=? AND generation=? AND node_id=? AND state='CLAIMED'
+                       AND lease_token=?
+                """,
+                (
+                    now,
+                    now,
+                    execution_attempt,
+                    int(execution_slots),
+                    str(task_id),
+                    int(assignment["generation"]),
+                    str(node_id),
+                    stored_assignment_token,
+                ),
+            ).rowcount
+            if released != 1:
+                database.rollback()
+                raise AgentExecutionError(
+                    "ASSIGNMENT_RELEASE_RACE",
+                    "assignment ownership changed before execution start",
+                    409,
+                )
+
+            started_row = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            _ensure_resource_hold_schema(database)
+            if execution_slots == 2:
+                config = _json(assignment["resolved_execution_config"], {})
+                selected = config.get("selected_gpu") if isinstance(config, dict) else None
+                gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
+                if not gpu_uuid:
+                    database.rollback()
+                    raise AgentExecutionError(
+                        "DUAL_SLOT_GPU_UUID_MISSING",
+                        "two-slot execution requires a selected GPU UUID",
+                        409,
+                    )
+                existing_hold = database.execute(
+                    "SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+                ).fetchone()
+                if existing_hold is not None:
+                    if str(existing_hold["state"]) != "RELEASED":
+                        database.rollback()
+                        raise AgentExecutionError(
+                            "RESOURCE_HOLD_CONFLICT",
+                            "task still owns an unreleased execution resource hold",
+                            409,
+                        )
+                    database.execute(
+                        "DELETE FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+                    )
+                try:
+                    database.execute(
+                        "INSERT INTO execution_resource_holds"
+                        "(task_id,node_id,assignment_generation,execution_attempt,gpu_uuid,state,"
+                        "proof_sha256,proof_type,updated_at) VALUES(?,?,?,?,?, 'HELD', NULL, NULL, ?)",
+                        (str(task_id), str(node_id), int(assignment["generation"]),
+                         execution_attempt, gpu_uuid, now),
+                    )
+                except sqlite3.IntegrityError as error:
+                    database.rollback()
+                    raise AgentExecutionError(
+                        "RESOURCE_HOLD_CONFLICT",
+                        "execution resource hold already exists",
+                        409,
+                    ) from error
+            database.commit()
+
+        task = _from_row(started_row)
+        if task.kind is TaskKind.TRAINING:
+            from .task_runtime import TaskLease, WorkerContext
+            from .training_execution_inputs import anchor_execution
+            anchor_execution(WorkerContext(task,TaskLease(task,execution_token,worker_id,execution_expires),
+                self.repository,self.artifacts),payload)
+        return {
+            "task": _task_public(task),
+            "execution": {
+                "lease_token": execution_token,
+                "generation": int(task.attempt),
+                "lease_expires_at": execution_expires,
+                "worker_id": worker_id,
+                "execution_slots": int(execution_slots),
+            },
+            "assignment": {
+                "generation": int(assignment["generation"]),
+                "capability": str(assignment["capability"]),
+                "resolved_execution_config": _json(
+                    assignment["resolved_execution_config"], {}
+                ),
+            },
+            "payload": execution_payload,
+            "transport": {
+                "protocol": "agent-http-control-v1",
+                "large_artifacts": "object-storage-required",
+                "shared_sqlite_required": False,
+                "shared_nfs_required": False,
+            },
+        }
+
+    def _owned_execution(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+    ):
+        self._authenticate_node(
+            node_id,
+            node_token,
+            require_online=False,
+            require_enabled=False,
+        )
+        try:
+            task = self.fenced.assert_execution(
+                task_id,
+                execution_lease_token,
+                int(execution_generation),
+            )
+        except (KeyError, PermissionError) as error:
+            raise AgentExecutionError(
+                "EXECUTION_FENCED",
+                "remote execution lease is no longer current",
+                409,
+            ) from error
+        if str(task.worker_id or "") != _agent_worker_id(node_id):
+            raise AgentExecutionError(
+                "EXECUTION_NODE_MISMATCH",
+                "execution belongs to a different service node",
+                403,
+            )
+        return task
+
+    def heartbeat_execution(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        progress=None,
+        stage=None,
+        current_item=None,
+        resource_resolution=None,
+        runtime_resources=None,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        resolution = _sanitize_training_resource_resolution(
+            resource_resolution,
+            node_id=node_id,
+            execution_generation=execution_generation,
+        )
+        if resolution is not None and current.kind is not TaskKind.TRAINING:
+            raise AgentExecutionError(
+                "REMOTE_RESOURCE_RESOLUTION_UNSUPPORTED",
+                "resource_resolution is only valid for TRAINING executions",
+                409,
+            )
+        if runtime_resources is not None and current.kind is not TaskKind.TRAINING:
+            raise AgentExecutionError(
+                "REMOTE_RUNTIME_RESOURCES_UNSUPPORTED",
+                "runtime_resources is only valid for TRAINING executions",
+                409,
+            )
+        resolved_truth = resolution
+        if runtime_resources is not None and resolved_truth is None:
+            resolved_truth = self.artifacts.read_json(
+                current.task_id,
+                "resolved-resources.json",
+                default={},
+            )
+        runtime = _sanitize_training_runtime_resources(
+            runtime_resources,
+            node_id=node_id,
+            execution_generation=execution_generation,
+            resolved_resources=resolved_truth,
+        )
+        try:
+            task = self.fenced.heartbeat(
+                task_id,
+                execution_lease_token,
+                progress=progress,
+                stage=stage,
+                current_item=current_item,
+                execution_generation=int(execution_generation),
+                lease_seconds=self.execution_lease_seconds,
+            )
+        except PermissionError as error:
+            raise AgentExecutionError(
+                "EXECUTION_FENCED",
+                "remote execution heartbeat lost ownership",
+                409,
+            ) from error
+        if current.kind is TaskKind.TRAINING and str(stage or '') == 'first_batch':
+            from .training_material_usage import TrainingMaterialUsage
+            self._owned_execution(node_id, node_token, task_id, execution_lease_token, execution_generation)
+            TrainingMaterialUsage(self.repository).record_execution(
+                task_id, first_batch=True, generation=int(execution_generation),
+                owner=(task_id, execution_lease_token, int(execution_generation)))
+        if resolution is not None or runtime is not None:
+            # Re-prove generation/node ownership immediately before publishing
+            # Agent-observed training truth. This projects the one frozen
+            # planner/Trainer contract; it never creates a second resource owner.
+            current = self._owned_execution(
+                node_id,
+                node_token,
+                task_id,
+                execution_lease_token,
+                execution_generation,
+            )
+            if current.kind is not TaskKind.TRAINING:
+                raise AgentExecutionError(
+                    "REMOTE_RESOURCE_RESOLUTION_UNSUPPORTED",
+                    "training resource projections require a TRAINING execution",
+                    409,
+                )
+            if resolution is not None:
+                self.artifacts.atomic_write_json(
+                    current.task_id,
+                    "resolved-resources.json",
+                    resolution,
+                )
+            if runtime is not None:
+                self.artifacts.atomic_write_json(
+                    current.task_id,
+                    "runtime-resources.json",
+                    runtime,
+                )
+        return {
+            "task": _task_public(task),
+            "cancel_requested": task.status is TaskStatus.CANCEL_REQUESTED,
+            "resource_resolution_committed": resolution is not None,
+            "runtime_resources_committed": runtime is not None,
+        }
+
+    def append_log(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        text: str,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        value = str(text or "")
+        if len(value.encode("utf-8")) > MAX_REMOTE_LOG_BYTES:
+            raise AgentExecutionError(
+                "REMOTE_LOG_TOO_LARGE",
+                f"one remote log append exceeds {MAX_REMOTE_LOG_BYTES} bytes",
+                413,
+            )
+        # Re-check immediately before publishing the append. Logs are append-only,
+        # but a stale generation must still be fenced from writing after takeover.
+        task = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        self.artifacts.append_log(task.task_id, task.log_ref, value)
+        return {"ok": True, "bytes": len(value.encode("utf-8"))}
+
+    def _training_inputs(self, node_id, node_token, task_id, execution_lease_token,
+                         execution_generation, *, image_id=None):
+        task = self._owned_execution(
+            node_id, node_token, task_id, execution_lease_token, execution_generation,
+        )
+        payload = self._read_task_payload(task)
+        remote = payload.get("remote_execution")
+        training = remote.get("training") if isinstance(remote, dict) else None
+        if (task.kind is not TaskKind.TRAINING or not isinstance(training, dict)
+                or type(training.get("schema_version")) is not int
+                or training["schema_version"] != 3
+                or not callable(self.training_inputs_provider)):
+            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_UNAVAILABLE",
+                                      "frozen training inputs are unavailable", 409)
+        try:
+            result = self.training_inputs_provider(task, payload, image_id=image_id)
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_TRAINING_INPUTS_FAILED")),
+                str(error), int(getattr(error, "status_code", 500)),
+            ) from error
+        if not isinstance(result, dict):
+            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "invalid input contract", 500)
+        return result
+
+    def training_inputs_manifest(self, node_id, node_token, task_id,
+                                 execution_lease_token, execution_generation, *, formal_test_gate=False):
+        if formal_test_gate:
+            task=self._owned_execution(node_id,node_token,task_id,execution_lease_token,execution_generation)
+            if task.kind is not TaskKind.TRAINING:
+                raise AgentExecutionError('REMOTE_TRAINING_INPUTS_INVALID','training execution required',409)
+            from .training_material_usage import assert_frozen_formal_test
+            from .task_runtime.payload_publications import VERSION_REF
+            payload=self._read_task_payload(task)
+            project=self.artifacts.root.parent.parent / 'projects' / task.project_id
+            kwargs={}
+            if VERSION_REF.fullmatch(task.payload_ref):
+                kwargs=dict(execution_attempt=task.attempt,execution_payload_ref=task.payload_ref,
+                    execution_anchor_ref=f'execution-inputs/v1/attempt-{task.attempt}.json')
+            try:
+                assert_frozen_formal_test(project,task.task_id,payload.get('snapshot_id'),**kwargs)
+            except (ValueError, OSError) as error:
+                raise AgentExecutionError('REMOTE_TRAINING_HISTORY_GATE_REJECTED',str(error),409) from error
+            self._owned_execution(node_id,node_token,task_id,execution_lease_token,execution_generation)
+            return {'allowed':True,'task_id':task.task_id,'attempt':task.attempt,
+                'payload_ref':task.payload_ref,'snapshot_id':payload.get('snapshot_id')}
+        return self._training_inputs(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+
+    def training_source_read(self, node_id, node_token, task_id,
+                             execution_lease_token, execution_generation, *, image_id):
+        from fastapi.responses import StreamingResponse
+        from starlette.background import BackgroundTask
+        # Authenticate before even validating the requested source identity.
+        self._owned_execution(node_id, node_token, task_id,
+                              execution_lease_token, execution_generation)
+        if not isinstance(image_id, str) or not image_id.strip():
+            raise AgentExecutionError("REMOTE_TRAINING_INPUT_ID_INVALID", "image_id is required", 422)
+        contract = self._training_inputs(node_id, node_token, task_id,
+                                        execution_lease_token, execution_generation, image_id=image_id)
+        reader = contract.get("reader")
+        try:
+            size = contract.get("size_bytes")
+            sha = contract.get("sha256")
+            if (type(size) is not int or size <= 0 or not isinstance(sha, str)
+                    or not re.fullmatch(r"[0-9a-fA-F]{64}", sha)
+                    or not callable(getattr(reader, "read", None))
+                    or not callable(getattr(reader, "close", None))):
+                raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "invalid source contract", 500)
+            def chunks():
+                remaining = size
+                try:
+                    while remaining:
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        chunk = reader.read(min(1024 * 1024, remaining))
+                        if not isinstance(chunk, bytes) or not chunk or len(chunk) > remaining:
+                            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "source size mismatch", 409)
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        remaining -= len(chunk)
+                        if remaining == 0 and reader.read(1) != b"":
+                            raise AgentExecutionError("REMOTE_TRAINING_INPUTS_INVALID", "source exceeds frozen size", 409)
+                        yield chunk
+                finally:
+                    reader.close()
+            return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                     headers={"Content-Length": str(size), "X-Content-SHA256": sha,
+                                              "Cache-Control": "private, no-store",
+                                              "X-Content-Type-Options": "nosniff"},
+                                     background=BackgroundTask(reader.close))
+        except BaseException:
+            if callable(getattr(reader, "close", None)):
+                reader.close()
+            raise
+
+    def model_install_source(self, node_id, node_token, task_id,
+                             execution_lease_token, execution_generation):
+        """Lease-fenced transfer of one verified asset, never an arbitrary path."""
+        from fastapi.responses import StreamingResponse
+        from starlette.background import BackgroundTask
+        task = self._owned_execution(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+        payload = self._read_task_payload(task)
+        asset_id = str(payload.get("asset_id") or "")
+        if (task.kind is not TaskKind.MODEL_INSTALL
+                or str(payload.get("node_id") or "") != node_id
+                or not callable(self.model_install_asset_provider)):
+            raise AgentExecutionError("MODEL_INSTALL_UNAVAILABLE", "model install is not authorized", 409)
+        asset = self.model_install_asset_provider(asset_id)
+        if (not isinstance(asset, dict)
+                or str(asset.get("sha256") or "") != str(payload.get("sha256") or "")
+                or asset.get("size_bytes") != payload.get("size_bytes")):
+            raise AgentExecutionError("MODEL_INSTALL_ASSET_CHANGED", "verified model asset changed", 409)
+        from pathlib import Path
+        path = Path(str(asset.get("path") or ""))
+        if not path.is_file() or path.is_symlink() or path.stat().st_size != asset["size_bytes"]:
+            raise AgentExecutionError("MODEL_INSTALL_ASSET_MISSING", "model asset is unavailable", 409)
+        stream = path.open("rb")
+        size = int(asset["size_bytes"])
+        try:
+            def chunks():
+                remaining = size
+                try:
+                    while remaining:
+                        self._owned_execution(node_id, node_token, task_id,
+                                              execution_lease_token, execution_generation)
+                        chunk = stream.read(min(4 * 1024 * 1024, remaining))
+                        if not chunk:
+                            raise AgentExecutionError("MODEL_INSTALL_SOURCE_TRUNCATED", "model changed during transfer", 409)
+                        remaining -= len(chunk)
+                        yield chunk
+                    if stream.read(1):
+                        raise AgentExecutionError("MODEL_INSTALL_SOURCE_CHANGED", "model grew during transfer", 409)
+                finally:
+                    stream.close()
+            return StreamingResponse(chunks(), media_type="application/octet-stream",
+                                     headers={"Content-Length": str(size),
+                                              "X-Content-SHA256": str(asset["sha256"]),
+                                              "Cache-Control": "private, no-store",
+                                              "X-Content-Type-Options": "nosniff"},
+                                     background=BackgroundTask(stream.close))
+        except BaseException:
+            stream.close()
+            raise
+
+    def model_install_receipt(self, node_id, node_token, task_id,
+                              execution_lease_token, execution_generation, receipt):
+        task = self._owned_execution(node_id, node_token, task_id,
+                                     execution_lease_token, execution_generation)
+        payload = self._read_task_payload(task)
+        if task.kind is not TaskKind.MODEL_INSTALL or str(payload.get("node_id")) != node_id:
+            raise AgentExecutionError("MODEL_INSTALL_UNAVAILABLE", "model install is not authorized", 409)
+        if not isinstance(receipt, dict) or (
+            str(receipt.get("asset_id") or "") != str(payload.get("asset_id") or "")
+            or str(receipt.get("sha256") or "") != str(payload.get("sha256") or "")
+            or type(receipt.get("size_bytes")) is not int
+            or receipt["size_bytes"] != payload.get("size_bytes")
+        ):
+            raise AgentExecutionError("MODEL_INSTALL_RECEIPT_INVALID", "installed asset evidence mismatch", 422)
+        path = str(receipt.get("path") or "")
+        if (not path or len(path) > 600 or "\x00" in path or ".." in path.split("/")
+                or not path.startswith("/")):
+            raise AgentExecutionError("MODEL_INSTALL_RECEIPT_INVALID", "installed path evidence invalid", 422)
+        self._owned_execution(node_id, node_token, task_id,
+                              execution_lease_token, execution_generation)
+        ref = f"model-install/{int(execution_generation)}/receipt.json"
+        self.artifacts.atomic_write_json(task.task_id, ref, {
+            "asset_id": payload["asset_id"], "sha256": payload["sha256"],
+            "size_bytes": payload["size_bytes"], "node_id": node_id,
+            "path": path, "execution_generation": int(execution_generation),
+            "verified_by": "agent-sha256",
+        })
+        return {"accepted": True, "result_ref": ref}
+
+    def material_scan_page(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if task.kind is not TaskKind.MATERIAL_IMPORT or not callable(self.material_scan_page_provider):
+            raise AgentExecutionError(
+                "REMOTE_MATERIAL_SCAN_UNAVAILABLE",
+                "brokered material storage scan is unavailable for this execution",
+                409,
+            )
+        payload = self._read_task_payload(task)
+        try:
+            return self.material_scan_page_provider(
+                task,
+                payload,
+                cursor=cursor,
+                limit=max(1, min(100, int(limit))),
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_MATERIAL_SCAN_FAILED")),
+                str(error),
+                int(getattr(error, "status_code", 500)),
+            ) from error
+
+    def material_scan_read(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        object_key: str,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if task.kind is not TaskKind.MATERIAL_IMPORT or not callable(self.material_scan_read_provider):
+            raise AgentExecutionError(
+                "REMOTE_MATERIAL_SCAN_UNAVAILABLE",
+                "brokered material object reads are unavailable for this execution",
+                409,
+            )
+        payload = self._read_task_payload(task)
+        try:
+            return self.material_scan_read_provider(
+                task,
+                payload,
+                object_key=str(object_key or ""),
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_MATERIAL_SCAN_READ_FAILED")),
+                str(error),
+                int(getattr(error, "status_code", 500)),
+            ) from error
+
+    def clean_selection_page(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id, node_token, task_id, execution_lease_token, execution_generation,
+        )
+        payload = self._read_task_payload(task)
+        if (
+            task.kind is not TaskKind.MATERIAL_BATCH
+            or str(payload.get("operation") or "").strip().upper() != "CLEAN"
+            or not callable(self.clean_selection_page_provider)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_CLEANING_SELECTION_UNAVAILABLE",
+                "brokered cleaning selection is unavailable for this execution",
+                409,
+            )
+        try:
+            return self.clean_selection_page_provider(
+                task,
+                payload,
+                cursor=cursor,
+                limit=max(1, min(500, int(limit))),
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_CLEANING_SELECTION_FAILED")),
+                str(error),
+                int(getattr(error, "status_code", 500)),
+            ) from error
+
+    def clean_selection_read(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        image_id: str,
+    ) -> dict[str, Any]:
+        task = self._owned_execution(
+            node_id, node_token, task_id, execution_lease_token, execution_generation,
+        )
+        payload = self._read_task_payload(task)
+        if (
+            task.kind is not TaskKind.MATERIAL_BATCH
+            or str(payload.get("operation") or "").strip().upper() != "CLEAN"
+            or not callable(self.clean_selection_read_provider)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_CLEANING_SELECTION_UNAVAILABLE",
+                "brokered cleaning material reads are unavailable for this execution",
+                409,
+            )
+        try:
+            return self.clean_selection_read_provider(
+                task,
+                payload,
+                image_id=str(image_id or ""),
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "REMOTE_CLEANING_SELECTION_READ_FAILED")),
+                str(error),
+                int(getattr(error, "status_code", 500)),
+            ) from error
+
+    def _read_task_payload(self, task) -> dict[str, Any]:
+        missing = object()
+        try:
+            payload = self.artifacts.read_json(
+                task.task_id,
+                task.payload_ref,
+                default=missing,
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise AgentExecutionError(
+                "TASK_PAYLOAD_UNAVAILABLE",
+                "task payload cannot be read",
+                409,
+            ) from error
+        if payload is missing or not isinstance(payload, dict):
+            raise AgentExecutionError(
+                "TASK_PAYLOAD_UNAVAILABLE",
+                "task payload is unavailable or invalid",
+                409,
+            )
+        self._verify_scenario_payload(task, payload)
+        return payload
+
+    def _verify_scenario_payload(self, task, payload):
+        from types import SimpleNamespace
+        from .scenario_models import verify_scenario_request, ScenarioModelUnavailable
+        try:
+            verify_scenario_request(SimpleNamespace(task=task, repository=self.repository,
+                artifacts=self.artifacts), payload)
+        except ScenarioModelUnavailable as error:
+            raise AgentExecutionError('SCENARIO_MODEL_INELIGIBLE', str(error), 409) from error
+
+    @staticmethod
+    def _requires_remote_result_confirmation(task, payload: dict[str, Any]) -> bool:
+        remote = payload.get("remote_execution")
+        supported_kind = task.kind in {
+            TaskKind.DEPLOYMENT_TEST,
+            TaskKind.TRAINING,
+            TaskKind.MODEL_CONVERSION,
+            TaskKind.MATERIAL_IMPORT,
+        } or (
+            task.kind is TaskKind.MATERIAL_BATCH
+            and str(payload.get("operation") or "").strip().upper() == "CLEAN"
+        )
+        return (
+            supported_kind
+            and isinstance(remote, dict)
+            and int(remote.get("version") or 0) == 1
+            and str(remote.get("task_kind") or "") == task.kind.value
+            and str(remote.get("transport") or "") == "object-storage-v1"
+        )
+
+    @staticmethod
+    def _normalized_result_evidence(sha256: object, size_bytes: object, generation: int) -> dict[str, Any]:
+        digest = str(sha256 or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_EVIDENCE_INVALID",
+                "result sha256 must be a 64-character hexadecimal SHA256",
+                422,
+            )
+        try:
+            size = int(size_bytes)
+        except (TypeError, ValueError) as error:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_EVIDENCE_INVALID",
+                "result size_bytes must be a positive integer",
+                422,
+            ) from error
+        if size <= 0:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_EVIDENCE_INVALID",
+                "result size_bytes must be a positive integer",
+                422,
+            )
+        return {
+            "sha256": digest,
+            "size_bytes": size,
+            "execution_generation": int(generation),
+        }
+
+    def _confirmed_remote_result(self, task, execution_generation: int) -> dict[str, Any] | None:
+        payload = self._read_task_payload(task)
+        if not self._requires_remote_result_confirmation(task, payload):
+            return None
+        state = self.artifacts.read_json(
+            task.task_id,
+            _remote_result_state_ref(execution_generation),
+            default={},
+        )
+        if (
+            not isinstance(state, dict)
+            or state.get("confirmed") is not True
+            or int(state.get("execution_generation") or 0) != int(execution_generation)
+            or str(state.get("result_ref") or "") != _remote_result_ref(execution_generation)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_NOT_CONFIRMED",
+                "remote execution result must be uploaded and verified before finalization",
+                409,
+            )
+        return state
+
+    @staticmethod
+    def _model_evidence_projection(items: object) -> list[dict[str, Any]]:
+        if not isinstance(items, list) or not items or len(items) > 4:
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODELS_INVALID",
+                "training model upload response must contain 1-4 entries",
+                500,
+            )
+        projected = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "training model upload entry must be an object",
+                    500,
+                )
+            role = str(item.get("role") or "").strip().lower()
+            digest = str(item.get("sha256") or "").strip().lower()
+            try:
+                size = int(item.get("size_bytes") or 0)
+            except (TypeError, ValueError) as error:
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "training model size evidence is invalid",
+                    500,
+                ) from error
+            file_name = str(item.get("file_name") or "").strip()
+            artifact_id = str(item.get("artifact_id") or "").strip()
+            storage_ref = item.get("storage_ref")
+            if (
+                role not in {"best", "last"}
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or size <= 0
+                or not file_name
+                or "/" in file_name
+                or "\\" in file_name
+                or not artifact_id
+                or not isinstance(storage_ref, dict)
+                or not str(storage_ref.get("storage_source_id") or "").strip()
+                or not str(storage_ref.get("object_key") or "").strip()
+            ):
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_MODELS_INVALID",
+                    "training model upload response contains invalid evidence",
+                    500,
+                )
+            projected.append({
+                "role": role,
+                "file_name": file_name,
+                "sha256": digest,
+                "size_bytes": size,
+                "artifact_id": artifact_id,
+                "storage_ref": {
+                    "storage_source_id": str(storage_ref.get("storage_source_id") or ""),
+                    "object_key": str(storage_ref.get("object_key") or ""),
+                    "file_name": str(storage_ref.get("file_name") or file_name),
+                    "content_type": str(storage_ref.get("content_type") or "application/octet-stream"),
+                },
+            })
+        roles = [item["role"] for item in projected]
+        if len(set(roles)) != len(roles):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODELS_INVALID",
+                "training model roles must be unique",
+                500,
+            )
+        return sorted(projected, key=lambda item: item["role"])
+
+    def prepare_training_model_uploads(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        models: object,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution cannot prepare training model uploads",
+                409,
+            )
+        payload = self._read_task_payload(current)
+        if current.kind is not TaskKind.TRAINING or not self._requires_remote_result_confirmation(current, payload):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_PROTOCOL_UNAVAILABLE",
+                "this execution does not use the portable training model protocol",
+                409,
+            )
+        if not callable(self.training_model_upload_preparer):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_UPLOAD_UNAVAILABLE",
+                "training model upload preparer is not configured",
+                409,
+            )
+        try:
+            prepared = self.training_model_upload_preparer(
+                current,
+                payload,
+                execution_generation=int(execution_generation),
+                models=models,
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "") or "REMOTE_TRAINING_MODEL_PREPARE_FAILED"),
+                str(error),
+                int(getattr(error, "status_code", 409) or 409),
+            ) from error
+        if not isinstance(prepared, dict):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_PREPARE_INVALID",
+                "training model upload preparer returned a non-object",
+                500,
+            )
+        projected = self._model_evidence_projection(prepared.get("items"))
+        version_id = str(prepared.get("version_id") or "").strip()
+        if not version_id:
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_PREPARE_INVALID",
+                "training model upload preparer returned no version id",
+                500,
+            )
+
+        # Re-prove execution ownership after signing ephemeral PUT URLs.
+        owned_after_signing = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if owned_after_signing.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won while preparing training model uploads",
+                409,
+            )
+        state_ref = _remote_training_models_state_ref(execution_generation)
+        existing = self.artifacts.read_json(current.task_id, state_ref, default={})
+        if isinstance(existing, dict) and existing:
+            existing_models = existing.get("models")
+            if (
+                int(existing.get("execution_generation") or 0) != int(execution_generation)
+                or str(existing.get("node_id") or "") != str(node_id)
+                or str(existing.get("version_id") or "") != version_id
+                or existing_models != projected
+            ):
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_MODEL_EVIDENCE_CONFLICT",
+                    "prepared training model evidence conflicts with this execution generation",
+                    409,
+                )
+        _, prepared_at = _iso_now()
+        state = {
+            "task_id": current.task_id,
+            "project_id": current.project_id,
+            "node_id": str(node_id),
+            "execution_generation": int(execution_generation),
+            "version_id": version_id,
+            "models": projected,
+            "prepared_at": str(existing.get("prepared_at") or prepared_at) if isinstance(existing, dict) else prepared_at,
+            "confirmed": bool(existing.get("confirmed")) if isinstance(existing, dict) else False,
+            "confirmed_at": existing.get("confirmed_at") if isinstance(existing, dict) else None,
+        }
+        self.artifacts.atomic_write_json(current.task_id, state_ref, state)
+        return prepared
+
+    def confirm_training_model_uploads(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution cannot confirm training model uploads",
+                409,
+            )
+        payload = self._read_task_payload(current)
+        if current.kind is not TaskKind.TRAINING or not self._requires_remote_result_confirmation(current, payload):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_PROTOCOL_UNAVAILABLE",
+                "this execution does not use the portable training model protocol",
+                409,
+            )
+        if not callable(self.training_model_upload_confirmer):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_CONFIRM_UNAVAILABLE",
+                "training model upload confirmer is not configured",
+                409,
+            )
+        state_ref = _remote_training_models_state_ref(execution_generation)
+        state = self.artifacts.read_json(current.task_id, state_ref, default={})
+        if (
+            not isinstance(state, dict)
+            or int(state.get("execution_generation") or 0) != int(execution_generation)
+            or str(state.get("node_id") or "") != str(node_id)
+            or not str(state.get("version_id") or "")
+            or not isinstance(state.get("models"), list)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODELS_NOT_PREPARED",
+                "training model uploads must be prepared by this execution generation first",
+                409,
+            )
+        if state.get("confirmed") is True:
+            return {
+                "confirmed": True,
+                "version_id": str(state["version_id"]),
+                "items": list(state["models"]),
+            }
+        try:
+            confirmed = self.training_model_upload_confirmer(
+                current,
+                payload,
+                execution_generation=int(execution_generation),
+                models=state["models"],
+            )
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "") or "REMOTE_TRAINING_MODEL_CONFIRM_FAILED"),
+                str(error),
+                int(getattr(error, "status_code", 409) or 409),
+            ) from error
+        if not isinstance(confirmed, dict):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_CONFIRM_INVALID",
+                "training model upload confirmer returned a non-object",
+                500,
+            )
+        projected = self._model_evidence_projection(confirmed.get("items"))
+        if (
+            str(confirmed.get("version_id") or "") != str(state["version_id"])
+            or projected != state["models"]
+            or confirmed.get("confirmed") is not True
+        ):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODEL_CONFIRM_INVALID",
+                "confirmed training model evidence changed after upload",
+                500,
+            )
+        self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        _, confirmed_at = _iso_now()
+        state.update({
+            "confirmed": True,
+            "confirmed_at": confirmed_at,
+        })
+        self.artifacts.atomic_write_json(current.task_id, state_ref, state)
+        return {
+            "confirmed": True,
+            "version_id": str(state["version_id"]),
+            "items": list(state["models"]),
+        }
+
+    def _confirmed_training_models(
+        self,
+        task,
+        execution_generation: int,
+    ) -> dict[str, Any] | None:
+        if task.kind is not TaskKind.TRAINING:
+            return None
+        state = self.artifacts.read_json(
+            task.task_id,
+            _remote_training_models_state_ref(execution_generation),
+            default={},
+        )
+        if (
+            not isinstance(state, dict)
+            or state.get("confirmed") is not True
+            or int(state.get("execution_generation") or 0) != int(execution_generation)
+            or not str(state.get("version_id") or "")
+            or not isinstance(state.get("models"), list)
+        ):
+            raise AgentExecutionError(
+                "REMOTE_TRAINING_MODELS_NOT_CONFIRMED",
+                "remote training models must be uploaded and verified before result finalization",
+                409,
+            )
+        return state
+
+    def prepare_result_upload(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        sha256: object,
+        size_bytes: object,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution cannot prepare a result upload",
+                409,
+            )
+        payload = self._read_task_payload(current)
+        if not self._requires_remote_result_confirmation(current, payload):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
+                "this execution does not use the portable result publication protocol",
+                409,
+            )
+        if not callable(self.result_upload_preparer):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_UPLOAD_UNAVAILABLE",
+                "remote result upload preparer is not configured",
+                409,
+            )
+        evidence = self._normalized_result_evidence(
+            sha256,
+            size_bytes,
+            execution_generation,
+        )
+        state_ref = _remote_result_state_ref(execution_generation)
+        existing = self.artifacts.read_json(current.task_id, state_ref, default={})
+        if isinstance(existing, dict) and existing:
+            if (
+                int(existing.get("execution_generation") or 0) != int(execution_generation)
+                or str(existing.get("node_id") or "") != str(node_id)
+                or str(existing.get("sha256") or "") != evidence["sha256"]
+                or int(existing.get("size_bytes") or 0) != evidence["size_bytes"]
+            ):
+                raise AgentExecutionError(
+                    "REMOTE_RESULT_EVIDENCE_CONFLICT",
+                    "prepared result evidence conflicts with this execution generation",
+                    409,
+                )
+            if existing.get("confirmed") is True:
+                return {
+                    "already_uploaded": True,
+                    "confirmed": True,
+                    "storage_ref": dict(existing.get("storage_ref") or {}),
+                    "sha256": evidence["sha256"],
+                    "size_bytes": evidence["size_bytes"],
+                    "upload": None,
+                }
+        try:
+            prepared = self.result_upload_preparer(current, payload, evidence)
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "") or "REMOTE_RESULT_UPLOAD_PREPARE_FAILED"),
+                str(error),
+                int(getattr(error, "status_code", 409) or 409),
+            ) from error
+        if not isinstance(prepared, dict) or not isinstance(prepared.get("storage_ref"), dict):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_UPLOAD_INVALID",
+                "result upload preparer returned an invalid response",
+                500,
+            )
+        if str(prepared.get("sha256") or "") != evidence["sha256"] or int(
+            prepared.get("size_bytes") or 0
+        ) != evidence["size_bytes"]:
+            raise AgentExecutionError(
+                "REMOTE_RESULT_UPLOAD_INVALID",
+                "result upload preparer changed execution content evidence",
+                500,
+            )
+
+        # Re-check ownership after external storage signing. A stale generation
+        # may receive a short-lived URL, but generation-scoped object keys keep
+        # it isolated and stale evidence is never published as current truth.
+        owned_after_signing = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if owned_after_signing.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won while preparing result upload",
+                409,
+            )
+        _, prepared_at = _iso_now()
+        state = {
+            "task_id": current.task_id,
+            "project_id": current.project_id,
+            "node_id": str(node_id),
+            "execution_generation": int(execution_generation),
+            "sha256": evidence["sha256"],
+            "size_bytes": evidence["size_bytes"],
+            "storage_ref": dict(prepared["storage_ref"]),
+            "prepared_at": prepared_at,
+            "confirmed": False,
+        }
+        self.artifacts.atomic_write_json(current.task_id, state_ref, state)
+        return {
+            "already_uploaded": bool(prepared.get("already_uploaded")),
+            "confirmed": False,
+            "storage_ref": dict(prepared["storage_ref"]),
+            "sha256": evidence["sha256"],
+            "size_bytes": evidence["size_bytes"],
+            "upload": prepared.get("upload"),
+        }
+
+    def confirm_result_upload(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        runtime_result: object = None,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution cannot confirm a result upload",
+                409,
+            )
+        payload = self._read_task_payload(current)
+        runtime_metadata = _sanitize_runtime_result_metadata(runtime_result)
+        if not self._requires_remote_result_confirmation(current, payload):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_PROTOCOL_UNAVAILABLE",
+                "this execution does not use the portable result publication protocol",
+                409,
+            )
+        if not callable(self.result_upload_confirmer):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_CONFIRM_UNAVAILABLE",
+                "remote result upload confirmer is not configured",
+                409,
+            )
+        state_ref = _remote_result_state_ref(execution_generation)
+        state = self.artifacts.read_json(current.task_id, state_ref, default={})
+        if (
+            not isinstance(state, dict)
+            or int(state.get("execution_generation") or 0) != int(execution_generation)
+            or str(state.get("node_id") or "") != str(node_id)
+            or not str(state.get("sha256") or "")
+            or int(state.get("size_bytes") or 0) <= 0
+        ):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_NOT_PREPARED",
+                "remote result upload must be prepared by this execution generation first",
+                409,
+            )
+        if state.get("confirmed") is True:
+            result = self.artifacts.read_json(
+                current.task_id,
+                str(state.get("result_ref") or ""),
+                default={},
+            )
+            return {
+                "confirmed": True,
+                "result_ref": str(state.get("result_ref") or ""),
+                "result": result if isinstance(result, dict) else {},
+            }
+        evidence = {
+            "sha256": str(state["sha256"]),
+            "size_bytes": int(state["size_bytes"]),
+            "execution_generation": int(execution_generation),
+        }
+        try:
+            confirmed = self.result_upload_confirmer(current, payload, evidence)
+        except AgentExecutionError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                str(getattr(error, "code", "") or "REMOTE_RESULT_CONFIRM_FAILED"),
+                str(error),
+                int(getattr(error, "status_code", 409) or 409),
+            ) from error
+        if not isinstance(confirmed, dict) or not isinstance(confirmed.get("result"), dict):
+            raise AgentExecutionError(
+                "REMOTE_RESULT_CONFIRM_INVALID",
+                "result upload confirmer returned an invalid response",
+                500,
+            )
+        training_models = self._confirmed_training_models(
+            current,
+            int(execution_generation),
+        )
+        if training_models is not None:
+            manifest_models = confirmed["result"].get("verified_models")
+            if not isinstance(manifest_models, list):
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_RESULT_MODELS_INVALID",
+                    "training result manifest contains no model evidence",
+                    409,
+                )
+            manifest_projection = sorted(
+                [
+                    {
+                        "role": str(item.get("role") or "").strip().lower(),
+                        "file_name": str(item.get("file_name") or "").strip(),
+                        "sha256": str(item.get("sha256") or "").strip().lower(),
+                        "size_bytes": int(item.get("size_bytes") or 0),
+                    }
+                    for item in manifest_models
+                    if isinstance(item, dict)
+                ],
+                key=lambda item: item["role"],
+            )
+            state_projection = [
+                {
+                    "role": str(item["role"]),
+                    "file_name": str(item["file_name"]),
+                    "sha256": str(item["sha256"]),
+                    "size_bytes": int(item["size_bytes"]),
+                }
+                for item in training_models["models"]
+            ]
+            if manifest_projection != state_projection:
+                raise AgentExecutionError(
+                    "REMOTE_TRAINING_RESULT_MODELS_MISMATCH",
+                    "training result manifest does not match confirmed model artifact uploads",
+                    409,
+                )
+            confirmed = {
+                **confirmed,
+                "training_models": {
+                    "version_id": str(training_models["version_id"]),
+                    "models": list(training_models["models"]),
+                },
+            }
+
+        # Object verification happens before the commit gate. Then reuse the
+        # durable finalization transaction so cancellation and result publication
+        # cannot both win after verification.
+        self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        try:
+            self.fenced.begin_finalization(
+                task_id,
+                execution_lease_token,
+                execution_generation=int(execution_generation),
+            )
+        except InterruptedError as error:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won while verifying result upload",
+                409,
+            ) from error
+        except PermissionError as error:
+            raise AgentExecutionError(
+                "EXECUTION_FENCED",
+                "remote execution lost ownership before result publication",
+                409,
+            ) from error
+        commit_result: dict[str, Any] = {}
+        if callable(self.result_commit_handler):
+            try:
+                committed = self.result_commit_handler(
+                    current,
+                    payload,
+                    evidence,
+                    {
+                        **dict(confirmed),
+                        "runtime_result": dict(runtime_metadata),
+                    },
+                )
+            except AgentExecutionError:
+                raise
+            except Exception as error:
+                raise AgentExecutionError(
+                    str(getattr(error, "code", "") or "REMOTE_RESULT_COMMIT_FAILED"),
+                    str(error),
+                    int(getattr(error, "status_code", 409) or 409),
+                ) from error
+            if committed is not None:
+                if not isinstance(committed, dict):
+                    raise AgentExecutionError(
+                        "REMOTE_RESULT_COMMIT_INVALID",
+                        "result commit handler returned a non-object",
+                        500,
+                    )
+                commit_result = dict(committed)
+
+        result_ref = _remote_result_ref(execution_generation)
+        result = {
+            **runtime_metadata,
+            **dict(confirmed["result"]),
+            **commit_result,
+        }
+        result["execution_generation"] = int(execution_generation)
+        result["output_sha256"] = evidence["sha256"]
+        result["output_size_bytes"] = evidence["size_bytes"]
+        self.artifacts.atomic_write_json(current.task_id, result_ref, result)
+        _, confirmed_at = _iso_now()
+        state.update({
+            "confirmed": True,
+            "confirmed_at": confirmed_at,
+            "result_ref": result_ref,
+        })
+        self.artifacts.atomic_write_json(current.task_id, state_ref, state)
+        return {
+            "confirmed": True,
+            "result_ref": result_ref,
+            "result": result,
+        }
+
+    def begin_finalization(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        if current.status is TaskStatus.CANCEL_REQUESTED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won before finalization",
+                409,
+            )
+        self._confirmed_remote_result(current, execution_generation)
+        try:
+            task = self.fenced.begin_finalization(
+                task_id,
+                execution_lease_token,
+                execution_generation=int(execution_generation),
+            )
+        except InterruptedError as error:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "task cancellation won before finalization",
+                409,
+            ) from error
+        except PermissionError as error:
+            raise AgentExecutionError(
+                "EXECUTION_FENCED",
+                "remote execution lost ownership before finalization",
+                409,
+            ) from error
+        return {"task": _task_public(task)}
+
+    def record_start_identity(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        process_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        current = self._owned_execution(node_id, node_token, task_id,
+                                        execution_lease_token, execution_generation)
+        try:
+            pid = int(process_identity.get("pid"))
+            create_time = float(process_identity.get("create_time"))
+            command_hash = str(process_identity.get("command_hash") or "")
+        except (TypeError, ValueError):
+            raise AgentExecutionError("START_IDENTITY_INVALID", "process identity is invalid", 422)
+        if pid <= 0 or create_time <= 0 or len(command_hash) != 64:
+            raise AgentExecutionError("START_IDENTITY_INVALID", "process identity is invalid", 422)
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_resource_hold_schema(database)
+                hold = database.execute(
+                    "SELECT 1 FROM execution_resource_holds WHERE task_id=? AND node_id=? "
+                    "AND execution_attempt=? AND state='HELD'",
+                    (str(task_id), str(node_id), int(execution_generation)),
+                ).fetchone()
+                if hold is None:
+                    raise AgentExecutionError("RESOURCE_HOLD_MISSING", "resource hold is missing", 409)
+                task_row = database.execute(
+                    "SELECT process_pid,process_create_time,process_command_hash,status,"
+                    "worker_id,attempt,lease_token FROM tasks WHERE task_id=?",
+                    (str(task_id),),
+                ).fetchone()
+                if (task_row is None or str(task_row["worker_id"]) != str(current.worker_id)
+                        or int(task_row["attempt"]) != int(execution_generation)
+                        or str(task_row["lease_token"] or "") != str(execution_lease_token)
+                        or str(task_row["status"]) not in {"RUNNING", "CANCEL_REQUESTED"}):
+                    raise AgentExecutionError("EXECUTION_FENCED", "execution start identity is fenced", 409)
+                existing = (
+                    task_row["process_pid"], task_row["process_create_time"],
+                    task_row["process_command_hash"],
+                )
+                if all(value is None for value in existing):
+                    changed = database.execute(
+                        "UPDATE tasks SET process_pid=?,process_create_time=?,process_command_hash=?,"
+                        "updated_at=? WHERE task_id=? AND worker_id=? AND attempt=? AND lease_token=? "
+                        "AND process_pid IS NULL AND process_create_time IS NULL "
+                        "AND process_command_hash IS NULL "
+                        "AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                        (pid, create_time, command_hash, datetime.now(timezone.utc).isoformat(),
+                         str(task_id), str(current.worker_id), int(execution_generation),
+                         str(execution_lease_token)),
+                    ).rowcount
+                    if changed != 1:
+                        raise AgentExecutionError("START_IDENTITY_CONFLICT",
+                                                  "start identity changed concurrently", 409)
+                elif (existing[0] == pid and float(existing[1]) == create_time
+                      and str(existing[2]) == command_hash):
+                    database.commit()
+                    return {"task_id": str(task_id), "process_pid": pid, "idempotent": True}
+                else:
+                    raise AgentExecutionError(
+                        "START_IDENTITY_CONFLICT",
+                        "a different process identity is already registered",
+                        409,
+                    )
+                database.commit()
+            except Exception:
+                database.rollback()
+                raise
+        return {"task_id": str(task_id), "process_pid": pid}
+
+    def execution_status(self, node_id: str, node_token: str, task_id: str) -> dict[str, Any]:
+        """Read-only ownership/terminal/Hold truth for the original Agent."""
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        with closing(self.repository._connect()) as database:
+            _ensure_resource_hold_schema(database)
+            database.execute("BEGIN")
+            identity = database.execute(
+                "SELECT * FROM tasks WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+            if identity is None:
+                raise AgentExecutionError("TASK_NOT_FOUND", "task does not exist", 404)
+            task = _from_row(identity)
+            hold = database.execute(
+                "SELECT node_id,state,execution_attempt,assignment_generation,gpu_uuid,"
+                "proof_type,proof_sha256 "
+                "FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+            ).fetchone()
+            assignment = database.execute(
+                "SELECT node_id,state,generation,lease_expires_at FROM task_node_assignments "
+                "WHERE task_id=? ORDER BY generation DESC LIMIT 1", (str(task_id),)
+            ).fetchone()
+            # Read-only projection of the original execution-slot contract this
+            # execution was started under. It comes from the same durable source
+            # as the start response (`_persisted_execution_slots`); operators
+            # must be able to distinguish "legally single-slot, no Hold" from
+            # "dual-slot Hold is missing/lost".
+            execution_slots = self._persisted_execution_slots(
+                database, str(task_id), int(task.attempt),
+            )
+            if execution_slots == 0:
+                # Pre-marker historical execution or a task that has not
+                # started yet. A Hold belonging to the *current* execution
+                # attempt is positive evidence of a dual-slot start; otherwise
+                # the only safe legacy interpretation is single-slot. "Unknown"
+                # is never projected as 0 slots.
+                if hold is not None and int(hold["execution_attempt"]) == int(task.attempt):
+                    execution_slots = 2
+                else:
+                    execution_slots = 1
+            node_capabilities = _node_effective_capabilities(database, str(node_id))
+        origin = None
+        if hold is not None:
+            origin = str(hold["node_id"])
+        elif assignment is not None:
+            origin = str(assignment["node_id"])
+        worker_id = str(task.worker_id or "")
+        worker_owner = worker_id[6:] if worker_id.startswith("agent:") else None
+        # Ownership requires positive durable evidence. An unassigned task with
+        # no Hold/Assignment and no worker cannot be read by any Agent.
+        if origin is None and worker_owner is None:
+            raise AgentExecutionError(
+                "EXECUTION_NOT_OWNED", "task is not owned by this node", 404,
+            )
+        if origin is not None and origin != str(node_id):
+            raise AgentExecutionError(
+                "EXECUTION_NOT_OWNED", "task is not owned by this node", 404,
+            )
+        if worker_owner is not None and worker_owner != str(node_id):
+            raise AgentExecutionError(
+                "EXECUTION_NOT_OWNED", "task is not owned by this node", 404,
+            )
+        identity_sha = None
+        if identity is not None and identity["process_pid"] is not None:
+            identity_sha = hashlib.sha256(_canonical_json({
+                "pid": int(identity["process_pid"]),
+                "create_time": float(identity["process_create_time"]),
+                "command_hash": str(identity["process_command_hash"]),
+            }).encode("utf-8")).hexdigest()
+        hold_state = str(hold["state"]) if hold is not None else None
+        proof_type = (
+            None if hold is None or hold["proof_type"] is None
+            else str(hold["proof_type"])
+        )
+        proof_sha256 = (
+            None if hold is None or hold["proof_sha256"] is None
+            else str(hold["proof_sha256"])
+        )
+        assignment_state = str(assignment["state"]) if assignment is not None else None
+        assignment_generation = (
+            int(assignment["generation"]) if assignment is not None else None
+        )
+        hold_execution_attempt = (
+            int(hold["execution_attempt"]) if hold is not None else None
+        )
+        hold_assignment_generation = (
+            int(hold["assignment_generation"]) if hold is not None else None
+        )
+        hold_gpu_uuid = str(hold["gpu_uuid"]) if hold is not None else None
+        recovery_state, recovery_blocked_reason = _recovery_projection(hold)
+        return {
+            "task_id": task.task_id,
+            "node_id": str(node_id),
+            "status": task.status.value,
+            "stage": str(task.stage or ""),
+            "resource_wait_reason": task.resource_wait_reason,
+            "execution_attempt": int(task.attempt),
+            # Original slot contract (1 or 2) for the current execution
+            # attempt; see the projection comment above. Read-only metadata,
+            # no lease/token material is exposed.
+            "execution_slots": int(execution_slots),
+            # Effective node capability names only (allowed and reported).
+            # No token, credential or resource inventory is exposed.
+            "node_capabilities": node_capabilities,
+            "lease_valid": _lease_valid(task.lease_expires_at),
+            "process_identity_sha256": identity_sha,
+            "assignment_state": assignment_state,
+            "assignment_generation": assignment_generation,
+            "assignment_lease_expires_at": (
+                None if assignment is None or assignment["lease_expires_at"] is None
+                else str(assignment["lease_expires_at"])
+            ),
+            "hold_state": hold_state,
+            "hold_execution_attempt": hold_execution_attempt,
+            "hold_assignment_generation": hold_assignment_generation,
+            "hold_gpu_uuid": hold_gpu_uuid,
+            # SQL NULL must stay a JSON null. Stringifying it to "None" would
+            # look like a recorded stop proof to the Agent recovery coordinator
+            # (a HELD execution legitimately has no proof yet) and make every
+            # real crash recovery fail closed.
+            "proof_type": proof_type,
+            "proof_sha256": proof_sha256,
+            # Read-only recovery projection. It never authorizes a release:
+            # HELD means the process stop is not proven yet, STOP_VERIFIED means
+            # only the fenced terminal finish is still outstanding.
+            "recovery_state": recovery_state,
+            "recovery_blocked_reason": recovery_blocked_reason,
+            # Stable digest over durable evidence; lets operators compare the
+            # original execution evidence across restarts without any secret.
+            "evidence_sha256": _persistent_evidence_sha256(
+                task_id=str(task.task_id),
+                execution_attempt=int(task.attempt),
+                assignment_state=assignment_state,
+                assignment_generation=assignment_generation,
+                hold_state=hold_state,
+                hold_execution_attempt=hold_execution_attempt,
+                hold_assignment_generation=hold_assignment_generation,
+                gpu_uuid=hold_gpu_uuid,
+                proof_type=proof_type,
+                proof_sha256=proof_sha256,
+                process_identity_sha256=identity_sha,
+            ),
+        }
+
+    def recover_execution(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        *,
+        assignment_generation: int,
+        execution_generation: int,
+        gpu_uuid: str,
+        process_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Authenticated, fenced recovery of an already-stopped original execution."""
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        if (not isinstance(process_identity, Mapping)
+                or type(process_identity.get("pid")) is not int
+                or process_identity["pid"] <= 0
+                or type(process_identity.get("create_time")) not in (int, float)
+                or not math.isfinite(process_identity["create_time"])
+                or process_identity["create_time"] <= 0
+                or not isinstance(process_identity.get("command_hash"), str)
+                or re.fullmatch(r"[0-9a-fA-F]{64}", process_identity["command_hash"]) is None):
+            raise AgentExecutionError("RECOVERY_PROOF_INVALID", "process identity is invalid", 422)
+        pid = process_identity["pid"]
+        create_time = float(process_identity["create_time"])
+        command_hash = process_identity["command_hash"]
+        proof = {
+            "proof_type": "PROCESS_STOP_VERIFIED", "node_id": str(node_id),
+            "task_id": str(task_id), "assignment_generation": int(assignment_generation),
+            "execution_attempt": int(execution_generation), "gpu_uuid": str(gpu_uuid),
+            "process_identity": {"pid": pid, "create_time": create_time,
+                                 "command_hash": command_hash},
+            "stop_verified": True, "no_process_launched": False,
+            "no_launch_evidence": {},
+        }
+        digest = hashlib.sha256(_canonical_json(proof).encode("utf-8")).hexdigest()
+        legacy_proof = {
+            "node_id": str(node_id), "task_id": str(task_id),
+            "assignment_generation": int(assignment_generation),
+            "execution_attempt": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid),
+            "process_identity": proof["process_identity"],
+            "stop_verified": True,
+        }
+        legacy_digest = hashlib.sha256(_canonical_json(legacy_proof).encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_resource_hold_schema(database)
+                hold = database.execute(
+                    "SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+                ).fetchone()
+                if hold is None:
+                    # A single-slot execution never created a resource Hold, so
+                    # "no Hold" is not by itself unrecoverable. Its legal
+                    # settlement is the same fenced recovery: the exact
+                    # attempt/Assignment/ProcessIdentity is verified, the
+                    # terminal status is CASed, and the identity is registered
+                    # durably so the refreshed status can prove it.
+                    settled = self._settle_single_slot_recovery(
+                        database,
+                        node_id=node_id,
+                        task_id=str(task_id),
+                        assignment_generation=int(assignment_generation),
+                        execution_generation=int(execution_generation),
+                        gpu_uuid=str(gpu_uuid),
+                        pid=pid,
+                        create_time=create_time,
+                        command_hash=command_hash,
+                        now=now,
+                    )
+                    database.commit()
+                    return settled
+                if (str(hold["node_id"]) != str(node_id)
+                        or int(hold["assignment_generation"]) != int(assignment_generation)
+                        or int(hold["execution_attempt"]) != int(execution_generation)
+                        or str(hold["gpu_uuid"]) != str(gpu_uuid)):
+                    raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "recovery identity mismatch", 409)
+                task = database.execute(
+                    "SELECT * FROM tasks WHERE task_id=?", (str(task_id),)
+                ).fetchone()
+                if task is None or int(task["attempt"]) != int(execution_generation):
+                    raise AgentExecutionError("EXECUTION_FENCED", "stale execution attempt", 409)
+                if (int(task["process_pid"] or 0) != pid
+                        or float(task["process_create_time"] or 0) != create_time
+                        or str(task["process_command_hash"] or "") != command_hash):
+                    raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH",
+                                              "recovery does not match registered process", 409)
+                hold_state = str(hold["state"])
+                stored_digest = str(hold["proof_sha256"] or "")
+                stored_type = str(hold["proof_type"] or "")
+                legacy_match = (not stored_type and stored_digest == legacy_digest)
+                if hold_state in {"STOP_VERIFIED", "RELEASED"}:
+                    if not ((stored_digest == digest and stored_type == "PROCESS_STOP_VERIFIED")
+                            or legacy_match):
+                        raise AgentExecutionError("STOP_PROOF_CONFLICT",
+                                                  "existing stop proof differs from recovery proof", 409)
+                task_status = str(task["status"])
+                if task_status in {"RUNNING", "CANCEL_REQUESTED"}:
+                    if hold_state not in {"HELD", "STOP_VERIFIED"}:
+                        raise AgentExecutionError("RECOVERY_STATE_INVALID",
+                                                  "hold state is invalid for recovery", 409)
+                    terminal = "CANCELLED" if task_status == "CANCEL_REQUESTED" else "FAILED"
+                    changed = database.execute(
+                        "UPDATE tasks SET status=?,stage=?,error=COALESCE(error,?),finished_at=?,"
+                        "updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL "
+                        "WHERE task_id=? AND attempt=? AND status IN ('RUNNING','CANCEL_REQUESTED')",
+                        (terminal, terminal.lower(), "RECOVERED_AFTER_AGENT_CRASH",
+                         now, now, str(task_id), int(execution_generation)),
+                    ).rowcount
+                    if changed != 1:
+                        raise AgentExecutionError("EXECUTION_FENCED",
+                                                  "recovery terminal CAS lost", 409)
+                elif task_status in {
+                        "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
+                        "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}:
+                    if hold_state not in {"STOP_VERIFIED", "RELEASED"}:
+                        raise AgentExecutionError("STOP_PROOF_REQUIRED",
+                                                  "terminal task has no verified stop proof", 409)
+                else:
+                    raise AgentExecutionError("RECOVERY_STATE_INVALID",
+                                              "task state cannot be recovered", 409)
+                if hold_state != "RELEASED":
+                    final_digest = stored_digest if legacy_match else digest
+                    changed = database.execute(
+                        "UPDATE execution_resource_holds SET state='RELEASED',proof_sha256=?,"
+                        "proof_type='PROCESS_STOP_VERIFIED',updated_at=? "
+                        "WHERE task_id=? AND execution_attempt=? AND state IN ('HELD','STOP_VERIFIED')",
+                        (final_digest, now, str(task_id), int(execution_generation)),
+                    ).rowcount
+                    if changed != 1:
+                        raise AgentExecutionError("RECOVERY_STATE_INVALID",
+                                                  "hold release CAS lost", 409)
+                database.commit()
+                final_state = "RELEASED"
+                final_digest = str(hold["proof_sha256"] or "")
+                if not legacy_match:
+                    final_digest = digest if hold_state == "HELD" else stored_digest
+            except Exception:
+                database.rollback()
+                raise
+        return {"task_id": str(task_id), "state": final_state, "proof_sha256": final_digest}
+
+    def _settle_single_slot_recovery(
+        self,
+        database,
+        *,
+        node_id: str,
+        task_id: str,
+        assignment_generation: int,
+        execution_generation: int,
+        gpu_uuid: str,
+        pid: int,
+        create_time: float,
+        command_hash: str,
+        now: str,
+    ) -> dict[str, Any]:
+        """Settle one original single-slot execution without inventing a Hold.
+
+        The durable evidence of a single-slot execution is the execution
+        attempt, the RELEASED Assignment that started it and the exact
+        ProcessIdentity. A dual-slot contract (or a pre-marker record on a
+        node that still reports two slots) must never be downgraded to it.
+        """
+        # Select the current Assignment, never an older released row from
+        # another node or attempt. All checks and CAS writes share this txn.
+        assignment = database.execute(
+            "SELECT node_id,generation,state,resolved_execution_config "
+            "FROM task_node_assignments WHERE task_id=? "
+            "ORDER BY generation DESC LIMIT 1", (str(task_id),),
+        ).fetchone()
+        if assignment is None or str(assignment["state"]) != "RELEASED":
+            raise AgentExecutionError("SINGLE_SLOT_EVIDENCE_MISSING",
+                                      "original released Assignment is missing", 409)
+        if str(assignment["node_id"]) != str(node_id):
+            raise AgentExecutionError("EXECUTION_NOT_OWNED", "Assignment belongs to another node", 409)
+        config = _json(assignment["resolved_execution_config"], None)
+        if not isinstance(config, dict):
+            raise AgentExecutionError("SINGLE_SLOT_EVIDENCE_MISSING", "invalid Assignment metadata", 409)
+        formal = "execution_slots" in config or "execution_attempt" in config
+        if formal:
+            if (type(config.get("execution_slots")) is not int
+                    or config["execution_slots"] != 1
+                    or type(config.get("execution_attempt")) is not int
+                    or config["execution_attempt"] != execution_generation):
+                raise AgentExecutionError("STOP_PROOF_REQUIRED", "original slot/attempt contract is invalid", 409)
+            if assignment_generation <= 0:
+                raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "Assignment generation is required", 409)
+        elif self._node_reports_dual_slots(database, node_id):
+            raise AgentExecutionError("STOP_PROOF_REQUIRED", "legacy slot contract is unverified", 409)
+        if assignment_generation > 0 and int(assignment["generation"]) != assignment_generation:
+            raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "recovery Assignment generation mismatch", 409)
+        selected = config.get("selected_gpu")
+        selected_uuid = str(selected.get("uuid") or "") if isinstance(selected, dict) else ""
+        device = str(config.get("selected_device") or "")
+        if ((not formal and device != "cpu" and not selected_uuid)
+                or (formal and (selected_uuid != gpu_uuid
+                         or (not selected_uuid and device != "cpu")
+                         or (selected is not None and not isinstance(selected, dict))))
+                or (not formal and gpu_uuid and selected_uuid and selected_uuid != gpu_uuid)):
+            raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "recovery GPU identity mismatch", 409)
+        task = database.execute(
+            "SELECT * FROM tasks WHERE task_id=?", (str(task_id),)
+        ).fetchone()
+        if task is None or int(task["attempt"]) != int(execution_generation):
+            raise AgentExecutionError("EXECUTION_FENCED", "stale execution attempt", 409)
+        registered_pid = task["process_pid"]
+        if registered_pid is not None:
+            if (int(registered_pid) != pid
+                    or float(task["process_create_time"] or 0) != create_time
+                    or str(task["process_command_hash"] or "") != command_hash):
+                raise AgentExecutionError(
+                    "STOP_PROOF_IDENTITY_MISMATCH",
+                    "recovery does not match registered process",
+                    409,
+                )
+        task_status = str(task["status"])
+        if task_status in {"RUNNING", "CANCEL_REQUESTED"}:
+            if str(task["worker_id"] or "") != _agent_worker_id(node_id):
+                raise AgentExecutionError("EXECUTION_NOT_OWNED", "execution belongs to another worker", 409)
+            terminal = "CANCELLED" if task_status == "CANCEL_REQUESTED" else "FAILED"
+            if registered_pid is None:
+                # Durable identity evidence: the exact stopped process this
+                # execution owned, CASed only while the attempt is still live.
+                changed = database.execute(
+                    "UPDATE tasks SET process_pid=?,process_create_time=?,"
+                    "process_command_hash=?,updated_at=? "
+                    "WHERE task_id=? AND attempt=? AND process_pid IS NULL "
+                    "AND process_create_time IS NULL AND process_command_hash IS NULL "
+                    "AND status IN ('RUNNING','CANCEL_REQUESTED') AND worker_id=?",
+                    (pid, create_time, command_hash, now,
+                     str(task_id), int(execution_generation), _agent_worker_id(node_id)),
+                ).rowcount
+                if changed != 1:
+                    raise AgentExecutionError(
+                        "STOP_PROOF_IDENTITY_MISMATCH",
+                        "recovery process identity could not be registered",
+                        409,
+                    )
+            changed = database.execute(
+                "UPDATE tasks SET status=?,stage=?,error=COALESCE(error,?),finished_at=?,"
+                "updated_at=?,worker_id=NULL,lease_token=NULL,lease_expires_at=NULL "
+                "WHERE task_id=? AND attempt=? AND status IN ('RUNNING','CANCEL_REQUESTED') AND worker_id=?",
+                (terminal, terminal.lower(), "RECOVERED_AFTER_AGENT_CRASH",
+                 now, now, str(task_id), int(execution_generation), _agent_worker_id(node_id)),
+            ).rowcount
+            if changed != 1:
+                raise AgentExecutionError(
+                    "EXECUTION_FENCED", "recovery terminal CAS lost", 409,
+                )
+        elif task_status in {
+                "SUCCEEDED", "PARTIAL_SUCCESS", "CANCELLED", "FAILED",
+                "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE"}:
+            # Idempotent retry after a lost response: the settle decision is
+            # already durable, so only the identity registration may be missing.
+            if registered_pid is None:
+                database.execute(
+                    "UPDATE tasks SET process_pid=?,process_create_time=?,"
+                    "process_command_hash=?,updated_at=? "
+                    "WHERE task_id=? AND attempt=? AND process_pid IS NULL "
+                    "AND process_create_time IS NULL AND process_command_hash IS NULL",
+                    (pid, create_time, command_hash, now,
+                     str(task_id), int(execution_generation)),
+                )
+            terminal = task_status
+        else:
+            raise AgentExecutionError(
+                "RECOVERY_STATE_INVALID", "task state cannot be recovered", 409,
+            )
+        registered = database.execute(
+            "SELECT process_pid,process_create_time,process_command_hash "
+            "FROM tasks WHERE task_id=?", (str(task_id),)
+        ).fetchone()
+        if (registered is None or int(registered["process_pid"] or 0) != pid
+                or float(registered["process_create_time"] or 0) != create_time
+                or str(registered["process_command_hash"] or "") != command_hash):
+            raise AgentExecutionError(
+                "STOP_PROOF_IDENTITY_MISMATCH",
+                "recovery process identity was not persisted",
+                409,
+            )
+        identity_sha256 = hashlib.sha256(_canonical_json({
+            "pid": pid,
+            "create_time": create_time,
+            "command_hash": command_hash,
+        }).encode("utf-8")).hexdigest()
+        return {
+            "task_id": str(task_id),
+            "state": "SETTLED",
+            "execution_attempt": int(execution_generation),
+            "terminal_status": str(terminal),
+            "process_identity_sha256": identity_sha256,
+            "proof_sha256": "",
+        }
+
+    @staticmethod
+    def _node_reports_dual_slots(database, node_id: str) -> bool:
+        node = database.execute(
+            "SELECT allowed_capabilities,reported_capabilities FROM service_nodes "
+            "WHERE node_id=?", (str(node_id),)
+        ).fetchone()
+        if node is None:
+            return False
+        allowed = set(_json(node["allowed_capabilities"], []))
+        reported = set(_json(node["reported_capabilities"], []))
+        return "execution-slots:2" in allowed and "execution-slots:2" in reported
+
+    @staticmethod
+    def _persisted_execution_slots(database, task_id: str, execution_attempt: int) -> int:
+        """Original slot contract recorded at start; 0 means a pre-marker record."""
+        try:
+            row = database.execute(
+                "SELECT resolved_execution_config FROM task_node_assignments "
+                "WHERE task_id=? AND state='RELEASED' "
+                "AND json_extract(resolved_execution_config,'$.execution_attempt')=? "
+                "ORDER BY generation DESC LIMIT 1",
+                (str(task_id), int(execution_attempt)),
+            ).fetchone()
+        except sqlite3.OperationalError:
+            # Malformed historical JSON is not evidence of a single-slot start.
+            return 0
+        if row is None:
+            return 0
+        config = _json(row["resolved_execution_config"], {})
+        slots = config.get("execution_slots") if isinstance(config, dict) else None
+        if type(slots) is int and slots in (1, 2):
+            return int(slots)
+        return 0
+
+    def _dual_hold_verified(self, task_id: str, execution_attempt: int) -> bool:
+        task = self.repository.get(str(task_id))
+        worker_id = str(getattr(task, "worker_id", "") or "") if task is not None else ""
+        node_id = worker_id[6:] if worker_id.startswith("agent:") else ""
+        with closing(self.repository._connect()) as database:
+            _ensure_resource_hold_schema(database)
+            row = database.execute(
+                "SELECT state,execution_attempt FROM execution_resource_holds WHERE task_id=?",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                # Adjudicate against the slot contract this execution was
+                # started under, not the node's current (possibly downgraded)
+                # capabilities.
+                contract = self._persisted_execution_slots(database, task_id, execution_attempt)
+                if contract == 2:
+                    # A dual-slot execution must never bypass a missing Hold;
+                    # a node downgraded to one slot must not release it either.
+                    return False
+                if contract == 1:
+                    # The original execution was single-slot: no Hold exists by
+                    # design and the legacy single-slot contract applies.
+                    return True
+                # Pre-marker historical rows only have live capabilities as
+                # evidence; keep the historical conservative behavior.
+                if not node_id:
+                    return True
+                node = database.execute(
+                    "SELECT allowed_capabilities,reported_capabilities FROM service_nodes "
+                    "WHERE node_id=?", (node_id,)
+                ).fetchone()
+                if node is None:
+                    return True
+                allowed = set(_json(node["allowed_capabilities"], []))
+                reported = set(_json(node["reported_capabilities"], []))
+                dual = "execution-slots:2" in allowed and "execution-slots:2" in reported
+                # A dual-slot execution must never bypass a missing Hold.
+                return not dual
+            return str(row["state"]) == "STOP_VERIFIED" and int(row["execution_attempt"]) == int(execution_attempt)
+
+    def record_stop_proof(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        assignment_generation: int,
+        gpu_uuid: str,
+        process_identity: Mapping[str, Any],
+        stop_verified: bool,
+        no_process_launched: bool = False,
+        no_launch_evidence: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        terminal_recovery = False
+        try:
+            task = self.fenced.assert_execution(task_id, execution_lease_token, int(execution_generation))
+        except (KeyError, PermissionError):
+            task = self.repository.get(task_id)
+            if task is None or task.status not in TERMINAL_STATUSES:
+                raise AgentExecutionError("EXECUTION_FENCED", "remote execution lost ownership", 409)
+            if int(task.attempt) != int(execution_generation):
+                raise AgentExecutionError("EXECUTION_FENCED", "stale execution attempt", 409)
+            terminal_recovery = True
+        if not stop_verified:
+            raise AgentExecutionError("STOP_PROOF_INVALID", "stop verification was not attested", 409)
+        required = {"pid", "create_time", "command_hash"}
+        if not no_process_launched and (
+            not isinstance(process_identity, Mapping) or not required.issubset(process_identity)
+        ):
+            raise AgentExecutionError("STOP_PROOF_INVALID", "process identity is incomplete", 409)
+        if no_process_launched:
+            evidence = no_launch_evidence if isinstance(no_launch_evidence, Mapping) else {}
+            required_evidence = {
+                "launch_boundary_entered", "persisted_launch_intent",
+                "persisted_process_identity", "task_id", "assignment_generation",
+                "execution_attempt", "gpu_uuid", "intent_sha256",
+            }
+            if set(evidence) != required_evidence:
+                raise AgentExecutionError(
+                    "NO_LAUNCH_EVIDENCE_INVALID", "no-launch evidence fields are incomplete", 409)
+            body = {key: evidence.get(key) for key in required_evidence if key != "intent_sha256"}
+            if (evidence.get("launch_boundary_entered") is not False
+                    or evidence.get("persisted_launch_intent") is not False
+                    or evidence.get("persisted_process_identity") is not False
+                    or str(evidence.get("task_id")) != str(task_id)
+                    or type(evidence.get("assignment_generation")) is not int
+                    or int(evidence["assignment_generation"]) != int(assignment_generation)
+                    or type(evidence.get("execution_attempt")) is not int
+                    or int(evidence["execution_attempt"]) != int(execution_generation)
+                    or str(evidence.get("gpu_uuid")) != str(gpu_uuid)):
+                raise AgentExecutionError(
+                    "NO_LAUNCH_EVIDENCE_INVALID", "no-launch evidence is inconsistent", 409)
+            expected_intent = hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
+            if not hmac.compare_digest(str(evidence.get("intent_sha256") or ""), expected_intent):
+                raise AgentExecutionError(
+                    "NO_LAUNCH_EVIDENCE_INVALID", "no-launch evidence digest mismatch", 409)
+        proof = {
+            "proof_type": "NO_PROCESS_LAUNCHED" if no_process_launched else "PROCESS_STOP_VERIFIED",
+            "node_id": str(node_id), "task_id": str(task_id),
+            "assignment_generation": int(assignment_generation),
+            "execution_attempt": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid), "process_identity": dict(process_identity),
+            "stop_verified": True,
+            "no_process_launched": bool(no_process_launched),
+            "no_launch_evidence": dict(no_launch_evidence or {}),
+        }
+        digest = hashlib.sha256(_canonical_json(proof).encode("utf-8")).hexdigest()
+        legacy_proof = {
+            "node_id": str(node_id), "task_id": str(task_id),
+            "assignment_generation": int(assignment_generation),
+            "execution_attempt": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid), "process_identity": dict(process_identity),
+            "stop_verified": True,
+        }
+        if no_process_launched:
+            legacy_proof["no_process_launched"] = True
+            legacy_proof["no_launch_evidence"] = dict(no_launch_evidence or {})
+        legacy_digest = hashlib.sha256(_canonical_json(legacy_proof).encode("utf-8")).hexdigest()
+        now = datetime.now(timezone.utc).isoformat()
+        final_digest = digest
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_resource_hold_schema(database)
+                row = database.execute(
+                    "SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)
+                ).fetchone()
+                if row is None:
+                    raise AgentExecutionError("STOP_PROOF_NOT_APPLICABLE", "task has no dual-slot resource hold", 409)
+                if (str(row["node_id"]) != str(node_id)
+                        or int(row["assignment_generation"]) != int(assignment_generation)
+                        or int(row["execution_attempt"]) != int(execution_generation)
+                        or str(row["gpu_uuid"]) != str(gpu_uuid)):
+                    raise AgentExecutionError("STOP_PROOF_IDENTITY_MISMATCH", "stop proof identity mismatch", 409)
+                execution_row = database.execute(
+                    "SELECT process_pid,process_create_time,process_command_hash FROM tasks WHERE task_id=?",
+                    (str(task_id),),
+                ).fetchone()
+                if no_process_launched:
+                    if execution_row is not None and any(
+                        execution_row[name] is not None
+                        for name in ("process_pid", "process_create_time", "process_command_hash")
+                    ):
+                        raise AgentExecutionError(
+                            "STOP_PROOF_IDENTITY_MISMATCH",
+                            "task has a recorded process identity; no-launch proof rejected",
+                            409,
+                        )
+                else:
+                    if execution_row is None or execution_row["process_pid"] is None:
+                        raise AgentExecutionError(
+                            "START_IDENTITY_UNKNOWN",
+                            "no trusted launch identity is registered for this execution",
+                            409,
+                        )
+                    if (int(execution_row["process_pid"]) != int(process_identity["pid"])
+                            or float(execution_row["process_create_time"]) != float(process_identity["create_time"])
+                            or str(execution_row["process_command_hash"]) != str(process_identity["command_hash"])):
+                        raise AgentExecutionError(
+                            "STOP_PROOF_IDENTITY_MISMATCH",
+                            "stop proof does not match the registered launch identity",
+                            409,
+                        )
+                if terminal_recovery and str(row["state"]) not in {"STOP_VERIFIED", "RELEASED"}:
+                    raise AgentExecutionError(
+                        "STOP_PROOF_REQUIRED",
+                        "terminal task has no previously verified stop proof",
+                        409,
+                    )
+                if str(row["state"]) in {"STOP_VERIFIED", "RELEASED"}:
+                    current_digest = str(row["proof_sha256"] or "")
+                    current_type = str(row["proof_type"] or "")
+                    legacy_match = (
+                        current_type == ""
+                        and current_digest == legacy_digest
+                    )
+                    if not ((current_digest == digest and current_type == proof["proof_type"])
+                            or legacy_match):
+                        raise AgentExecutionError(
+                            "STOP_PROOF_CONFLICT",
+                            "existing stop proof cannot be replaced by different evidence",
+                            409,
+                        )
+                    if legacy_match:
+                        final_digest = current_digest
+                        # One-time, digest-preserving compatibility CAS. The
+                        # original proof_sha256 and its evidence semantics are
+                        # unchanged; only the historically missing type is fixed.
+                        database.execute(
+                            "UPDATE execution_resource_holds SET proof_type=? "
+                            "WHERE task_id=? AND execution_attempt=? "
+                            "AND proof_sha256=? AND proof_type IS NULL",
+                            (proof["proof_type"], str(task_id),
+                             int(execution_generation), current_digest),
+                        )
+                    if str(row["state"]) == "RELEASED":
+                        database.commit()
+                        return {"task_id": str(task_id), "state": "RELEASED",
+                                "idempotent": True, "legacy": legacy_match}
+                    if not terminal_recovery:
+                        database.commit()
+                        return {"task_id": str(task_id), "state": "STOP_VERIFIED",
+                                "idempotent": True, "legacy": legacy_match}
+                if str(row["state"]) == "RELEASED":
+                    database.commit()
+                    return {"task_id": str(task_id), "state": "RELEASED", "idempotent": True}
+                database.execute(
+                    "UPDATE execution_resource_holds SET state=?,proof_sha256=?,proof_type=?,updated_at=? "
+                    "WHERE task_id=? AND execution_attempt=?",
+                    ("RELEASED" if terminal_recovery else "STOP_VERIFIED",
+                     final_digest, proof["proof_type"], now, str(task_id), int(execution_generation)),
+                )
+                database.commit()
+            except Exception:
+                database.rollback()
+                raise
+        return {"task_id": str(task.task_id), "state": "RELEASED" if terminal_recovery else "STOP_VERIFIED",
+                "proof_sha256": digest}
+
+    def resource_wait_receipt(self, node_id, node_token, task_id, *, assignment_generation, execution_generation):
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        with closing(self.repository._connect()) as database:
+            row = database.execute(
+                "SELECT resolved_execution_config FROM task_node_assignments "
+                "WHERE task_id=? AND generation=? AND node_id=? AND state='RELEASED'",
+                (str(task_id), int(assignment_generation), str(node_id)),
+            ).fetchone()
+        config = _json(row[0], {}) if row is not None else {}
+        receipt = config.get("resource_wait_receipt")
+        if not isinstance(receipt, dict) or receipt.get("execution_attempt") != execution_generation:
+            raise AgentExecutionError("RESOURCE_WAIT_RECEIPT_NOT_FOUND", "resource-wait receipt is not recorded", 404)
+        return receipt
+
+    def requeue_resource_wait(self, node_id, node_token, task_id, *, payload):
+        """Atomically requeue an authenticated, proved-never-launched attempt."""
+        self._authenticate_node(node_id, node_token, require_online=False, require_enabled=False)
+        required = {"execution_lease_token", "execution_generation", "assignment_generation",
+                    "gpu_uuid", "no_launch_evidence", "admission"}
+        if (not isinstance(payload, Mapping) or set(payload) != required
+                or type(payload.get("execution_generation")) is not int
+                or type(payload.get("assignment_generation")) is not int
+                or payload["execution_generation"] <= 0 or payload["assignment_generation"] <= 0
+                or not isinstance(payload.get("execution_lease_token"), str)
+                or not isinstance(payload.get("gpu_uuid"), str)):
+            raise AgentExecutionError("RESOURCE_WAIT_INVALID", "invalid resource-wait request", 422)
+        attempt = payload["execution_generation"]
+        generation = payload["assignment_generation"]
+        record = {"task_id": str(task_id), "generation": attempt,
+                  "assignment_generation": generation, "gpu_uuid": payload["gpu_uuid"],
+                  "no_process_launched": True}
+        if (not isinstance(payload["no_launch_evidence"], Mapping)
+                or canonical_digest(payload["no_launch_evidence"]) != canonical_digest(no_launch_evidence(record))):
+            raise AgentExecutionError("NO_LAUNCH_EVIDENCE_INVALID", "no-launch proof does not match execution", 409)
+        admission = payload["admission"]
+        if (not isinstance(admission, Mapping)
+                or set(admission) != {"classification", "code", "reason", "required_bytes", "total_bytes", "available_bytes"}
+                or admission.get("classification") not in {"TEMPORARILY_UNAVAILABLE", "INCOMPATIBLE", "UNKNOWN"}
+                or admission.get("code") not in {"RESOURCE_HOST_MEMORY_INSUFFICIENT", "RESOURCE_HOST_MEMORY_UNKNOWN",
+                                                  "RESOURCE_MANUAL_INVALID", "GPU_MEMORY_INSUFFICIENT", "RESOURCE_RAM_UNSAFE"}
+                or not isinstance(admission.get("reason"), str) or not admission["reason"]
+                or len(admission["reason"]) > 1000
+                or type(admission.get("required_bytes")) is not int or admission["required_bytes"] <= 0
+                or any(value is not None and (type(value) is not int or value < 0)
+                       for value in (admission.get("total_bytes"), admission.get("available_bytes")))):
+            raise AgentExecutionError("RESOURCE_WAIT_INVALID", "invalid resource admission facts", 422)
+        total, available = admission["total_bytes"], admission["available_bytes"]
+        classification = ("INCOMPATIBLE" if total and admission["required_bytes"] > total else
+                          "TEMPORARILY_UNAVAILABLE" if total and available is not None else "UNKNOWN")
+        if (classification != admission["classification"]
+                or (classification == "TEMPORARILY_UNAVAILABLE" and available >= admission["required_bytes"])
+                or (total and available is not None and available > total)):
+            raise AgentExecutionError("RESOURCE_WAIT_INVALID", "resource classification contradicts evidence", 422)
+        request_sha = canonical_digest(payload)
+        proof_sha = stop_proof_digests({"node_id": node_id}, record)[0]
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                assignment = database.execute(
+                    "SELECT * FROM task_node_assignments WHERE task_id=? AND generation=? AND node_id=?",
+                    (str(task_id), generation, str(node_id)),
+                ).fetchone()
+                config = _json(assignment["resolved_execution_config"], {}) if assignment is not None else {}
+                receipt = config.get("resource_wait_receipt")
+                if isinstance(receipt, dict):
+                    if receipt.get("request_sha256") != request_sha:
+                        raise AgentExecutionError("RESOURCE_WAIT_CONFLICT", "resource-wait replay differs", 409)
+                    database.commit()
+                    return receipt  # No writes, including when a newer attempt owns the task.
+                selected = config.get("selected_gpu")
+                gpu_uuid = str(selected.get("uuid") or "") if isinstance(selected, Mapping) else ""
+                slots = config.get("execution_slots")
+                if (assignment is None or str(assignment["state"]) != "RELEASED"
+                        or str(assignment["release_reason"]) != "execution_started"
+                        or type(config.get("execution_attempt")) is not int
+                        or config["execution_attempt"] != attempt
+                        or type(slots) is not int or slots not in (1, 2)
+                        or gpu_uuid != payload["gpu_uuid"]
+                        or (not gpu_uuid and config.get("selected_device") != "cpu")):
+                    raise AgentExecutionError("RESOURCE_WAIT_IDENTITY_MISMATCH", "original Assignment does not match", 409)
+                task = database.execute("SELECT * FROM tasks WHERE task_id=?", (str(task_id),)).fetchone()
+                if task is not None and int(task["attempt"]) == attempt and str(task["status"]) == "CANCEL_REQUESTED":
+                    raise AgentExecutionError("CANCELLATION_WON", "cancel-requested execution cannot be requeued", 409)
+                if (task is None or str(task["kind"]) != "TRAINING" or int(task["attempt"]) != attempt
+                        or str(task["worker_id"] or "") != _agent_worker_id(node_id)
+                        or not hmac.compare_digest(str(task["lease_token"] or ""), payload["execution_lease_token"])
+                        or not _lease_valid(task["lease_expires_at"]) or str(task["status"]) != "RUNNING"):
+                    raise AgentExecutionError("EXECUTION_FENCED", "execution cannot be requeued", 409)
+                if any(task[key] is not None for key in ("process_pid", "process_create_time", "process_command_hash")):
+                    raise AgentExecutionError("START_IDENTITY_PRESENT", "launched execution cannot be requeued", 409)
+                hold = database.execute("SELECT * FROM execution_resource_holds WHERE task_id=?", (str(task_id),)).fetchone()
+                if slots == 2:
+                    if (hold is None or str(hold["node_id"]) != str(node_id)
+                            or int(hold["execution_attempt"]) != attempt
+                            or int(hold["assignment_generation"]) != generation
+                            or str(hold["gpu_uuid"]) != gpu_uuid
+                            or str(hold["state"]) not in {"HELD", "STOP_VERIFIED"}
+                            or (str(hold["state"]) == "HELD" and (hold["proof_type"] or hold["proof_sha256"]))
+                            or (str(hold["state"]) == "STOP_VERIFIED" and
+                                (str(hold["proof_type"]) != "NO_PROCESS_LAUNCHED" or str(hold["proof_sha256"]) != proof_sha))):
+                        raise AgentExecutionError("STOP_PROOF_REQUIRED", "original Hold/no-launch proof is invalid", 409)
+                    database.execute(
+                        "UPDATE execution_resource_holds SET state='RELEASED',proof_type='NO_PROCESS_LAUNCHED',"
+                        "proof_sha256=?,updated_at=? WHERE task_id=? AND execution_attempt=?",
+                        (proof_sha, now, str(task_id), attempt),
+                    )
+                elif hold is not None:
+                    raise AgentExecutionError("RESOURCE_WAIT_IDENTITY_MISMATCH", "unexpected Hold on single-slot execution", 409)
+                reason = f"{classification}: {admission['code']}: {admission['reason']}"
+                receipt = {
+                    "state": "REQUEUED", "task_id": str(task_id), "node_id": str(node_id),
+                    "assignment_generation": generation, "execution_attempt": attempt, "gpu_uuid": gpu_uuid,
+                    "request_sha256": request_sha, "proof_sha256": proof_sha, "proof_type": "NO_PROCESS_LAUNCHED",
+                    "hold_state": "RELEASED" if hold is not None else None, "execution_slots": slots,
+                    "resource_wait_reason": reason, "admission": dict(admission),
+                    "node_capacity": _node_capacity_signature(database.execute(
+                        "SELECT * FROM service_nodes WHERE node_id=?", (str(node_id),)).fetchone()),
+                    "retry_after": (now_dt + timedelta(seconds=min(300, 30 * 2 ** min(attempt - 1, 4)))).isoformat(),
+                }
+                config["resource_wait_receipt"] = receipt
+                database.execute(
+                    "UPDATE task_node_assignments SET resolved_execution_config=?,updated_at=? WHERE task_id=? AND generation=?",
+                    (_canonical_json(config), now, str(task_id), generation),
+                )
+                changed = database.execute(
+                    "UPDATE tasks SET status='QUEUED',stage='resource_waiting',resource_wait_reason=?,"
+                    "worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,progress=0,current_item=NULL,error=NULL,"
+                    "updated_at=?,finished_at=NULL WHERE task_id=? AND attempt=? AND status='RUNNING' AND worker_id=? AND lease_token=?",
+                    (reason, now, str(task_id), attempt, _agent_worker_id(node_id), payload["execution_lease_token"]),
+                ).rowcount
+                if changed != 1:
+                    raise AgentExecutionError("EXECUTION_FENCED", "resource-wait CAS lost", 409)
+                database.commit()
+            except Exception:
+                database.rollback()
+                raise
+        return receipt
+
+    def finish_execution(
+        self,
+        node_id: str,
+        node_token: str,
+        task_id: str,
+        execution_lease_token: str,
+        execution_generation: int,
+        *,
+        status: str,
+        result_ref: str | None = None,
+        error: str | None = None,
+        accepted: bool | None = None,
+    ) -> dict[str, Any]:
+        current = self._owned_execution(
+            node_id,
+            node_token,
+            task_id,
+            execution_lease_token,
+            execution_generation,
+        )
+        try:
+            target = TaskStatus(str(status))
+        except ValueError as exc:
+            raise AgentExecutionError("INVALID_FINISH_STATUS", "invalid task finish status", 422) from exc
+        if target not in TERMINAL_STATUSES | {TaskStatus.AWAITING_CONFIRMATION}:
+            raise AgentExecutionError("INVALID_FINISH_STATUS", "invalid task finish status", 422)
+        if current.status is TaskStatus.CANCEL_REQUESTED and target is not TaskStatus.CANCELLED:
+            raise AgentExecutionError(
+                "CANCELLATION_WON",
+                "cancel-requested execution may only finish as CANCELLED",
+                409,
+            )
+        if not self._dual_hold_verified(task_id, execution_generation):
+            raise AgentExecutionError(
+                "STOP_PROOF_REQUIRED",
+                "verified stop proof is required before releasing the execution resource",
+                409,
+            )
+        if current.kind is TaskKind.MODEL_INSTALL and target is TaskStatus.SUCCEEDED:
+            receipt_ref = f"model-install/{int(execution_generation)}/receipt.json"
+            receipt = self.artifacts.read_json(current.task_id, receipt_ref, default={})
+            payload = self._read_task_payload(current)
+            if (not isinstance(receipt, dict)
+                    or receipt.get("asset_id") != payload.get("asset_id")
+                    or receipt.get("sha256") != payload.get("sha256")
+                    or receipt.get("size_bytes") != payload.get("size_bytes")
+                    or receipt.get("node_id") != node_id
+                    or receipt.get("execution_generation") != int(execution_generation)):
+                raise AgentExecutionError("MODEL_INSTALL_RECEIPT_MISSING",
+                                          "verified node installation receipt is required", 409)
+            result_ref = receipt_ref
+        if target in {
+            TaskStatus.SUCCEEDED,
+            TaskStatus.PARTIAL_SUCCESS,
+            TaskStatus.AWAITING_CONFIRMATION,
+        }:
+            confirmed = self._confirmed_remote_result(current, execution_generation)
+            if confirmed is not None:
+                result_ref = str(confirmed["result_ref"])
+        if (
+            target is TaskStatus.AWAITING_CONFIRMATION
+            and current.kind is not TaskKind.MATERIAL_IMPORT
+        ):
+            raise AgentExecutionError(
+                "INVALID_FINISH_STATUS",
+                "only material import may finish as awaiting confirmation",
+                422,
+            )
+        try:
+            task = self.fenced.finish(
+                task_id,
+                execution_lease_token,
+                target,
+                result_ref=result_ref,
+                error=error,
+                accepted=accepted,
+                execution_generation=int(execution_generation),
+            )
+        except PermissionError as exc:
+            raise AgentExecutionError(
+                "EXECUTION_FENCED",
+                "remote execution finish lost ownership",
+                409,
+            ) from exc
+        with closing(self.repository._connect()) as database:
+            _ensure_resource_hold_schema(database)
+            now = datetime.now(timezone.utc).isoformat()
+            database.execute(
+                "UPDATE execution_resource_holds SET state='RELEASED',updated_at=? "
+                "WHERE task_id=? AND execution_attempt=?",
+                (now, str(task_id), int(execution_generation)),
+            )
+            database.commit()
+        return {"task": _task_public(task)}
+
+
+def _execution_generation(value: object) -> int:
+    try:
+        generation = int(value)
+    except (TypeError, ValueError) as error:
+        raise AgentExecutionError(
+            "INVALID_EXECUTION_GENERATION",
+            "execution_generation must be a positive integer",
+            422,
+        ) from error
+    if generation <= 0:
+        raise AgentExecutionError(
+            "INVALID_EXECUTION_GENERATION",
+            "execution_generation must be a positive integer",
+            422,
+        )
+    return generation
+
+
+def _bearer_token(value: object) -> str:
+    raw = str(value or "").strip()
+    if not raw.lower().startswith("bearer ") or not raw[7:].strip():
+        raise ServiceNodeError(
+            "NODE_TOKEN_REQUIRED",
+            "Bearer service node token is required",
+            401,
+        )
+    return raw[7:].strip()
+
+
+def agent_executor_router(
+    task_repository,
+    task_artifacts,
+    execution_payload_resolver=None,
+    result_upload_preparer=None,
+    result_upload_confirmer=None,
+    result_commit_handler=None,
+    training_model_upload_preparer=None,
+    training_model_upload_confirmer=None,
+    material_scan_page_provider=None,
+    material_scan_read_provider=None,
+    clean_selection_page_provider=None,
+    clean_selection_read_provider=None,
+    training_inputs_provider=None,
+    model_install_asset_provider=None,
+):
+    from fastapi import APIRouter, Body, Header, HTTPException, Query
+
+    router = APIRouter(prefix="/api/v63/node-executor/{node_id}")
+
+    def service() -> AgentExecutionService:
+        return AgentExecutionService(
+            task_repository(),
+            task_artifacts(),
+            # Explicit opt-in only. Production/A800 keeps the established
+            # manual assignment and local Worker path unless intentionally set.
+            auto_assign_enabled=(
+                os.environ.get("CHANGLIAN_AGENT_AUTO_ASSIGN_ON_CLAIM", "") == "1"
+            ),
+            execution_payload_resolver=execution_payload_resolver,
+            result_upload_preparer=result_upload_preparer,
+            result_upload_confirmer=result_upload_confirmer,
+            result_commit_handler=result_commit_handler,
+            training_model_upload_preparer=training_model_upload_preparer,
+            training_model_upload_confirmer=training_model_upload_confirmer,
+            material_scan_page_provider=material_scan_page_provider,
+            material_scan_read_provider=material_scan_read_provider,
+            clean_selection_page_provider=clean_selection_page_provider,
+            clean_selection_read_provider=clean_selection_read_provider,
+            training_inputs_provider=training_inputs_provider,
+            model_install_asset_provider=model_install_asset_provider,
+        )
+
+    def token(authorization: str | None) -> str:
+        try:
+            return _bearer_token(authorization)
+        except ServiceNodeError as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
+
+    def invoke(function, *args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except (ServiceNodeError, AgentExecutionError) as error:
+            raise HTTPException(
+                status_code=error.status_code,
+                detail={"code": error.code, "message": str(error)},
+            ) from error
+
+    @router.post("/assignments/claim")
+    def claim_assignment(
+        node_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        claimed = invoke(service().claim_assignment, node_id, token(authorization))
+        return {"claimed": claimed is not None, "item": claimed}
+
+    @router.get("/executions/{task_id}/recovery")
+    def remote_recovery_diagnosis(
+        node_id: str,
+        task_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().remote_recovery_diagnosis,
+            node_id, token(authorization), task_id,
+        )
+
+    @router.post("/assignments/{task_id}/start")
+    def start_execution(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().start_execution,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("assignment_lease_token") or ""),
+        )
+
+    @router.post("/executions/{task_id}/heartbeat")
+    def heartbeat_execution(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().heartbeat_execution,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            progress=payload.get("progress"),
+            stage=payload.get("stage"),
+            current_item=payload.get("current_item"),
+            resource_resolution=payload.get("resource_resolution"),
+            runtime_resources=payload.get("runtime_resources"),
+        )
+
+    @router.post("/executions/{task_id}/logs")
+    def append_log(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().append_log,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            str(payload.get("text") or ""),
+        )
+
+    @router.post("/executions/{task_id}/training-inputs/manifest")
+    def training_inputs_manifest(node_id: str, task_id: str, payload: dict = Body(...),
+                                 authorization: str | None = Header(default=None)):
+        return invoke(service().training_inputs_manifest, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")),
+                      formal_test_gate=payload.get('formal_test_gate') is True)
+
+    @router.post("/executions/{task_id}/training-inputs/read")
+    def training_source_read(node_id: str, task_id: str, payload: dict = Body(...),
+                             authorization: str | None = Header(default=None)):
+        return invoke(service().training_source_read, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")),
+                      image_id=payload.get("image_id"))
+
+    @router.post("/executions/{task_id}/mother-model/read")
+    def read_mother_model(node_id: str, task_id: str, payload: dict = Body(...),
+                          authorization: str | None = Header(default=None)):
+        return invoke(service().model_install_source, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")))
+
+    @router.post("/executions/{task_id}/mother-model/receipt")
+    def confirm_mother_model(node_id: str, task_id: str, payload: dict = Body(...),
+                             authorization: str | None = Header(default=None)):
+        return invoke(service().model_install_receipt, node_id, token(authorization), task_id,
+                      str(payload.get("execution_lease_token") or ""),
+                      invoke(_execution_generation, payload.get("execution_generation")), payload.get("receipt"))
+
+    @router.post("/executions/{task_id}/material-scan/page")
+    def material_scan_page(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().material_scan_page,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            cursor=payload.get("cursor"),
+            limit=payload.get("limit", 100),
+        )
+
+    @router.post("/executions/{task_id}/material-scan/read")
+    def material_scan_read(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().material_scan_read,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            object_key=str(payload.get("object_key") or ""),
+        )
+
+    @router.post("/executions/{task_id}/clean-selection/page")
+    def clean_selection_page(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().clean_selection_page,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            cursor=payload.get("cursor"),
+            limit=payload.get("limit", 100),
+        )
+
+    @router.post("/executions/{task_id}/clean-selection/read")
+    def clean_selection_read(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().clean_selection_read,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            image_id=str(payload.get("image_id") or ""),
+        )
+
+    @router.post("/executions/{task_id}/training-models/prepare")
+    def prepare_training_models(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().prepare_training_model_uploads,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            models=payload.get("models"),
+        )
+
+    @router.post("/executions/{task_id}/training-models/confirm")
+    def confirm_training_models(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().confirm_training_model_uploads,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+        )
+
+    @router.post("/executions/{task_id}/result-upload/prepare")
+    def prepare_result_upload(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().prepare_result_upload,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            sha256=payload.get("sha256"),
+            size_bytes=payload.get("size_bytes"),
+        )
+
+    @router.post("/executions/{task_id}/result-upload/confirm")
+    def confirm_result_upload(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().confirm_result_upload,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            runtime_result=payload.get("runtime_result"),
+        )
+
+    @router.post("/executions/{task_id}/begin-finalization")
+    def begin_finalization(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().begin_finalization,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+        )
+
+    @router.post("/executions/{task_id}/resource-wait")
+    def requeue_resource_wait(node_id: str, task_id: str, payload: dict = Body(...),
+                              authorization: str | None = Header(default=None)):
+        return invoke(service().requeue_resource_wait, node_id, token(authorization), task_id, payload=payload)
+
+    @router.get("/executions/{task_id}/resource-wait")
+    def resource_wait_receipt(node_id: str, task_id: str, assignment_generation: int = Query(...),
+                              execution_generation: int = Query(...), authorization: str | None = Header(default=None)):
+        return invoke(service().resource_wait_receipt, node_id, token(authorization), task_id,
+                      assignment_generation=assignment_generation, execution_generation=execution_generation)
+
+    @router.post("/executions/{task_id}/recover")
+    def recover_execution(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().recover_execution,
+            node_id, token(authorization), task_id,
+            assignment_generation=int(payload.get("assignment_generation") or 0),
+            execution_generation=invoke(_execution_generation, payload.get("execution_generation")),
+            gpu_uuid=str(payload.get("gpu_uuid") or ""),
+            process_identity=payload.get("process_identity") or {},
+        )
+
+    @router.get("/executions/{task_id}/status")
+    def execution_status(
+        node_id: str,
+        task_id: str,
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(service().execution_status, node_id, token(authorization), task_id)
+
+    @router.post("/executions/{task_id}/start-identity")
+    def record_start_identity(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().record_start_identity,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            process_identity=payload.get("process_identity") or {},
+        )
+
+    @router.post("/executions/{task_id}/stop-proof")
+    def record_stop_proof(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().record_stop_proof,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            assignment_generation=int(payload.get("assignment_generation") or 0),
+            gpu_uuid=str(payload.get("gpu_uuid") or ""),
+            process_identity=payload.get("process_identity") or {},
+            stop_verified=payload.get("stop_verified") is True,
+            no_process_launched=payload.get("no_process_launched") is True,
+            no_launch_evidence=payload.get("no_launch_evidence") or {},
+        )
+
+    @router.post("/executions/{task_id}/finish")
+    def finish_execution(
+        node_id: str,
+        task_id: str,
+        payload: dict = Body(...),
+        authorization: str | None = Header(default=None),
+    ):
+        return invoke(
+            service().finish_execution,
+            node_id,
+            token(authorization),
+            task_id,
+            str(payload.get("execution_lease_token") or ""),
+            invoke(_execution_generation, payload.get("execution_generation")),
+            status=str(payload.get("status") or ""),
+            result_ref=payload.get("result_ref"),
+            error=payload.get("error"),
+            accepted=payload.get("accepted"),
+        )
+
+    # The CPU-only grant route remains default OFF and cannot launch a process.
+    # Keep signing/authorization code outside the central Agent service module.
+    from .os_supervisor_central_api import register_supervisor_cpu_grant_route
+    register_supervisor_cpu_grant_route(router, task_repository)
+
+    return router
+
+
+__all__ = [
+    "AgentExecutionError",
+    "AgentExecutionService",
+    "DEFAULT_EXECUTION_LEASE_SECONDS",
+    "MAX_REMOTE_LOG_BYTES",
+    "MAX_REMOTE_RESULT_METADATA_BYTES",
+    "agent_executor_router",
+]

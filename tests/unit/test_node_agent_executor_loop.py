@@ -1,0 +1,887 @@
+from __future__ import annotations
+
+import sys
+import threading
+import time
+
+from platform_core.node_agent_deployment_runtime import AgentDeploymentOutcome
+from platform_core.node_agent_executor_loop import (
+    NodeAgentExecutorLoop,
+    executable_agent_capabilities,
+)
+from platform_core.node_agent_executor_runtime import RemoteExecutionFenced, RemoteExecutionLease
+
+
+def lease(task_id="task-1", kind="DEPLOYMENT_TEST"):
+    return RemoteExecutionLease(
+        task_id=task_id,
+        kind=kind,
+        project_id="project-1",
+        generation=1,
+        lease_token="execution-secret",
+        lease_expires_at="2026-09-18T10:00:00+00:00",
+        worker_id="agent:node-1",
+        payload={},
+        assignment={},
+        transport={},
+    )
+
+
+class FakeClient:
+    def __init__(self, claims=None):
+        self.claims = list(claims or [])
+        self.claim_calls = 0
+        self.start_calls = []
+        self.finish_calls = []
+        self.last_claimed_kind = "DEPLOYMENT_TEST"
+
+    def claim_assignment(self):
+        self.claim_calls += 1
+        item = self.claims.pop(0) if self.claims else None
+        if item is not None:
+            self.last_claimed_kind = str((item.get("task") or {}).get("kind") or "DEPLOYMENT_TEST")
+        return item
+
+    def start_execution(self, task_id, assignment_token):
+        self.start_calls.append((task_id, assignment_token))
+        return lease(task_id, self.last_claimed_kind)
+
+    def finish(self, current, status, *, result_ref=None, error=None, accepted=None):
+        self.finish_calls.append({
+            "task_id": current.task_id,
+            "status": status,
+            "result_ref": result_ref,
+            "error": error,
+        })
+        return {"task": {"status": status}}
+
+
+class FakeRunner:
+    def __init__(
+        self,
+        *,
+        block=False,
+        fenced=False,
+        ready=True,
+        recovery_error="",
+    ):
+        self.block = block
+        self.fenced = fenced
+        self.ready = bool(ready)
+        self.recovery_error = str(recovery_error)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.shutdown_requested = False
+        self.calls = []
+
+    def run(self, current):
+        self.calls.append(current.task_id)
+        self.started.set()
+        if self.block:
+            self.release.wait(timeout=5.0)
+        if self.fenced or self.shutdown_requested:
+            raise RemoteExecutionFenced("ownership moved")
+        return AgentDeploymentOutcome(
+            current.task_id,
+            current.generation,
+            "SUCCEEDED",
+            result_ref=f"remote-results/{current.generation}/result.json",
+        )
+
+    def request_shutdown(self):
+        self.shutdown_requested = True
+        self.release.set()
+
+
+def claimed(task_id="task-1", kind="DEPLOYMENT_TEST", capability=None):
+    assignment = {
+        "task_id": task_id,
+        "assignment_lease_token": "assignment-secret",
+    }
+    if capability:
+        assignment["capability"] = capability
+    return {
+        "assignment": assignment,
+        "task": {
+            "task_id": task_id,
+            "kind": kind,
+        },
+    }
+
+
+def test_executor_reports_only_capabilities_this_agent_build_can_run():
+    assert executable_agent_capabilities(
+        ["training", "deployment-test", "deployment-test.rknn", "conversion", "conversion.rknn", "material-import", "cleaning", "deployment-test"]
+    ) == ["cleaning", "conversion", "conversion.rknn", "deployment-test", "deployment-test.rknn", "material-import", "training"]
+    assert executable_agent_capabilities(["training", "conversion", "conversion.rknn"]) == ["conversion", "conversion.rknn", "training"]
+
+
+def test_executor_withdraws_capability_when_runner_not_registered():
+    client = FakeClient([])
+    deployment_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["training", "conversion", "material-import", "cleaning", "model-upload", "deployment-test.rknn"],
+    )
+    # The deployment runner is registered by default, but the other
+    # capabilities have no runnable handler in this Agent instance.
+    assert loop.effective_capabilities() == ("deployment-test.rknn",)
+
+
+def test_executor_withdraws_training_capability_when_runner_recovery_is_unsafe():
+    client = FakeClient([])
+    deployment_runner = FakeRunner()
+    training_runner = FakeRunner(
+        ready=False,
+        recovery_error="stale training process cleanup could not be verified",
+    )
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["deployment-test", "training"],
+        runners={"TRAINING": training_runner},
+    )
+
+    assert loop.capabilities == ("deployment-test", "training")
+    assert loop.effective_capabilities() == ("deployment-test",)
+    assert "cleanup could not be verified" in loop.status().last_error
+
+
+def test_run_once_claims_starts_and_dispatches_one_deployment_task():
+    client = FakeClient([claimed()])
+    runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        runner,
+        capabilities=["deployment-test"],
+        poll_interval=0.5,
+    )
+
+    assert loop.run_once() is True
+
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert runner.calls == ["task-1"]
+    status = loop.status()
+    assert status.active_tasks == ()
+    assert status.completed_tasks == 1
+    assert status.last_outcome == "SUCCEEDED"
+    assert status.last_error == ""
+
+
+def test_conversion_capability_dispatches_to_registered_conversion_runner():
+    client = FakeClient([claimed(kind="MODEL_CONVERSION")])
+    deployment_runner = FakeRunner()
+    conversion_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["conversion"],
+        runners={"MODEL_CONVERSION": conversion_runner},
+    )
+
+    assert loop.enabled is True
+    assert loop.effective_capabilities() == ("conversion",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert deployment_runner.calls == []
+    assert conversion_runner.calls == ["task-1"]
+    assert loop.status().completed_tasks == 1
+
+
+def test_executor_withdraws_conversion_capability_when_cleanup_is_unsafe():
+    client = FakeClient([])
+    deployment_runner = FakeRunner()
+    conversion_runner = FakeRunner(
+        ready=False,
+        recovery_error="stale conversion process cleanup could not be verified",
+    )
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["conversion", "deployment-test"],
+        runners={"MODEL_CONVERSION": conversion_runner},
+    )
+
+    assert loop.capabilities == ("conversion", "deployment-test")
+    assert loop.effective_capabilities() == ("deployment-test",)
+    assert "conversion process cleanup" in loop.status().last_error
+
+
+def test_training_capability_dispatches_to_registered_training_runner():
+    client = FakeClient([claimed(kind="TRAINING")])
+    deployment_runner = FakeRunner()
+    training_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["training"],
+        runners={"TRAINING": training_runner},
+    )
+
+    assert loop.enabled is True
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert deployment_runner.calls == []
+    assert training_runner.calls == ["task-1"]
+    assert loop.status().completed_tasks == 1
+
+
+def test_material_import_capability_dispatches_to_registered_material_runner():
+    client = FakeClient([claimed(kind="MATERIAL_IMPORT")])
+    deployment_runner = FakeRunner()
+    material_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["material-import"],
+        runners={"MATERIAL_IMPORT": material_runner},
+    )
+
+    assert loop.enabled is True
+    assert loop.effective_capabilities() == ("material-import",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert deployment_runner.calls == []
+    assert material_runner.calls == ["task-1"]
+    assert loop.status().completed_tasks == 1
+
+
+def test_cleaning_capability_dispatches_material_batch_to_registered_cleaning_runner():
+    client = FakeClient([claimed(kind="MATERIAL_BATCH")])
+    deployment_runner = FakeRunner()
+    cleaning_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["cleaning"],
+        runners={"MATERIAL_BATCH": cleaning_runner},
+    )
+
+    assert loop.enabled is True
+    assert loop.effective_capabilities() == ("cleaning",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert deployment_runner.calls == []
+    assert cleaning_runner.calls == ["task-1"]
+    assert loop.status().completed_tasks == 1
+
+
+def test_cleaning_capability_is_withdrawn_when_runtime_dependencies_are_unavailable():
+    client = FakeClient([])
+    deployment_runner = FakeRunner()
+    cleaning_runner = FakeRunner(
+        ready=False,
+        recovery_error="CLEANING_RUNTIME_UNAVAILABLE: cv2 missing",
+    )
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["cleaning", "deployment-test"],
+        runners={"MATERIAL_BATCH": cleaning_runner},
+    )
+
+    assert loop.capabilities == ("cleaning", "deployment-test")
+    assert loop.effective_capabilities() == ("deployment-test",)
+    assert "CLEANING_RUNTIME_UNAVAILABLE" in loop.status().last_error
+
+
+def test_inconsistent_unsupported_claim_is_not_started_and_waits_for_claim_lease_expiry():
+    client = FakeClient([claimed(kind="MODEL_CONVERSION")])
+    runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        runner,
+        capabilities=["deployment-test"],
+    )
+
+    assert loop.run_once() is True
+    assert client.start_calls == []
+    assert runner.calls == []
+    assert "UNSUPPORTED_AGENT_TASK_KIND" in loop.last_error()
+
+
+def test_background_loop_keeps_one_active_task_and_shutdown_fences_runner():
+    client = FakeClient([claimed("task-blocking")])
+    runner = FakeRunner(block=True)
+    loop = NodeAgentExecutorLoop(
+        client,
+        runner,
+        capabilities=["deployment-test"],
+        poll_interval=0.5,
+    )
+
+    loop.start()
+    assert runner.started.wait(timeout=2.0)
+    assert loop.active_tasks() == ("task-blocking",)
+    # The executor cannot claim another task while the single runner call blocks.
+    assert client.claim_calls == 1
+
+    loop.stop(timeout=3.0)
+
+    assert runner.shutdown_requested is True
+    assert loop.active_tasks() == ()
+    assert "EXECUTION_FENCED" in loop.last_error()
+
+
+def test_fenced_execution_never_publishes_terminal_status():
+    client = FakeClient([claimed("task-fenced")])
+    runner = FakeRunner(fenced=True)
+    loop = NodeAgentExecutorLoop(
+        client,
+        runner,
+        capabilities=["deployment-test"],
+    )
+
+    assert loop.run_once() is True
+
+    assert client.finish_calls == []
+    assert "EXECUTION_FENCED" in loop.last_error()
+
+
+def test_executor_loop_source_has_no_control_plane_database_dependency():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "platform_core"
+        / "node_agent_executor_loop.py"
+    ).read_text(encoding="utf-8")
+    assert "sqlite3" not in source
+    assert "TaskRepository" not in source
+    assert "tasks.sqlite3" not in source
+
+
+def test_rknn_conversion_assignment_dispatches_only_with_rknn_capability():
+    client = FakeClient([
+        claimed(kind="MODEL_CONVERSION", capability="conversion.rknn")
+    ])
+    deployment_runner = FakeRunner()
+    conversion_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["conversion.rknn"],
+        runners={"MODEL_CONVERSION": conversion_runner},
+    )
+
+    assert loop.effective_capabilities() == ("conversion.rknn",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert conversion_runner.calls == ["task-1"]
+
+
+def test_rknn_only_agent_does_not_start_generic_conversion_assignment():
+    client = FakeClient([
+        claimed(kind="MODEL_CONVERSION", capability="conversion")
+    ])
+    deployment_runner = FakeRunner()
+    conversion_runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        deployment_runner,
+        capabilities=["conversion.rknn"],
+        runners={"MODEL_CONVERSION": conversion_runner},
+    )
+
+    assert loop.run_once() is True
+    assert client.start_calls == []
+    assert conversion_runner.calls == []
+    assert "not executable" in loop.status().last_error
+
+
+def test_executor_maps_rknn_board_capability_to_deployment_runner():
+    client = FakeClient([])
+    runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(
+        client,
+        runner,
+        capabilities=["deployment-test.rknn"],
+    )
+    assert loop.effective_capabilities() == ("deployment-test.rknn",)
+
+
+def test_rknn_board_deployment_claim_starts_only_its_executable_runner():
+    client = FakeClient([
+        claimed(kind="DEPLOYMENT_TEST", capability="deployment-test.rknn")
+    ])
+    runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(client, runner, capabilities=["deployment-test.rknn"])
+
+    assert loop.effective_capabilities() == ("deployment-test.rknn",)
+    assert loop.run_once() is True
+    assert client.start_calls == [("task-1", "assignment-secret")]
+    assert runner.calls == ["task-1"]
+    assert loop.status().last_outcome == "SUCCEEDED"
+
+
+def test_rknn_board_deployment_does_not_claim_generic_deployment_capability():
+    client = FakeClient([
+        claimed(kind="DEPLOYMENT_TEST", capability="deployment-test")
+    ])
+    runner = FakeRunner()
+    loop = NodeAgentExecutorLoop(client, runner, capabilities=["deployment-test.rknn"])
+
+    assert loop.run_once() is True
+    assert client.start_calls == []
+    assert runner.calls == []
+    assert "not executable" in loop.status().last_error
+
+
+def test_dual_start_unknown_keeps_local_reservation_and_explicit_reject_frees_it():
+    from platform_core.node_agent_executor_runtime import NodeExecutorHTTPError
+    from platform_core.task_runtime.process_control import ProcessController
+
+    claim = {
+        "assignment": {"task_id": "a", "assignment_lease_token": "token-a",
+                       "capability": "training", "generation": 2,
+                       "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+        "task": {"task_id": "a", "kind": "TRAINING"},
+    }
+
+    class UnknownClient:
+        def claim_assignment(self):
+            return claim
+
+        def start_execution(self, task_id, assignment_token):
+            raise NodeExecutorHTTPError("NODE_EXECUTOR_TRANSPORT_FAILED", "lost", retryable=True)
+
+    loop = NodeAgentExecutorLoop(
+        UnknownClient(), object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda kind, on_started: type("R", (), {"ready": True})(),
+        slot_controller=ProcessController(),
+    )
+    assert loop._run_dual_once() is True
+    active = loop._slots.active()
+    assert len(active) == 1 and active[0].state == "CENTRAL_UNKNOWN"
+    assert active[0].generation == 2
+
+    class RejectClient(UnknownClient):
+        def start_execution(self, task_id, assignment_token):
+            raise NodeExecutorHTTPError("EXECUTION_SLOT_BUSY", "busy", status_code=409)
+
+    loop2 = NodeAgentExecutorLoop(
+        RejectClient(), object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda kind, on_started: type("R", (), {"ready": True})(),
+        slot_controller=ProcessController(),
+    )
+    assert loop2._run_dual_once() is True
+    assert loop2._slots.active() == ()
+
+
+def test_dual_slot_reaper_fails_closed_on_any_identity_mismatch():
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    class StatusClient:
+        node_id = "node-1"
+
+        def __init__(self, status):
+            self.status = status
+
+        def execution_status(self, _task_id):
+            return dict(self.status)
+
+    class Controller:
+        def terminate_tree(self, *_args, **_kwargs):
+            return None
+
+    def build(status):
+        lease = RemoteExecutionLease(
+            task_id="a", kind="TRAINING", project_id="p", generation=3,
+            lease_token="t", lease_expires_at="2026-09-18T10:00:00+00:00",
+            worker_id="agent:node-1", payload={}, assignment={
+                "generation": 2,
+                "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+            transport={},
+        )
+        loop = NodeAgentExecutorLoop(
+            StatusClient(status), object(), capabilities=["training"], max_slots=2,
+            slot_runner_factory=lambda *_args: object(), slot_controller=Controller(),
+        )
+        slot = loop._slots.reserve(
+            SimpleNamespace(task_id="a", generation=2), gpu_uuid="GPU-A", slot_id="slot-a",
+        )
+        loop._slots.mark_started(slot, lease)
+        loop._slots.start_worker(slot, lambda *_args: None)
+        loop._slots.wait(5)
+        identity = SimpleNamespace(pid=11, create_time=12.5, command_hash="a" * 64)
+        slot.identity = identity
+        digest = hashlib.sha256(json.dumps({
+            "pid": 11, "create_time": 12.5, "command_hash": "a" * 64,
+        }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        good = {
+            "task_id": "a", "node_id": "node-1", "status": "FAILED",
+            "execution_attempt": 3, "hold_state": "RELEASED",
+            "hold_execution_attempt": 3, "hold_assignment_generation": 2,
+            "hold_gpu_uuid": "GPU-A", "process_identity_sha256": digest,
+        }
+        return loop, good
+
+    base_variants = [
+        {"hold_state": "HELD"},
+        {"hold_state": "STOP_VERIFIED"},
+        {"status": "RUNNING"},
+        {"task_id": "other"},
+        {"node_id": "other"},
+        {"execution_attempt": 4},
+        {"hold_assignment_generation": 1},
+        {"hold_gpu_uuid": "GPU-B"},
+        {"process_identity_sha256": "b" * 64},
+        {"hold_execution_attempt": 2},
+    ]
+    for variant in base_variants:
+        loop, good = build({})
+        good.update(variant)
+        loop.client.status = good
+        loop._reap_dual_slots()
+        assert loop._slots.active(), variant
+        loop._slots.shutdown(0.1)
+
+    class FailingClient(StatusClient):
+        def execution_status(self, _task_id):
+            raise RuntimeError("network")
+
+    loop, _good = build({})
+    loop.client = FailingClient({})
+    loop._reap_dual_slots()
+    assert loop._slots.active()
+    loop._slots.shutdown(0.1)
+
+
+def test_dual_slot_loop_runs_two_real_cpu_runners_and_does_not_claim_third():
+    from types import SimpleNamespace
+
+    from platform_core.task_runtime.process_control import ProcessController, launch_process
+
+    claims = [
+        {
+            "assignment": {"task_id": task_id, "assignment_lease_token": f"a-{task_id}",
+                           "capability": "training", "generation": 1,
+                           "resolved_execution_config": {"selected_gpu": {
+                               "uuid": f"GPU-{task_id.upper()}"}}},
+            "task": {"task_id": task_id, "kind": "TRAINING"},
+        }
+        for task_id in ("a", "b", "c")
+    ]
+
+    class DualClient:
+        def __init__(self):
+            self.claim_calls = 0
+            self.start_calls = []
+
+        def claim_assignment(self):
+            self.claim_calls += 1
+            if self.claim_calls > 2:
+                return None
+            return claims[self.claim_calls - 1]
+
+        def start_execution(self, task_id, assignment_token):
+            self.start_calls.append(task_id)
+            return RemoteExecutionLease(
+                task_id=task_id, kind="TRAINING", project_id="project-1",
+                generation=1, lease_token="execution-secret",
+                lease_expires_at="2026-09-18T10:00:00+00:00",
+                worker_id="agent:node-1", payload={},
+                assignment={"generation": 1,
+                            "resolved_execution_config": {"selected_gpu": {
+                    "uuid": f"GPU-{task_id.upper()}"}}},
+                transport={},
+            )
+
+        def finish(self, *args, **kwargs):
+            return None
+
+    started = {}
+    pids = {}
+    closed = {}
+
+    class SleepRunner:
+        def __init__(self, on_started):
+            self.ready = True
+            self._on_started = on_started
+            self._stop = threading.Event()
+            self._controller = ProcessController()
+
+        def request_shutdown(self):
+            self._stop.set()
+
+        def run(self, execution_lease):
+            handle = launch_process([sys.executable, "-c", "import time; time.sleep(30)"])
+            self._on_started(handle.identity)
+            started[execution_lease.task_id] = time.monotonic()
+            pids[execution_lease.task_id] = handle.process.pid
+            while not self._stop.wait(0.02):
+                pass
+            self._controller.terminate_tree(handle.identity, timeout=3.0)
+            closed[execution_lease.task_id] = time.monotonic()
+            return SimpleNamespace(status="CANCELLED", error="")
+
+    client = DualClient()
+    loop = NodeAgentExecutorLoop(
+        client, SleepRunner(lambda _identity: None),
+        capabilities=["training"], max_slots=2,
+        runners={"TRAINING": SleepRunner(lambda _identity: None)},
+        slot_runner_factory=lambda kind, on_started: SleepRunner(on_started),
+        slot_controller=ProcessController(), poll_interval=0.02,
+    )
+    try:
+        loop.start()
+        deadline = time.monotonic() + 10
+        while len(started) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert set(started) == {"a", "b"}
+        assert abs(started["a"] - started["b"]) < 5
+        assert pids["a"] != pids["b"]
+        assert client.claim_calls == 2
+        assert "execution-slots:2" in loop.effective_capabilities()
+    finally:
+        loop.stop(timeout=10)
+        loop._slots.wait(10)
+    assert {"a", "b"} <= set(closed)
+
+
+def test_dual_slot_binds_assignment_five_with_execution_attempt_two(tmp_path):
+    import json
+
+    from platform_core.task_runtime.process_control import ProcessController
+
+    claim = {
+        "assignment": {"task_id": "a", "assignment_lease_token": "token-a",
+                       "capability": "training", "generation": 5,
+                       "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+        "task": {"task_id": "a", "kind": "TRAINING"},
+    }
+
+    class Client:
+        def claim_assignment(self):
+            return claim
+
+        def start_execution(self, task_id, assignment_token):
+            return RemoteExecutionLease(
+                task_id=task_id, kind="TRAINING", project_id="project-1",
+                generation=2, lease_token="execution-secret",
+                lease_expires_at="2026-09-18T10:00:00+00:00",
+                worker_id="agent:node-1", payload={},
+                assignment={"generation": 5, "resolved_execution_config": {
+                    "selected_gpu": {"uuid": "GPU-A"}}},
+                transport={}, execution_slots=2,
+            )
+
+    observed = {}
+
+    class Runner:
+        ready = True
+
+        def run(self, current):
+            observed["lease"] = current
+            return AgentDeploymentOutcome(current.task_id, current.generation, "SUCCEEDED")
+
+    intent = tmp_path / "dual-slot-intents.json"
+    loop = NodeAgentExecutorLoop(
+        Client(), object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda kind, on_started: Runner(),
+        slot_controller=ProcessController(), slot_intent_path=intent,
+    )
+    assert loop._run_dual_once() is True
+    active = loop._slots.active()
+    assert len(active) == 1
+    slot = active[0]
+    # Slot identity is the Assignment generation; the execution attempt is
+    # tracked separately and both are persisted.
+    assert slot.generation == 5
+    assert slot.assignment_generation == 5
+    assert slot.execution_attempt == 2
+    assert slot.gpu_uuid == "GPU-A"
+    records = json.loads(intent.read_text(encoding="utf-8"))
+    assert len(records) == 1
+    assert records[0]["task_id"] == "a"
+    assert records[0]["generation"] == 5
+    assert records[0]["assignment_generation"] == 5
+    assert records[0]["execution_attempt"] == 2
+    assert records[0]["gpu_uuid"] == "GPU-A"
+    assert observed["lease"].execution_slots == 2
+    loop._slots.shutdown(0.1)
+
+
+def test_dual_slot_rejects_start_that_is_not_the_reserved_contract(tmp_path):
+    import json
+
+    from platform_core.task_runtime.process_control import ProcessController
+
+    def build_lease(*, execution_slots, assignment_generation, gpu_uuid, generation=2):
+        return RemoteExecutionLease(
+            task_id="a", kind="TRAINING", project_id="project-1",
+            generation=generation, lease_token="execution-secret",
+            lease_expires_at="2026-09-18T10:00:00+00:00",
+            worker_id="agent:node-1", payload={},
+            assignment={"generation": assignment_generation,
+                        "resolved_execution_config": {
+                            "selected_gpu": {"uuid": gpu_uuid}}},
+            transport={}, execution_slots=execution_slots,
+        )
+
+    claim = {
+        "assignment": {"task_id": "a", "assignment_lease_token": "token-a",
+                       "capability": "training", "generation": 5,
+                       "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+        "task": {"task_id": "a", "kind": "TRAINING"},
+    }
+
+    variants = {
+        "explicit single-slot contract": build_lease(
+            execution_slots=1, assignment_generation=5, gpu_uuid="GPU-A"),
+        "different assignment generation": build_lease(
+            execution_slots=2, assignment_generation=7, gpu_uuid="GPU-A"),
+        "different gpu": build_lease(
+            execution_slots=2, assignment_generation=5, gpu_uuid="GPU-B"),
+    }
+    for name, response in variants.items():
+        class Client:
+            def claim_assignment(self):
+                return claim
+
+            def start_execution(self, task_id, assignment_token):
+                return response
+
+        intent = tmp_path / f"intent-{abs(hash(name))}.json"
+        loop = NodeAgentExecutorLoop(
+            Client(), object(), capabilities=["training"], max_slots=2,
+            slot_runner_factory=lambda kind, on_started: type("R", (), {"ready": True})(),
+            slot_controller=ProcessController(), slot_intent_path=intent,
+        )
+        assert loop._run_dual_once() is True
+        assert loop.status().last_error == "SLOT_START_IDENTITY_MISMATCH"
+        active = loop._slots.active()
+        assert len(active) == 1
+        slot = active[0]
+        # The local reservation is retained (central may have started) but it
+        # was never bound to the rejected execution attempt.
+        assert slot.state == "CENTRAL_UNKNOWN"
+        assert slot.assignment_generation == 5
+        assert slot.execution_attempt == 0
+        # The rejected central lease was never bound to the local reservation.
+        assert slot.lease is not response
+        records = json.loads(intent.read_text(encoding="utf-8"))
+        assert records[0]["execution_attempt"] == 0
+        assert records[0]["assignment_generation"] == 5
+        loop._slots.shutdown(0.1)
+
+
+def test_concurrent_slot_reaping_is_single_flight_and_idempotent():
+    """Two reconcilers must never double-release the same slot.
+
+    The executor loop serially reaps in its own thread, but the slot reconciler
+    is also exercised by operators/tests; without single-flight protection two
+    scans can both confirm the same release and the loser raises SlotNotReleased.
+    """
+    import hashlib
+    import json
+    from types import SimpleNamespace
+
+    class StatusClient:
+        node_id = "node-1"
+
+        def execution_status(self, _task_id):
+            return {
+                "task_id": "a", "node_id": "node-1", "status": "FAILED",
+                "execution_attempt": 3, "hold_state": "RELEASED",
+                "hold_execution_attempt": 3, "hold_assignment_generation": 2,
+                "hold_gpu_uuid": "GPU-A", "proof_type": "PROCESS_STOP_VERIFIED",
+                "proof_sha256": "f" * 64,
+                "process_identity_sha256": hashlib.sha256(json.dumps({
+                    "pid": 11, "create_time": 12.5, "command_hash": "a" * 64,
+                }, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            }
+
+    class Controller:
+        def terminate_tree(self, *_args, **_kwargs):
+            return None
+
+    lease = RemoteExecutionLease(
+        task_id="a", kind="TRAINING", project_id="p", generation=3,
+        lease_token="t", lease_expires_at="2026-09-18T10:00:00+00:00",
+        worker_id="agent:node-1", payload={}, assignment={
+            "generation": 2,
+            "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}}},
+        transport={},
+    )
+    loop = NodeAgentExecutorLoop(
+        StatusClient(), object(), capabilities=["training"], max_slots=2,
+        slot_runner_factory=lambda *_args: object(), slot_controller=Controller(),
+    )
+    slot = loop._slots.reserve(
+        SimpleNamespace(task_id="a", generation=2), gpu_uuid="GPU-A", slot_id="slot-a",
+    )
+    loop._slots.mark_started(slot, lease)
+    loop._slots.start_worker(slot, lambda *_args: None)
+    loop._slots.wait(5)
+    slot.identity = SimpleNamespace(pid=11, create_time=12.5, command_hash="a" * 64)
+
+    confirmations = []
+    original = loop._slots.confirm_stopped
+
+    def counting(slot_value, controller, **kwargs):
+        confirmations.append(slot_value.task_id)
+        time.sleep(0.05)
+        return original(slot_value, controller, **kwargs)
+
+    loop._slots.confirm_stopped = counting
+    errors = []
+
+    def reap():
+        try:
+            loop._reap_dual_slots()
+        except BaseException as error:  # noqa: BLE001 - surfaced below
+            errors.append(error)
+
+    threads = [threading.Thread(target=reap) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert errors == []
+    # Single-flight: exactly one reconciler may confirm the release.
+    assert confirmations == ["a"]
+    assert loop._slots.active() == ()
+    loop._slots.shutdown(0.1)
+
+
+def test_requeued_dual_slot_releases_only_with_exact_persisted_no_launch_receipt():
+    from types import SimpleNamespace
+    from platform_core.node_agent_settlement import canonical_digest, no_launch_evidence, stop_proof_digests
+
+    from dataclasses import replace
+    current = replace(lease("waiting", "TRAINING"), assignment={
+        "generation": 2, "resolved_execution_config": {"selected_gpu": {"uuid": "GPU-A"}},
+    })
+    request = {"execution_generation": 1, "assignment_generation": 2, "gpu_uuid": "GPU-A"}
+    record = {"task_id": "waiting", "generation": 1, "assignment_generation": 2,
+              "gpu_uuid": "GPU-A", "no_process_launched": True}
+    request["no_launch_evidence"] = no_launch_evidence(record)
+    receipt = {"state": "REQUEUED", "task_id": "waiting", "node_id": "node-1",
+               "execution_attempt": 1, "assignment_generation": 2, "gpu_uuid": "GPU-A",
+               "request_sha256": canonical_digest(request), "proof_type": "NO_PROCESS_LAUNCHED",
+               "proof_sha256": stop_proof_digests({"node_id": "node-1"}, record)[0], "hold_state": "RELEASED", "execution_slots": 2}
+
+    class Client:
+        node_id = "node-1"
+        def resource_wait_receipt(self, *args, **kwargs):
+            return dict(receipt)
+
+    loop = NodeAgentExecutorLoop(Client(), object(), capabilities=["training"], max_slots=2,
+                                 slot_runner_factory=lambda *_args: object(), slot_controller=object())
+    slot = loop._slots.reserve(SimpleNamespace(task_id="waiting", generation=2), gpu_uuid="GPU-A")
+    loop._slots.mark_started(slot, current)
+    loop._slots.start_worker(slot, lambda *_args: SimpleNamespace(status="QUEUED"))
+    loop._slots.wait(5)
+    loop._slot_runners[(slot.task_id, slot.generation)] = SimpleNamespace(_resource_wait_request_body=request)
+    true_digest = receipt["proof_sha256"]
+    receipt["proof_sha256"] = "0" * 64
+    loop._reap_dual_slots()
+    assert not slot.released
+    receipt["proof_sha256"] = true_digest
+    loop._reap_dual_slots()
+    assert slot.released
+    assert loop._slots.active() == ()

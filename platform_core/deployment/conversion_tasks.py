@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -19,6 +20,7 @@ VENDOR_TARGETS = {"tensorrt", "ascend", "rockchip", "sophon"}
 ENVIRONMENT_ERROR_CODES = {
     "TENSORRT_NOT_FOUND", "ATC_NOT_FOUND", "RKNN_TOOLKIT_NOT_FOUND",
     "ONNX_VALIDATION_FAILED",
+    "TPU_MLIR_NOT_FOUND", "TPU_MLIR_UNAVAILABLE", "REMOTE_AUTH_REQUIRED",
 }
 TERMINAL_CONVERSION_STATUSES = {
     "done",
@@ -38,7 +40,23 @@ def _read(path: Path) -> dict:
 
 
 def _write(path: Path, value: dict) -> None:
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    """Write the conversion record under the shared job.json lock, atomically.
+
+    Same lock identity as ``deployment_worker.update`` and the numeric-evidence
+    projection (``<job.json>.lock``); a reader never sees a partial record and a
+    concurrent numeric summary is not silently overwritten by a torn write.
+    """
+    from filelock import FileLock
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with FileLock(str(path) + ".lock", timeout=60):
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        try:
+            temporary.write_text(
+                json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def conversion_outcome(job: dict) -> TaskStatus:
@@ -64,6 +82,7 @@ def _finalize_conversion_job(
     job: dict,
     *,
     recovered_from_completed_work: bool,
+    data_dir: Path | None = None,
 ) -> tuple[TaskStatus, str]:
     status = conversion_outcome(job)
     if status is TaskStatus.BLOCKED_BY_HARDWARE and str(job.get("status") or "").lower() != "blocked_by_hardware":
@@ -102,11 +121,29 @@ def _finalize_conversion_job(
         stage=str(job.get("stage") or ("RECOVERED" if recovered_from_completed_work else "FINISHED")),
         current_item=str(job.get("source_name") or ""),
     )
+    if data_dir is not None:
+        # Publication is additive. Failure to request publishing must never
+        # downgrade a conversion artifact that is already committed durably.
+        try:
+            from platform_core.external_publish_request import (
+                request_external_auto_publish_for_conversion_if_enabled,
+            )
+            request_external_auto_publish_for_conversion_if_enabled(
+                data_dir=Path(data_dir),
+                project_id=str(context.task.project_id),
+                conversion_job=job,
+            )
+        except Exception:
+            pass
     return status, result_ref
 
 
-def run_conversion(context) -> tuple[TaskStatus, str]:
+def run_conversion(context, *, data_dir: Path | None = None) -> tuple[TaskStatus, str]:
     request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+    if request.get("execution_mode") == "numeric_verification":
+        return run_numeric_verification(context, request)
+    if request.get("execution_mode") == "remote" and request.get("target") == "sophon":
+        return run_remote_conversion(context, data_dir=data_dir, recovering=False)
     job_dir = Path(str(request.get("job_dir") or "")).resolve()
     job_file = job_dir / "job.json"
     worker = Path(str(request.get("worker_path") or "")).resolve()
@@ -165,15 +202,23 @@ def run_conversion(context) -> tuple[TaskStatus, str]:
         job_file,
         job,
         recovered_from_completed_work=False,
+        data_dir=data_dir,
     )
 
 
 class ConversionHandler:
+    def __init__(self, data_dir: Path | None = None):
+        self.data_dir = Path(data_dir) if data_dir is not None else None
+
     def run(self, context):
-        return run_conversion(context)
+        return run_conversion(context, data_dir=self.data_dir)
 
     def recover(self, context):
         request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+        if request.get("execution_mode") == "numeric_verification":
+            return run_numeric_verification(context, request)
+        if request.get("execution_mode") == "remote" and request.get("target") == "sophon":
+            return run_remote_conversion(context, data_dir=self.data_dir, recovering=True)
         job_dir = Path(str(request.get("job_dir") or "")).resolve()
         job_file = job_dir / "job.json"
         job = _read(job_file) if job_file.is_file() else {}
@@ -183,9 +228,88 @@ class ConversionHandler:
                 job_file,
                 job,
                 recovered_from_completed_work=True,
+                data_dir=self.data_dir,
             )
-        return run_conversion(context)
+        return run_conversion(context, data_dir=self.data_dir)
+
+
+def _reconcile_numeric_verification(directory: Path, result: dict) -> dict:
+    """Re-attempt the idempotent evidence publication after a worker crash."""
+    from platform_core.deployment.numeric_consistency import reconcile_numeric_verification
+    return reconcile_numeric_verification(directory, result)
+
+
+def run_numeric_verification(context, request: dict) -> tuple[TaskStatus, str]:
+    """Reuse MODEL_CONVERSION leases/cancellation for a verification-only run.
+
+    The conversion record remains immutable. Verification evidence lives in a
+    distinct, project-scoped directory and the same durable artifact repository.
+    A completed evidence document is never recomputed: a restart only re-attempts
+    the identity-checked, idempotent publication of the bound summary.
+    """
+    directory = Path(str(request.get("verification_dir") or "")).resolve()
+    worker = Path(str(request.get("worker_path") or "")).resolve()
+    receipt = directory / "request.json"
+    result_path = directory / "result.json"
+    if not receipt.is_file() or not worker.is_file():
+        raise FileNotFoundError("数值验证请求或执行器不存在")
+    previous = _read(result_path)
+    if previous.get("status") == "completed":
+        context.assert_current_execution()
+        # The worker may have died after persisting complete evidence but before
+        # publishing the quality status; converge instead of silently reporting
+        # an unpublished verification as complete.
+        previous = _reconcile_numeric_verification(directory, previous)
+        context.assert_current_execution()
+        ref = "conversion/numeric-verification-result.json"
+        context.artifacts.atomic_write_json(context.task.task_id, ref, previous)
+        context.heartbeat(progress=100, stage="数值比较已完成", current_item=str(request.get("conversion_job_id") or ""))
+        return TaskStatus.SUCCEEDED, ref
+    command = [str(request.get("python_path") or sys.executable), str(worker), "--verification-dir", str(directory)]
+    controller = ProcessController()
+    with (directory / "worker.stdout.log").open("ab") as stdout:
+        launched = launch_process(command, cwd=worker.parent, stdout=stdout, stderr=subprocess.STDOUT)
+        try:
+            context.bind_process(launched.identity)
+            while launched.process.poll() is None:
+                result = _read(result_path)
+                context.heartbeat(
+                    progress=float(result.get("progress") or 0),
+                    stage=str(result.get("stage") or "数值比较准备中"),
+                    current_item=str(request.get("conversion_job_id") or ""),
+                )
+                if context.cancel_requested():
+                    controller.terminate_tree(launched.identity)
+                    raise InterruptedError("numeric verification cancelled")
+                time.sleep(0.25)
+        except ExecutionFencedError:
+            controller.terminate_tree(launched.identity)
+            raise
+        except Exception:
+            if context.lease_lost:
+                controller.terminate_tree(launched.identity)
+            raise
+    context.assert_current_execution()
+    result = _read(result_path)
+    if str(result.get("status") or "") in {"completed", "failed"}:
+        # Idempotent: the worker already persisted the evidence and usually the
+        # summary. This converges a crash window and a lost publication.
+        result = _reconcile_numeric_verification(directory, result)
+    result_ref = "conversion/numeric-verification-result.json"
+    context.artifacts.atomic_write_json(context.task.task_id, result_ref, result)
+    context.heartbeat(progress=100, stage=str(result.get("stage") or "数值比较结束"), current_item=str(request.get("conversion_job_id") or ""))
+    return (TaskStatus.SUCCEEDED if result.get("status") == "completed" else TaskStatus.FAILED), result_ref
+
+
+def run_remote_conversion(context, *, data_dir=None, recovering=False):
+    from platform_core.remote_conversion_runtime import synchronize_remote_conversion
+    request = context.artifacts.read_json(context.task.task_id, context.task.payload_ref, default={})
+    job_file = Path(request["job_dir"]) / "job.json"
+    job = synchronize_remote_conversion(context, request, recovering=recovering)
+    return _finalize_conversion_job(
+        context, job_file, job, recovered_from_completed_work=recovering, data_dir=data_dir,
+    )
 
 
 def worker_registration(_data_dir: Path):
-    return {"handlers": {TaskKind.MODEL_CONVERSION: ConversionHandler()}, "capabilities": {"conversion.runtime"}}
+    return {"handlers": {TaskKind.MODEL_CONVERSION: ConversionHandler(_data_dir)}, "capabilities": {"conversion.runtime"}}

@@ -1,0 +1,94 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
+import {dirname, resolve} from 'node:path';
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const read = relative => readFileSync(resolve(root, relative), 'utf8');
+
+const api = read('frontend/src/api/ai-review.ts');
+const store = read('frontend/src/stores/ai-review.ts');
+const page = read('frontend/src/app/AiReview.vue');
+
+test('bulk formal API client uses the existing C2-B routes and no client-side GT write', () => {
+  for (const name of ['sealBulkFormalIntent', 'getBulkFormalIntent', 'startBulkFormalExecution',
+    'getBulkFormalExecution', 'cancelBulkFormalExecution', 'recoverBulkFormalExecution']) {
+    assert.match(api, new RegExp(`export function ${name}\\(`), name);
+  }
+  assert.match(api, /bulk-formal\/intents/);
+  assert.match(api, /\/execution\/cancel/);
+  assert.match(api, /\/execution\/recover/);
+  // The browser only sends an immutable server snapshot reference plus exclusions.
+  assert.match(api, /selection_id:string;review_revision:number;excluded_image_ids:string\[\]/);
+  assert.doesNotMatch(api.slice(api.indexOf('BulkFormalSeal')), /[^_]image_ids:string\[\]/);
+});
+
+test('store seals the frozen selection once and never expands IDs', () => {
+  assert.match(store, /sealBulkFormalIntent\(address,body/);
+  assert.match(store, /excluded_image_ids:\[\.\.\.excludedIds\.value\]\.sort\(\)/);
+  assert.match(store, /bulkRequestId\.value\|\|newBulkRequestId\(\)/);
+  assert.match(store, /Math\.random\(\)\*16/);
+  assert.match(store, /startBulkFormalExecution\(address,bulkRequestId\.value/);
+  assert.match(store, /view\.operation_id!==bulkIntent\.value\?\.operation_id/);
+  // No expanded id list can reach the bulk payload.
+  const seal = store.slice(store.indexOf('async function preflightBulkFormal'), store.indexOf('async function confirmBulkFormal'));
+  assert.doesNotMatch(seal, /[^_]image_ids\s*:/);
+  const writeAt=store.indexOf('writeBulkRecord(address,body)');
+  const sealAt=store.indexOf('sealBulkFormalIntent(address,body');
+  assert.ok(writeAt>0&&sealAt>writeAt,'request identity is persisted before the seal request');
+  assert.match(store, /bulkPendingUnknown/);
+  assert.match(store, /function abandonBulkFormal\(/);
+});
+
+test('store keeps honest progress and recovery semantics', () => {
+  assert.match(store, /view\.blocked&&view\.manual_review_required/);
+  assert.match(store, /stopBulkPoll\(\)/);
+  assert.match(store, /recoverBulkFormalExecution\(address,bulkRequestId\.value/);
+  assert.match(store, /cancelBulkFormalExecution\(address,bulkRequestId\.value/);
+});
+
+test('native page distinguishes preflight, execution, proven GT and manual review', () => {
+  assert.match(page, /检查并确认范围/);
+  assert.match(page, /确认创建后台任务/);
+  assert.match(page, /已证明提交 GT/);
+  assert.match(page, /未证明/);
+  assert.match(page, /需要人工核验后恢复/);
+  assert.match(page, /取消后台任务/);
+  // Original explicit <=100 flow and single-image review remain wired.
+  assert.match(page, /review\.prepareFormal\(\)/);
+  assert.match(page, /review\.confirmFormal\(\)/);
+  assert.match(page, /采用候选/);
+  assert.match(page, /拒绝候选/);
+  assert.match(page, /编辑候选/);
+});
+
+test('bulk execution disables selection drift while a task is running', () => {
+  assert.match(store, /formalLocked=computed\(\(\)=>.*bulkRunning\.value/);
+});
+
+test('bulk execution creation keeps its identity when the response is unknown', () => {
+  const confirm = store.slice(store.indexOf('async function confirmBulkFormal'),
+    store.indexOf('async function refreshBulkFormal'));
+  assert.match(confirm, /execution_attempted:true/);
+  const attemptAt = confirm.indexOf('execution_attempted:true');
+  const startAt = confirm.indexOf('startBulkFormalExecution');
+  assert.ok(attemptAt > 0 && startAt > attemptAt,
+    'execution identity is persisted before POST execute');
+  assert.match(confirm, /bulkCreatePending\.value=true/);
+  assert.match(confirm, /getBulkFormalExecution\(address,bulkRequestId\.value/);
+  assert.match(store, /readBulkRecord\(address\)\?\.execution_attempted===true/);
+  assert.match(page, /后台任务创建结果未确认/);
+  assert.match(page, /重试创建后台任务/);
+});
+
+test('seal conflicts query the original intent instead of treating 4xx as absence', () => {
+  const preflight = store.slice(store.indexOf('async function preflightBulkFormal'),
+    store.indexOf('function abandonBulkFormal'));
+  assert.match(preflight, /getBulkFormalIntent\(address,body\.request_id/);
+  assert.match(preflight, /retryStatus===409\|\|status===409/);
+  assert.match(preflight, /sealBulkFormalIntent\(address,body,new AbortController\(\)\.signal\)/);
+  assert.match(preflight, /bulkConflict\.value=true/);
+  assert.match(store, /服务端存在同一请求编号的原操作意图/);
+  assert.match(store, /无法证明与本次选择一致，已阻止执行/);
+});

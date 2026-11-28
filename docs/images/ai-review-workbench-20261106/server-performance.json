@@ -1,0 +1,1 @@
+{"scope": "ISOLATED_SYNTHETIC_NOT_PRODUCTION", "images": 20000, "iterations": 20, "p50_ms": 49.23, "p95_ms": 56.11, "python_traced_peak_bytes": 29817}

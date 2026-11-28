@@ -1,0 +1,157 @@
+import {test,expect} from '@playwright/test';
+import {resolve} from 'node:path';
+for (const variant of ['ordinary','frozen','mixed','negative-first','union-retry','fixed-zip']) test('native training: '+variant,async({page})=>{
+ const fixedZip=variant==='fixed-zip';
+ const union=variant==='union-retry',frozen=variant==='frozen'||union,mixed=variant==='mixed'||variant==='negative-first';
+ const unions=new Map<string,string>();
+ const unionIds:string[]=[];
+ const freezeIds:string[]=[];let summaries=0;
+ let posts=0;const paths:string[]=[];const revision={repository_revision:1,annotation_revision:1,usage_revision:1,negative_pool_revision:1,negative_confirmation_revision:1};
+ await page.route('**/app/**',route=>{const name=new URL(route.request().url()).pathname.slice(5)||'index.html';return route.fulfill({path:resolve('../static/vue-app',name),contentType:name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html'})});
+ page.on('request',r=>paths.push(new URL(r.url()).pathname));
+ await page.route('**/api/**',async route=>{
+  const r=route.request(),url=new URL(r.url()),path=url.pathname,data=r.postDataJSON?.();
+  const asset={id:'a',name:'原生训练算法',algorithm_type:'yolo_ultralytics',source_type:'local',versions:[]};
+  if(path==='/api/auth/session')return route.fulfill({json:{authenticated:true,user:{username:'测试'}}});
+  if(path==='/api/projects')return route.fulfill({json:[{id:'p',name:'隔离项目'}]});
+  if(path.endsWith('/algorithms'))return route.fulfill({json:{ok:true,project_id:'p',items:[asset],total:1,page:1,page_size:20}});
+  if(path.endsWith('/algorithms/a'))return route.fulfill({json:{ok:true,algorithm:asset}});
+  if(path.endsWith('/benchmark-reuse'))return route.fulfill({json:{available:false,reason:'首次训练无历史基准'}});
+  if(path==='/api/training_options')return route.fulfill({json:{targets:[{id:'cpu',name:'隔离CPU',type:'local',status:'ready',framework:'ultralytics',algorithms:[{key:'yolo_detect',base_model:'yolo11n.pt',default_imgsz:640}],base_models:[{value:'yolo11n.pt',model_status:'FOUND'}]}]}});
+  if(path==='/api/v62/training-devices')return route.fulfill({json:{recommended:'auto',options:[{id:'auto',label:'自动',available:true}]}});
+  if(path==='/api/system/recommendation')return route.fulfill({json:{device:'cpu',batch:1,workers:0}});
+  if(path.endsWith('/zip-fixed-sources'))return route.fulfill({json:{items:[{job_id:'zip-one',image_count:4}],next_offset:null}});
+  if(path.endsWith('/labels'))return route.fulfill({json:{items:[{code:'smoke'}]}});
+  if(path.endsWith('/zip-fixed-split-preview')){
+   expect(data.zip_source_job_ids).toEqual(['zip-one']);expect(data.train_labels).toEqual(['smoke']);
+   return route.fulfill({json:{roles:{train:{total:2,positive:1,confirmed_negative:1},validation:{total:1,positive:1},test:{total:1,positive:1}},unassigned:0,issue_count:0,conflict_count:0,problems:[],preview_digest:'preview'}});
+  }
+  if(path.endsWith('/zip-fixed-split-freeze')){
+   expect(data.preview_digest).toBe('preview');expect(data.request_id).toMatch(/[a-f0-9-]{36}/);
+   return route.fulfill({json:{zip_source_job_ids:['zip-one'],zip_selection_digest:'source',train_selection_ref:'train-ref',validation_selection_ref:'val-ref',test_selection_ref:'test-ref'}});
+  }
+  if(path.endsWith('/train/start')&&fixedZip){
+   posts++; expect(data).toMatchObject({split_mode:'fixed_zip_train_val_test',train_selection_ref:'train-ref',validation_selection_ref:'val-ref',test_selection_ref:'test-ref',validation_percent:null,experiment_percent:null});
+   expect(data.train_image_ids).toBeUndefined();expect(data.validation_image_ids).toBeUndefined();expect(data.test_image_ids).toBeUndefined();
+   return route.fulfill({json:{ok:true,task:{task_id:data.task_id,kind:'TRAINING',status:'QUEUED',project_id:'p'}}});
+  }
+  if(path.endsWith('/revision'))return route.fulfill({json:revision});
+  if(path.endsWith('/negative-pool/categories'))return route.fulfill({json:{items:[{id:'reflection',name:'反光',enabled:true}]}});
+  if((path.endsWith('/role-page')||path.endsWith('/page'))&&data.negative_pool_only){
+   expect(data.algorithm_asset_id).toBe('a');
+   const items=['background',...(union?['other-background']:[])].map(id=>({id,filename:id+'.jpg',annotation_state:'confirmed_empty',sample_role:'confirmed_negative'}));
+   return route.fulfill({json:{...revision,items,page:1,page_size:40,has_next:false}});
+  }
+  if(path.endsWith('/negative-preview'))return route.fulfill({json:{counts:{positive:0,confirmed_negative:1,pending_review:0},pending_count:0,proof_digest:'proof'}});
+  if(path.endsWith('/page')){expect(r.method()).toBe('POST');expect(data.page_size).toBeLessThanOrEqual(50);const id=data.page===1?'one':'two';return route.fulfill({json:{...revision,items:[{id,filename:id+'.jpg',annotation_state:'annotated',box_count:1,selectable:true}],page:data.page,page_size:40,has_next:data.page===1,total:null,total_pages:null}})}
+  if(path.endsWith('/selection-reference')){
+   expect(data.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+   freezeIds.push(data.request_id);
+   if(freezeIds.length===1)return route.fulfill({status:503,json:{detail:'暂时无法冻结'}});
+   return route.fulfill({json:{selection_ref:'isolated-ref',count:22015}});
+  }
+  if(path.endsWith('/selection-union')){
+   expect(data.request_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+   expect(data.expected_revisions).toEqual(revision);
+   expect(data.positive_ref).toBe('isolated-ref');
+   expect(data.positive_ids).toEqual([]);
+   unionIds.push(data.request_id);
+   const prior=unions.get(data.request_id),ref=prior||'union-'+data.request_id;
+   unions.set(data.request_id,ref);
+   if(unionIds.length===1)return route.abort('connectionreset');
+   return route.fulfill({json:{selection_ref:ref,count:22015+data.negative_ids.length}});
+  }
+  if(path.endsWith('/selection-membership'))return route.fulfill({json:{items:['one']}});
+  if(path.endsWith('/selection-summary')&&frozen){
+   summaries++;
+   if(union&&data.train_selection_ref!=='isolated-ref'){
+    expect(data.train_selection_ref).toBe(unions.get(unionIds.at(-1)!));
+    const count=unionIds.length===2?22016:22017;
+    return route.fulfill({json:{...revision,requested_count:count,matched_count:count,selection_reference:true,positive_label_codes:['smoke']}});
+   }
+   expect(data.train_selection_ref).toBe('isolated-ref');
+   expect(data.image_ids||[]).toEqual([]);
+   return route.fulfill({json:{...revision,requested_count:22015,matched_count:22015,selection_reference:true,positive_label_codes:['smoke']}});
+  }
+  if(path.endsWith('/selection-summary')){
+   const count=data.image_ids.length;
+   return route.fulfill({json:{...revision,requested_count:count,matched_count:count,eligible_count:count,positive_label_codes:count===1&&data.image_ids[0]==='background'?[]:['smoke'],label_counts:{smoke:2},selection_validation:{...revision,requested_count:count,eligible_count:count,excluded_count:0,unknown_count:0}}});
+  }
+  if(path.endsWith('/compatibility'))return route.fulfill({json:{compatible:true,issue_count:0,issue_counts:{},material_revision:1,annotation_revision:1}});
+  if(path.endsWith('/train/start')){posts++;expect(data.epochs).toBe(150);expect(data.training_mode).toBe('full');expect(data.train_image_ids).toEqual(frozen?[]:mixed?['one','two','background']:['one','two']);if(frozen)expect(data.train_selection_ref).toBe('isolated-ref');expect(data.train_labels).toEqual(['smoke']);expect(data.validation_percent).toBe(20);expect(data.experiment_percent).toBe(20);expect(data.gpu_policy).toBe('exclusive');expect(data.expected_material_revision).toBe(1);return route.fulfill({json:{ok:true,task:{task_id:data.task_id,kind:'TRAINING',task_type:'TRAINING',status:'QUEUED',project_id:'p'}}})}
+  throw new Error('Unexpected API '+path);
+ });
+ await page.goto('/app/#/projects/p/training/create?algorithm=a');
+ if(variant==='ordinary'){
+  await expect(page.getByRole('button',{name:'核验并创建训练',exact:true})).toBeVisible();
+  await page.screenshot({path:'../test-results/vue-catalog/native-training-form.png',animations:'disabled'});
+ }
+ if(fixedZip){
+  await page.locator('.el-form-item').filter({hasText:'划分模式'}).locator('.el-select__wrapper').click();
+  await page.getByRole('option',{name:'按 ZIP 来源固定划分'}).click();
+  await page.getByText('zip-one · 4 张',{exact:true}).click();
+  await page.locator('label.el-checkbox').filter({has:page.getByRole('checkbox',{name:'smoke',exact:true})}).click();
+  await page.getByRole('button',{name:'预览固定划分'}).click();
+  await expect(page.getByRole('row',{name:/Train/})).toBeVisible();
+  await page.getByRole('button',{name:'核验并创建训练',exact:true}).click();
+  await page.getByRole('button',{name:'确认核验并创建',exact:true}).click();
+  await expect.poll(()=>posts).toBe(1);
+  return;
+ }
+ const picker=page.locator('.training-materials');
+ async function selectBackground(){
+  await page.getByRole('button',{name:/从公共池添加负样本/}).click();
+  await expect(picker).toContainText('background.jpg');
+  await picker.getByRole('button',{name:'选择本页',exact:true}).click();
+  await picker.getByRole('button',{name:'应用负样本选择'}).click();
+  await expect(picker).toBeHidden();
+ }
+ if(variant==='negative-first')await selectBackground();
+ await page.getByRole('button',{name:/选择训练素材/}).click();
+ if(frozen){
+  const freeze=picker.getByRole('button',{name:'冻结全部筛选结果',exact:true});
+  await freeze.click();await expect(picker).toContainText('暂时无法冻结');await freeze.click();
+  await expect(picker).toContainText('服务器冻结 22015 张');expect(freezeIds).toHaveLength(2);expect(freezeIds[0]).toBe(freezeIds[1]);
+  await picker.getByRole('button',{name:'读取正式标签并核验选择',exact:true}).click();
+  await expect(page.getByRole('button',{name:/选择训练素材.*22015/})).toBeVisible();
+  if(union){
+   async function openPool(){
+    await page.getByRole('button',{name:/从公共池添加负样本/}).click();
+    await expect(picker).toContainText('background.jpg');
+   }
+   const apply=picker.getByRole('button',{name:'应用负样本选择'});
+   await openPool();
+   await picker.getByRole('row').filter({hasText:'background.jpg'}).filter({hasNotText:'other-background.jpg'}).locator('label.el-checkbox').click();
+   await apply.click();
+   await expect.poll(()=>unionIds.length).toBe(1);
+   await page.reload();
+   await openPool();
+   await picker.getByRole('row').filter({hasText:'background.jpg'}).filter({hasNotText:'other-background.jpg'}).locator('label.el-checkbox').click();
+   await apply.click();
+   await expect(picker).toBeHidden();
+   await expect(page.getByText(/合并后 22016 张/)).toBeVisible();
+   expect(unionIds[1]).toBe(unionIds[0]);
+   expect(unions.size).toBe(1);
+   await openPool();
+   await picker.getByRole('button',{name:'选择本页',exact:true}).click();
+   await apply.click();
+   await expect(picker).toBeHidden();
+   await expect(page.getByText(/合并后 22017 张/)).toBeVisible();
+   expect(unionIds[2]).not.toBe(unionIds[1]);
+   expect(unions.size).toBe(2);
+   expect(posts).toBe(0);
+   return;
+  }
+  await page.reload();await page.getByRole('button',{name:/选择训练素材.*22015/}).click();
+  await picker.getByRole('button',{name:'读取正式标签并核验选择',exact:true}).click();
+  await expect.poll(()=>summaries).toBe(2);
+  await page.locator('label.el-checkbox').filter({hasText:'允许后台正式资格核验'}).click();
+ }else{
+ await picker.getByRole('button',{name:'选择本页',exact:true}).click();await picker.getByRole('button',{name:'下一页',exact:true}).click();await expect(picker).toContainText('two.jpg');await picker.getByRole('button',{name:'选择本页',exact:true}).click();await expect(picker).toContainText('已选 2 张');await picker.getByRole('button',{name:'读取正式标签并核验选择',exact:true}).click(); }
+ if(mixed){
+  if(variant==='mixed')await selectBackground();
+  await expect(page.getByText(/合并后 3 张/)).toBeVisible();
+  await expect(page.getByRole('button',{name:/正样本组 2 张/})).toBeVisible();
+ }
+ await page.locator('label.el-checkbox').filter({has:page.getByRole('checkbox',{name:'smoke',exact:true})}).click();await expect(page.getByRole('checkbox',{name:'smoke',exact:true})).toBeChecked();await page.getByRole('button',{name:'核验并创建训练',exact:true}).click();expect(posts).toBe(0);await page.getByRole('button',{name:'确认核验并创建',exact:true}).click();await expect.poll(()=>posts).toBe(1);await expect(page.getByRole('button',{name:'核验并创建训练',exact:true})).toBeDisabled();expect(paths).not.toContain('/static/app.js');expect(paths).not.toContain('/static/main.mjs');
+});

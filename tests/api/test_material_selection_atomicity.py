@@ -16,7 +16,7 @@ def png_bytes() -> bytes:
 def create_project_with_dataset(client):
     project = client.post(
         "/api/projects",
-        json={"name": f"atomic-{uuid.uuid4().hex[:8]}", "labels": []},
+        json={"name": f"atomic-{uuid.uuid4().hex[:8]}", "labels": ["target"]},
     ).json()
     dataset = client.post(
         f"/api/projects/{project['id']}/datasets",
@@ -48,6 +48,10 @@ class PausedCommitStore:
     def mutate(self, fn):
         self._pause()
         return self._delegate.mutate(fn)
+
+    def mutate_dataset(self, dataset_id, fn):
+        self._pause()
+        return self._delegate.mutate_dataset(dataset_id, fn)
 
     def patch(self, patches):
         self._pause()
@@ -97,30 +101,19 @@ def run_with_paused_commit(monkeypatch, app_module, project_id: str, invoke, cha
     return outcome["value"], real_material_store(project_id)
 
 
-def test_delete_dataset_selects_latest_rows_inside_atomic_mutation(client, monkeypatch):
+def test_retired_dataset_delete_cannot_expand_to_concurrently_reassigned_rows(client):
     import app as app_module
-
     project_id, dataset_id = create_project_with_dataset(client)
-    first = upload_png(client, project_id, dataset_id, "first.png")
-    reassigned = upload_png(client, project_id, "default", "reassigned.png")
-
-    result, store = run_with_paused_commit(
-        monkeypatch,
-        app_module,
-        project_id,
-        lambda: app_module.delete_dataset(project_id, dataset_id),
-        lambda real_store: real_store.patch(
-            {reassigned["id"]: {"dataset_id": dataset_id}}
-        ),
-    )
-
-    assert result == {"ok": True}
-    assert {row["id"] for row in store.read().rows}.isdisjoint(
-        {first["id"], reassigned["id"]}
-    )
-    uploads = app_module.project_dir(project_id) / "uploads"
-    assert not (uploads / first["stored_name"]).exists()
-    assert not (uploads / reassigned["stored_name"]).exists()
+    first = upload_png(client, project_id, dataset_id, 'first.png')
+    reassigned = upload_png(client, project_id, 'default', 'reassigned.png')
+    app_module.material_store(project_id).patch({reassigned['id']: {'dataset_id': dataset_id}})
+    response = client.delete(f'/api/projects/{project_id}/datasets/{dataset_id}')
+    assert response.status_code == 409
+    assert json.loads(response.json()['detail'])['code'] == 'MATERIAL_DELETE_PREVIEW_REQUIRED'
+    rows = {row['id'] for row in app_module.material_store(project_id).read().rows}
+    assert {first['id'], reassigned['id']} <= rows
+    uploads = app_module.project_dir(project_id) / 'uploads'
+    assert all((uploads / row['stored_name']).is_file() for row in (first, reassigned))
 
 
 def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
@@ -153,7 +146,7 @@ def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
 
     assert response.status_code == 409
     detail = json.loads(response.json()["detail"])
-    assert detail["failed_items"][0]["id"] == locked["id"]
+    assert detail["code"] == "MATERIAL_DELETE_PREVIEW_REQUIRED"
     assert any(
         dataset["id"] == dataset_id
         for dataset in app_module.read_json(app_module.datasets_file(project_id), [])
@@ -182,6 +175,87 @@ def test_delete_dataset_file_lock_failure_keeps_dataset_and_material(
             / "dataset_deletions"
         ).glob("*.json")
     )
+
+
+def test_dataset_default_matches_historical_legacy_identities(client):
+    import app as app_module
+
+    project = client.post(
+        "/api/projects",
+        json={"name": f"legacy-{uuid.uuid4().hex[:8]}", "labels": []},
+    ).json()
+    project_id = project["id"]
+    rows = [
+        {"id": "legacy-missing", "filename": "m.jpg", "object_key": "m.jpg"},
+        {"id": "legacy-null", "filename": "n.jpg", "object_key": "n.jpg", "dataset_id": None},
+        {"id": "legacy-empty", "filename": "e.jpg", "object_key": "e.jpg", "dataset_id": ""},
+        {"id": "legacy-zero", "filename": "z.jpg", "object_key": "z.jpg", "dataset_id": 0},
+        {"id": "legacy-zero-float", "filename": "zf.jpg", "object_key": "zf.jpg", "dataset_id": 0.0},
+        {"id": "legacy-false", "filename": "f.jpg", "object_key": "f.jpg", "dataset_id": False},
+        {"id": "legacy-string-zero", "filename": "sz.jpg", "object_key": "sz.jpg", "dataset_id": "0"},
+        {"id": "normal-default", "filename": "d.jpg", "object_key": "d.jpg", "dataset_id": "default"},
+        {"id": "other", "filename": "o.jpg", "object_key": "o.jpg", "dataset_id": "other"},
+        {"id": "numeric-one", "filename": "one.jpg", "object_key": "one.jpg", "dataset_id": 1},
+    ]
+    store = app_module.material_store(project_id)
+    store.upsert_many([{**row, "split": "unassigned"} for row in rows])
+    before = store.read().revision
+    result = client.post(
+        f"/api/v20/projects/{project_id}/images/batch_split",
+        json={"split": "train", "dataset_id": "default", "filter": "all", "scope": "dataset"},
+    )
+    assert result.status_code == 200, result.text
+    assert result.json()["changed"] == 7
+    state = {row["id"]: row["split"] for row in store.read().rows}
+    for image_id in ("legacy-missing", "legacy-null", "legacy-empty", "legacy-zero",
+                     "legacy-zero-float", "legacy-false", "normal-default"):
+        assert state[image_id] == "train", image_id
+    for image_id in ("legacy-string-zero", "other", "numeric-one"):
+        assert state[image_id] == "unassigned", image_id
+    assert store.read().revision == before + 1
+
+
+def test_dataset_scope_empty_result_is_400_and_does_not_bump_revision(client):
+    import app as app_module
+
+    project_id, dataset_id = create_project_with_dataset(client)
+    before = app_module.material_store(project_id).read().revision
+    payload = app_module.BatchImageSplitReq(
+        image_ids=[], split="train", dataset_id=dataset_id,
+        filter="all", scope="dataset",
+    )
+    result = client.post(
+        f"/api/v20/projects/{project_id}/images/batch_split",
+        json=payload.model_dump(),
+    )
+    assert result.status_code == 400
+    assert app_module.material_store(project_id).read().revision == before
+
+
+def test_dataset_scope_changed_count_and_revision_match_original_contract(client):
+    import app as app_module
+
+    project_id, dataset_id = create_project_with_dataset(client)
+    first = upload_png(client, project_id, dataset_id, "first.png")
+    second = upload_png(client, project_id, dataset_id, "second.png")
+    outside = upload_png(client, project_id, "default", "outside.png")
+    before = app_module.material_store(project_id).read().revision
+    payload = app_module.BatchImageSplitReq(
+        image_ids=[], split="train", dataset_id=dataset_id,
+        filter="all", scope="dataset",
+    )
+    result = client.post(
+        f"/api/v20/projects/{project_id}/images/batch_split",
+        json=payload.model_dump(),
+    )
+    assert result.status_code == 200, result.text
+    assert result.json() == {"ok": True, "changed": 2, "split": "train"}
+    store = app_module.material_store(project_id)
+    assert store.get(first["id"])["split"] == "train"
+    assert store.get(second["id"])["split"] == "train"
+    assert store.get(outside["id"])["split"] == "unassigned"
+    assert store.read().revision == before + 1
+
 
 
 @pytest.mark.parametrize(

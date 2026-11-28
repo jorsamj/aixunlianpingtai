@@ -1,0 +1,20 @@
+import {test,expect} from '@playwright/test';
+import {fixture} from './fixture';
+test('algorithm pool unknown write recovers exact receipt, then scoped removal preserves material',async({page})=>{
+ const writes:any[]=[];let member=false,revision='0';const row={id:'m',filename:'隔离素材.jpg',width:640,height:480,annotation_state:'confirmed_empty',box_count:0,thumbnail_url:'/api/v61/projects/p/materials/m/content/thumbnail?edge=384'};
+ let packet:any;
+ await page.route('**/pool-fixture*',r=>r.fulfill({contentType:'text/html',body:fixture}));
+ await page.route('**/api/**',r=>{const u=new URL(r.request().url()),path=u.pathname;
+  if(path==='/api/auth/session')return r.fulfill({json:{authenticated:true,user:{username:'隔离用户'}}});
+  if(path.includes('/content'))return r.fulfill({contentType:'image/svg+xml',body:'<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480"><rect width="640" height="480" fill="#e2e8f0"/></svg>'});
+  if(path==='/api/v61/projects/p/materials')return r.fulfill({json:{ok:true,project_id:'p',items:[row],total:1,page:1,page_size:48,total_pages:1,has_next:false}});
+  if(path==='/api/v12/projects/p/algorithms')return r.fulfill({json:{ok:true,project_id:'p',items:[{id:'a',name:'算法 A'}],total:1,page:1,page_size:20}});
+  if(path.endsWith('/members')){packet=r.request().postDataJSON();writes.push(packet);member=packet.action==='add';revision=String(Number(revision)+1);if(writes.length===1)return r.abort('failed');return r.fulfill({json:{...packet,project_id:'p',operation_kind:'negative_pool.members.v1',negative_pool_revision:revision,removed:1,already_absent:0}})}
+  if(path.includes('/operations/'))return r.fulfill({json:{...packet,project_id:'p',operation_kind:'negative_pool.members.v1',negative_pool_revision:revision,added:1,already_present:0}});
+  if(path==='/api/v61/projects/p/negative-pool')return r.fulfill({json:{items:member?[{...row,negative_pool:{algorithm_id:'a',review_status:'confirmed_empty',qualification:'unconfirmed',training_usage:{state:'unknown'}}}]:[],total:member?1:0,page:1,page_size:48,negative_pool_revision:revision}});
+  return r.fulfill({json:{ok:true,items:[],revision:0,templates:[],page:1,page_size:10,total:0}})
+ });
+ await page.goto('/pool-fixture?vue_material_library=1&vue_negative_pool=1&asset_project=p&asset_algorithm=a&asset_version=v');await page.waitForFunction(()=>window.fixtureReady);await page.evaluate(()=>window.setPage('素材库正式浏览'));await expect(page.locator('.material-card')).toHaveCount(1);await page.locator('.material-card .el-checkbox').click();await page.getByRole('button',{name:'负样本池',exact:true}).click();await expect(page.getByRole('heading',{name:'负样本池',exact:true})).toBeVisible();await expect(page.getByText('当前算法与条件下没有池成员',{exact:true})).toBeVisible();await page.getByRole('button',{name:'加入已选素材',exact:true}).click();await page.getByRole('button',{name:'确认加入',exact:true}).click();await expect(page.getByText('有一笔操作结果待确认',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'加入已选素材',exact:true})).toBeDisabled();await page.getByRole('button',{name:'查询原回执',exact:true}).click();await expect(page.locator('.receipt')).toContainText('新增 1 张');expect(writes).toHaveLength(1);await expect(page.getByRole('button',{name:'加入已选素材',exact:true})).toBeDisabled();await page.locator('.pool-copy .el-checkbox').click();await page.getByRole('button',{name:'移出池内选择',exact:true}).click();await page.getByRole('button',{name:'确认移出',exact:true}).click();await expect(page.locator('.receipt')).toContainText('移出 1 张');expect(writes).toHaveLength(2);expect(writes.every(p=>p.algorithm_id==='a'&&p.image_ids.join()==='m'&&typeof p.expected_revision==='string')).toBe(true);
+ for(const width of [1366,768]){await page.setViewportSize({width,height:1000});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:`../test-results/vue-catalog/negative-pool-${width}.png`,fullPage:true})}
+ await page.getByRole('button',{name:'返回素材库',exact:true}).click();await expect(page.locator('.material-card')).toHaveCount(1);
+});

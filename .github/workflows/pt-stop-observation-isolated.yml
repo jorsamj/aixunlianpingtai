@@ -1,0 +1,92 @@
+# 2C-03A: ephemeral CPU-only stop observation; never a production StopReceipt.
+name: PT Stop Observation Isolated
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - 'platform_core/os_supervisor_pt_stop_observation.py'
+      - 'platform_core/os_supervisor_pt_export_launch.py'
+      - 'tests/unit/test_os_supervisor_pt_stop_observation.py'
+      - 'tests/integration/test_os_supervisor_pt_stop_observation_live.py'
+      - '.github/workflows/pt-stop-observation-isolated.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'platform_core/os_supervisor_pt_stop_observation.py'
+      - 'platform_core/os_supervisor_pt_export_launch.py'
+      - 'tests/unit/test_os_supervisor_pt_stop_observation.py'
+      - 'tests/integration/test_os_supervisor_pt_stop_observation_live.py'
+      - '.github/workflows/pt-stop-observation-isolated.yml'
+permissions:
+  contents: read
+jobs:
+  cpu-stop-scope:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate CI-only test host and interpreter
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          test "$GITHUB_ACTIONS" = "true"
+          test "$(id -u)" -ne 0
+          test -d /run/systemd/system
+          test -f /sys/fs/cgroup/cgroup.controllers
+          systemctl --version | head -1
+      - name: Run negative original-identity and kernel-evidence contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check pytest cryptography filelock
+          python -m py_compile platform_core/os_supervisor_pt_stop_observation.py tests/unit/test_os_supervisor_pt_stop_observation.py
+          python -m pytest -vv --maxfail=1 --confcutdir=tests/unit tests/unit/test_os_supervisor_pt_stop_observation.py
+      - name: Real isolated Ubuntu 24.04 root systemd stop (no model, no GPU)
+        if: matrix.os == 'ubuntu-24.04'
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            "$(command -v python)" -m pytest -vv --maxfail=1 \
+            --confcutdir=tests/integration \
+            tests/integration/test_os_supervisor_pt_stop_observation_live.py -s
+      - name: Ubuntu 22.04 real systemd 249 cgroup stop kernel probe
+        if: matrix.os == 'ubuntu-22.04'
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          test "$VERSION_ID" = "22.04"
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@${uid}.service"
+          test -S "/run/user/${uid}/bus"
+          export XDG_RUNTIME_DIR="/run/user/${uid}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${uid}/bus"
+          python tools/poc/linux_stop_receipt_bridge.py --run --isolated-test-host | tee pt-stop-249-kernel-poc.json
+      - name: Retain non-sensitive 249 kernel evidence
+        if: always() && matrix.os == 'ubuntu-22.04'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pt-stop-249-kernel-poc
+          path: pt-stop-249-kernel-poc.json
+          if-no-files-found: warn
+          retention-days: 14

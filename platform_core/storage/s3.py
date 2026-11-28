@@ -93,14 +93,19 @@ class S3StorageProvider:
         try: return self.client.get_object(Bucket=self.bucket, Key=self._key(object_key))["Body"]
         except Exception as error: self._error("read", error)
 
-    def download(self, object_key: str, destination: str | Path) -> ObjectMetadata:
+    def download(self, object_key: str, destination: str | Path, *, include_metadata: bool = True) -> ObjectMetadata:
         target = Path(destination); target.parent.mkdir(parents=True, exist_ok=True)
         try:
             with target.open("wb") as stream:
                 self.client.download_fileobj(self.bucket, self._key(object_key), stream)
-            return self.stat(object_key)
         except Exception as error:
             target.unlink(missing_ok=True); self._error("download", error)
+        if include_metadata:
+            try:
+                return self.stat(object_key)
+            except Exception as error:
+                target.unlink(missing_ok=True); self._error("download", error)
+        return ObjectMetadata(key=object_key, size_bytes=target.stat().st_size)
 
     def upload(self, object_key: str, source: BinaryIO | str | Path, *, content_type: str = "application/octet-stream", metadata: Mapping[str, str] | None = None) -> ObjectMetadata:
         stream = Path(source).open("rb") if isinstance(source, (str, Path)) else source
@@ -149,15 +154,33 @@ class S3StorageProvider:
         try: return self.client.generate_presigned_url("get_object", Params={"Bucket": self.bucket, "Key": self._key(object_key)}, ExpiresIn=max(1, min(3600, int(expires_seconds))))
         except Exception as error: self._error("presign", error)
 
-    def generate_upload_contract(self, object_key: str, *, expires_seconds: int = 900, content_type: str = "application/octet-stream") -> dict[str, object]:
-        """Return the signed PUT URL together with every header the client must send."""
+    def generate_upload_contract(
+        self,
+        object_key: str,
+        *,
+        expires_seconds: int = 900,
+        content_type: str = "application/octet-stream",
+        metadata: Mapping[str, str] | None = None,
+        size_bytes: int | None = None,
+    ) -> dict[str, object]:
+        """Return a signed PUT contract with optional immutable content evidence."""
         expires = max(1, min(3600, int(expires_seconds)))
+        normalized_metadata = {str(key): str(value) for key, value in dict(metadata or {}).items()}
         params: dict[str, object] = {
             "Bucket": self.bucket,
             "Key": self._key(object_key),
             "ContentType": content_type,
         }
         headers = {"Content-Type": content_type}
+        if normalized_metadata:
+            params["Metadata"] = normalized_metadata
+            headers.update({f"x-amz-meta-{key}": value for key, value in normalized_metadata.items()})
+        if size_bytes is not None:
+            expected_size = int(size_bytes)
+            if expected_size <= 0:
+                raise ValueError("size_bytes must be positive")
+            params["ContentLength"] = expected_size
+            headers["Content-Length"] = str(expected_size)
         if self.protect_existing_objects:
             params["IfNoneMatch"] = "*"
             headers["If-None-Match"] = "*"
@@ -186,4 +209,4 @@ class S3StorageProvider:
         return str(contract.get("url") or "") or None
 
     def materialize_to_local(self, object_key: str, destination: str | Path) -> ObjectMetadata:
-        return self.download(object_key, destination)
+        return self.download(object_key, destination, include_metadata=False)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -194,6 +195,20 @@ def inspect_training_resume_candidate(context, data_dir: Path) -> dict[str, Any]
     if not snapshot_id or str(job.get("snapshot_id") or "").strip() != snapshot_id:
         return _resume_rejection("snapshot_identity_mismatch")
 
+    # A full resume must prove that the checkpoint class order still matches the
+    # frozen snapshot schema; otherwise labels would be remapped silently.
+    label_schema = snapshot.get("label_schema") or snapshot.get("classes") or []
+    ordered_schema: list[dict[str, Any]] = []
+    if isinstance(label_schema, (list, tuple)):
+        ordered_schema = sorted(
+            (dict(item) for item in label_schema
+             if isinstance(item, Mapping) and item.get("code")),
+            key=lambda item: (int(item.get("class_id", 10**9)), str(item["code"])),
+        )
+    expected_class_names = [str(item["code"]) for item in ordered_schema]
+    if not expected_class_names:
+        return _resume_rejection("class_schema_unavailable")
+
     manifest_path = context.artifacts.artifact_path(context.task.task_id, "work/bundle/manifest.json")
     try:
         verification = base._verify_materialized_dataset_evidence(manifest_path)
@@ -276,6 +291,8 @@ def inspect_training_resume_candidate(context, data_dir: Path) -> dict[str, Any]
         checkpoint_sha,
         "--resume-from-epoch",
         str(completed),
+        "--expected-class-names",
+        json.dumps(expected_class_names, ensure_ascii=False),
         "--epochs",
         str(requested),
         "--imgsz",
@@ -305,6 +322,7 @@ def inspect_training_resume_candidate(context, data_dir: Path) -> dict[str, Any]
         "resume_from_epoch": completed,
         "requested_epochs": requested,
         "checkpoint_path": checkpoint,
+        "expected_class_names": expected_class_names,
         "checkpoint_sha256": checkpoint_sha,
         "checkpoint_size_bytes": checkpoint.stat().st_size,
         "assigned_device": assigned_device,
@@ -358,7 +376,7 @@ def _publish_finalization_replay(context, candidate: Mapping[str, Any]) -> None:
     )
 
 
-def _mark_resume_job(candidate: Mapping[str, Any]) -> None:
+def _mark_resume_job(candidate: Mapping[str, Any], context=None) -> None:
     job = dict(candidate["job"])
     job.update(
         status="running",
@@ -378,6 +396,9 @@ def _mark_resume_job(candidate: Mapping[str, Any]) -> None:
             f"{int(candidate['resume_from_epoch'])}/{int(candidate['requested_epochs'])} 继续训练"
         ),
     )
+    if context is not None:
+        from .training_timing import begin_attempt
+        begin_attempt(job, context.task.attempt, context.lease.worker_id, context.task.updated_at)
     base.atomic_write_json(Path(candidate["job_file"]), job)
 
 
@@ -472,7 +493,7 @@ class CheckpointResumeRecoveryHandler(recovery.RecoveryHardenedLabelContractTrai
             return super().recover(context)
 
         _publish_resume_admission(context, candidate)
-        _mark_resume_job(candidate)
+        _mark_resume_job(candidate, context)
         current_progress = max(
             20.0,
             float(candidate["job"].get("progress_percent") or 0.0),

@@ -1,0 +1,80 @@
+{
+  "base_sha": "f10fb736d2fff7b0439c32b12bdcec55b86be679",
+  "baseline": {
+    "passed": 142,
+    "skipped": 1
+  },
+  "red": {
+    "minimal_failed": 6,
+    "expanded_failed": 10,
+    "invalid_first_rootdir_attempt_excluded": true
+  },
+  "zip_related": {
+    "passed": 215,
+    "skipped": 1,
+    "seconds": 30.22
+  },
+  "root_independent_safety": {
+    "passed": 159,
+    "skipped": 1,
+    "seconds": 11.43
+  },
+  "training_frozen_regression": {
+    "passed": 202,
+    "skipped": 1,
+    "seconds": 88.29
+  },
+  "full_node": {
+    "passed": 1561,
+    "failed": 0,
+    "seconds": 22.754
+  },
+  "real_chrome": {
+    "passed": 16,
+    "seconds_rounded": 60,
+    "views": [
+      1920,
+      1366,
+      768
+    ]
+  },
+  "frozen_files_unchanged": 68,
+  "frozen_app_definitions_unchanged": 63,
+  "app_changed_definitions": [
+    "_v19_check_zip_compression",
+    "_v18_safe_extract",
+    "v19_scan_zip"
+  ],
+  "existing_zip_engine_definitions_unchanged": 44,
+  "new_zip_wrapper": "inspect_zip_archive",
+  "new_safety_tests": 19,
+  "actual_overflow_case": "defensive simulated stream; not a proved forged-size ZIP exploit",
+  "remaining": [
+    "large sidecar memory peak within configured archive bounds",
+    "no chunk cancellation inside a single sidecar parse",
+    "legacy helper retains close+replace; does not add fsync-level publication"
+  ],
+  "production_modified": false,
+  "sets_overlap_do_not_sum": true,
+  "log_copy_normalization": {
+    "operation": "strip trailing whitespace only; original temp logs unchanged",
+    "files": {
+      "baseline.txt": {
+        "original_sha256": "b0f23950efb51523da831f4d638df2723816d734bbdc014fc045df511a958251",
+        "copy_sha256": "b0f015ca4ccb11ad3eb23425b8ee054dd7deacc754eadd8d6cb543783bf7df1d"
+      },
+      "red-actual.txt": {
+        "original_sha256": "497a3f89a177b76d1562f3d987e9f6fce87c8ff49ba49c38fa86979f98771060",
+        "copy_sha256": "52b1d80dc1d739277325321e3eec9fee29053e6b9905e8cb87a6a0e8cf02ffc9"
+      },
+      "red-expanded.txt": {
+        "original_sha256": "1890f875acac7da0fbeb5b57df9c4d9361c0837923a3826474cfd3fa995204c2",
+        "copy_sha256": "0577ee956edfec8bd866f0951f5e35fc436dada9aa6548c68cff8694ae7be6cb"
+      },
+      "green-final-all.txt": {
+        "original_sha256": "1de60ee80134a5e833817420e01e2a458ba7e594c912d8e56cc672a2fce351ff",
+        "copy_sha256": "fe336c14480c9fb1ddd2fe71b00f3fa87ef26f967a5d1681771760564cab0898"
+      }
+    }
+  }
+}

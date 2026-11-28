@@ -1,0 +1,51 @@
+{
+  "test": "test_target_negative_receipts_survive_prepare_freeze_and_real_dataset",
+  "environment": "isolated CPU data preparation, no training",
+  "target": "fire",
+  "actual_data_yaml": {
+    "path": ".",
+    "train": "images/train",
+    "val": "images/validation",
+    "names": {
+      "0": "fire"
+    }
+  },
+  "files": [
+    {
+      "image_id": "image-1",
+      "scenario": "empty original",
+      "role": "train",
+      "image_ref": "dataset/images/train/image-1.jpg",
+      "label_ref": "dataset/labels/train/image-1.txt",
+      "label_text": "",
+      "source_sha256": "9030b8fcccd780592b59fd290249c709e13d0211e3f27e9dde9b180cca8d743b",
+      "exported_sha256": "9030b8fcccd780592b59fd290249c709e13d0211e3f27e9dde9b180cca8d743b",
+      "label_bytes": 0
+    },
+    {
+      "image_id": "image-3",
+      "scenario": "fire and person",
+      "role": "train",
+      "image_ref": "dataset/images/train/image-3.jpg",
+      "label_ref": "dataset/labels/train/image-3.txt",
+      "label_text": "0 0.35156250 0.35156250 0.54687500 0.54687500",
+      "source_sha256": "490bb606d5808a84b9a75ee5cba42be634d4d3c67ad8152ec6ab0c2769279b80",
+      "exported_sha256": "490bb606d5808a84b9a75ee5cba42be634d4d3c67ad8152ec6ab0c2769279b80",
+      "label_bytes": 45
+    },
+    {
+      "image_id": "image-2",
+      "scenario": "person only",
+      "role": "validation",
+      "image_ref": "dataset/images/validation/image-2.jpg",
+      "label_ref": "dataset/labels/validation/image-2.txt",
+      "label_text": "",
+      "source_sha256": "27800c48b67f266415da28c95fdeab5bb1f2ce485a4578dd6c9457ec589ad8bb",
+      "exported_sha256": "27800c48b67f266415da28c95fdeab5bb1f2ce485a4578dd6c9457ec589ad8bb",
+      "label_bytes": 0
+    }
+  ],
+  "formal_gt_unchanged": "asserted by integration test; original repository rows compared before/after",
+  "source_bytes_unchanged": "asserted by integration test; original and exported files compared byte for byte",
+  "note": "Generic target contract; browser additionally uses cigarette. No production or model-quality claim."
+}

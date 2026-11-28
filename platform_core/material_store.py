@@ -1,5 +1,6 @@
 """Process-local, atomic storage for the material index."""
 
+import hashlib
 import json
 import threading
 from copy import deepcopy
@@ -15,7 +16,9 @@ from .annotations import atomic_write_json
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[Path, threading.RLock] = {}
 _CACHE_GUARD = threading.RLock()
-_ROW_CACHE: dict[Path, tuple[tuple[int, int] | None, list[dict[str, Any]]]] = {}
+_FileMetadata = tuple[int, int, int, int, int] | None
+_FileSignature = tuple[int, int, int, int, int, str] | None
+_ROW_CACHE: dict[Path, tuple[_FileSignature, list[dict[str, Any]]]] = {}
 _Result = TypeVar("_Result")
 
 
@@ -38,12 +41,39 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def _file_signature(path: Path) -> tuple[int, int] | None:
+def _file_metadata(path: Path) -> _FileMetadata:
     try:
         stat = path.stat()
     except FileNotFoundError:
         return None
-    return stat.st_mtime_ns, stat.st_size
+    return (
+        int(stat.st_mtime_ns),
+        int(stat.st_ctime_ns),
+        int(stat.st_size),
+        int(stat.st_ino),
+        int(stat.st_dev),
+    )
+
+
+def _content_digest(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def _file_signature(path: Path) -> _FileSignature:
+    metadata = _file_metadata(path)
+    if metadata is None:
+        return None
+    digest = _content_digest(path)
+    if digest is None:
+        return None
+    return (*metadata, digest)
 
 
 def _cached_rows_shared(path: Path) -> list[dict[str, Any]]:
@@ -136,6 +166,51 @@ class MaterialStore:
                 write_revision(self.revision_path, read_revision(self.revision_path) + 1)
                 _store_cached_rows(self.path, rows)
                 return result
+
+    def get(self, image_id: str) -> dict[str, Any] | None:
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.get(str(image_id))
+        target = str(image_id)
+        with self._lock:
+            with self._file_lock:
+                for row in _cached_rows(self.path):
+                    if str(row.get("id")) == target:
+                        return dict(row)
+        return None
+
+    def mutate_ids(
+        self, image_ids: Iterable[str],
+        fn: Callable[[list[dict[str, Any]]], _Result],
+    ) -> _Result:
+        """Point mutations by primary key; never full-scan the SQLite owner."""
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.mutate_ids(image_ids, fn)
+        ids = {str(value) for value in image_ids}
+
+        def apply(rows: list[dict[str, Any]]) -> _Result:
+            return fn([row for row in rows if str(row.get("id")) in ids])
+
+        return self.mutate(apply)
+
+    def mutate_dataset(
+        self, dataset_id: str | None,
+        fn: Callable[[list[dict[str, Any]]], _Result],
+    ) -> _Result:
+        """Dataset-scoped mutation delegated to the transactional SQLite owner."""
+        delegate = self._sqlite_delegate()
+        if delegate is not None:
+            return delegate.mutate_dataset(dataset_id, fn)
+        expected = None if dataset_id is None else str(dataset_id)
+
+        def apply(rows: list[dict[str, Any]]) -> _Result:
+            return fn([
+                row for row in rows
+                if expected is None or str(row.get("dataset_id", "default")) == expected
+            ])
+
+        return self.mutate(apply)
 
     def upsert(self, record: Mapping[str, Any]) -> dict[str, Any]:
         delegate = self._sqlite_delegate()

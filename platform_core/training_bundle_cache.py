@@ -339,10 +339,20 @@ class TrainingBundleCache:
             data_yaml = _resolve_relative(
                 bundle, str(manifest.get("data_yaml_ref") or "")
             )
+            revision_id = str(manifest.get("dataset_revision_id") or "").strip()
+            revision_path = (
+                _resolve_relative(
+                    bundle,
+                    str(manifest.get("dataset_revision_ref") or ""),
+                )
+                if revision_id
+                else None
+            )
         except ValueError:
             return None
         expected_snapshot_sha = str(manifest.get("snapshot_sha256") or "")
         expected_data_yaml = str(marker.get("data_yaml_sha256") or "")
+        expected_revision_sha = str(manifest.get("dataset_revision_sha256") or "")
         if (
             _has_link_component(bundle, snapshot_path)
             or not snapshot_path.is_file()
@@ -352,6 +362,15 @@ class TrainingBundleCache:
             or not data_yaml.is_file()
             or not expected_data_yaml
             or _sha256(data_yaml) != expected_data_yaml
+            or (
+                revision_path is not None
+                and (
+                    _has_link_component(bundle, revision_path)
+                    or not revision_path.is_file()
+                    or not expected_revision_sha
+                    or _sha256(revision_path) != expected_revision_sha
+                )
+            )
         ):
             return None
 
@@ -467,7 +486,10 @@ class TrainingBundleCache:
             if progress is not None:
                 progress(index, len(members), member)
 
-        for reference_key in ("snapshot_ref", "data_yaml_ref"):
+        reference_keys = ["snapshot_ref", "data_yaml_ref"]
+        if str(manifest.get("dataset_revision_id") or "").strip():
+            reference_keys.append("dataset_revision_ref")
+        for reference_key in reference_keys:
             reference = str(manifest.get(reference_key) or "")
             source_path = _resolve_relative(source, reference)
             destination_path = _resolve_relative(destination_bundle, reference)
@@ -598,7 +620,15 @@ class TrainingBundleCache:
         self,
         *,
         protect_snapshot_ids: Sequence[str] = (),
+        dry_run: bool = False,
     ) -> dict[str, Any]:
+        """Evict stale/quota/invalid cache entries.
+
+        ``dry_run=True`` performs the same safety checks and reports what would
+        be evicted without deleting anything, so operators can preview a
+        maintenance sweep. Idle scheduling itself lives in the Worker (see
+        :func:`maintain_all_training_bundle_caches`).
+        """
         protected = {_snapshot_id(value) for value in protect_snapshot_ids}
         self.root.mkdir(parents=True, exist_ok=True)
         now_ns = time.time_ns()
@@ -616,6 +646,9 @@ class TrainingBundleCache:
             skipped_recent = 0
             eviction_failures = 0
             evicted_snapshot_ids: list[str] = []
+            would_evict_entries = 0
+            would_evict_bytes = 0
+            would_evict_snapshot_ids: list[str] = []
             removed: set[str] = set()
 
             def evict(candidate: _MaintenanceCandidate, *, reason: str) -> bool:
@@ -629,6 +662,8 @@ class TrainingBundleCache:
                 nonlocal skipped_protected
                 nonlocal skipped_recent
                 nonlocal eviction_failures
+                nonlocal would_evict_entries
+                nonlocal would_evict_bytes
 
                 if candidate.snapshot_id in protected:
                     skipped_protected += 1
@@ -650,6 +685,13 @@ class TrainingBundleCache:
                         if _is_link_like(candidate.root) or not stat.S_ISDIR(current_info.st_mode):
                             eviction_failures += 1
                             return False
+                        if dry_run:
+                            removed.add(candidate.snapshot_id)
+                            would_evict_entries += 1
+                            would_evict_bytes += candidate.bundle_bytes
+                            would_evict_snapshot_ids.append(candidate.snapshot_id)
+                            retained_bytes = max(0, retained_bytes - candidate.bundle_bytes)
+                            return True
                         _safe_rmtree(candidate.root, parent=self.root)
                 except Timeout:
                     skipped_locked += 1
@@ -724,6 +766,10 @@ class TrainingBundleCache:
                     else 0
                 ),
                 "evicted_snapshot_ids": evicted_snapshot_ids,
+                "dry_run": bool(dry_run),
+                "would_evict_entries": would_evict_entries,
+                "would_evict_bytes": would_evict_bytes,
+                "would_evict_snapshot_ids": would_evict_snapshot_ids,
             }
 
     def publish_verified(
@@ -812,3 +858,227 @@ class TrainingBundleCache:
             "published": published,
             "maintenance": maintenance,
         }
+
+
+# ---------------------------------------------------------------------------
+# Idle bundle-cache maintenance scheduling
+# ---------------------------------------------------------------------------
+
+TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV = "TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS"
+# Scheduling is opt-in: an upgraded/new deployment must not silently start
+# scanning and deleting project bundle caches in the background.
+DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS = 0
+TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE_ENV = "TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE"
+_TERMINAL_TRAINING_STATUSES = (
+    "SUCCEEDED", "PARTIAL_SUCCESS", "FAILED", "CANCELLED",
+    "BLOCKED_BY_ENVIRONMENT", "BLOCKED_BY_HARDWARE",
+)
+
+
+def training_bundle_cache_maintenance_interval_seconds() -> int:
+    """Idle cache-maintenance cadence; 0 disables the scheduled sweep."""
+    raw = str(os.environ.get(TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS_ENV) or "").strip()
+    if not raw:
+        return DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_TRAINING_BUNDLE_CACHE_MAINTENANCE_SECONDS
+    return max(0, value)
+
+
+def training_bundle_cache_maintenance_delete_enabled() -> bool:
+    """Actual scheduled deletion needs an explicit opt-in.
+
+    Even when the sweep interval is configured, the scheduled sweep only runs a
+    bounded dry-run preview unless this flag is set. Manual diagnostics never
+    delete either.
+    """
+    raw = str(os.environ.get(TRAINING_BUNDLE_CACHE_MAINTENANCE_DELETE_ENV) or "").strip().casefold()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def active_training_cache_protection(repository, artifacts) -> dict[str, Any]:
+    """Read-only snapshot ids that a live/queued training task may still need.
+
+    Cancellation-not-closed (CANCEL_REQUESTED) and pending-preparation tasks are
+    included: their bundle cache must survive until the task reaches a terminal
+    state and its own cleanup path has run.
+    """
+    placeholders = ",".join("?" for _ in _TERMINAL_TRAINING_STATUSES)
+    rows = []
+    hold_task_ids: set[str] = set()
+    with repository._connect() as database:
+        rows = database.execute(
+            "SELECT task_id,payload_ref FROM tasks WHERE kind='TRAINING' "
+            f"AND (status IS NULL OR status NOT IN ({placeholders})) "
+            "ORDER BY task_id LIMIT 2000",
+            _TERMINAL_TRAINING_STATUSES,
+        ).fetchall()
+        try:
+            hold_rows = database.execute(
+                "SELECT task_id FROM execution_resource_holds "
+                "WHERE state<>'RELEASED' LIMIT 2000"
+            ).fetchall()
+        except Exception:
+            hold_rows = []
+        hold_task_ids = {str(row[0]) for row in hold_rows}
+        hold_rows_by_task: dict[str, Any] = {}
+        missing = sorted(hold_task_ids - {str(row[0]) for row in rows})
+        for start in range(0, len(missing), 200):
+            chunk = missing[start:start + 200]
+            chunk_placeholders = ",".join("?" for _ in chunk)
+            extra = database.execute(
+                "SELECT task_id,payload_ref FROM tasks "
+                f"WHERE task_id IN ({chunk_placeholders})",
+                chunk,
+            ).fetchall()
+            for row in extra:
+                hold_rows_by_task.setdefault(str(row[0]), row)
+    task_ids = [str(row[0]) for row in rows]
+    snapshot_ids: set[str] = set()
+
+    def _add(value: object) -> None:
+        try:
+            snapshot_ids.add(_snapshot_id(value))
+        except (TypeError, ValueError):
+            return
+
+    for row in [*rows, *hold_rows_by_task.values()]:
+        task_id = str(row[0])
+        payload_ref = str(row[1] or "")
+        if not payload_ref:
+            continue
+        try:
+            payload = artifacts.read_json(task_id, payload_ref, default={})
+        except Exception:
+            payload = {}
+        if not isinstance(payload, Mapping):
+            continue
+        _add(payload.get("snapshot_id"))
+        _add(payload.get("dataset_revision_id"))
+        bundle = payload.get("bundle")
+        if isinstance(bundle, Mapping):
+            _add(bundle.get("snapshot_id"))
+    return {
+        "task_ids": task_ids,
+        "hold_task_ids": sorted(hold_task_ids),
+        "snapshot_ids": sorted(snapshot_ids),
+    }
+
+
+def maintain_all_training_bundle_caches(
+    data_dir: str | Path,
+    repository,
+    artifacts,
+    *,
+    dry_run: bool = True,
+) -> dict[str, Any]:
+    """One bounded, idle-gated sweep over every project bundle cache.
+
+    Dry-run is the default: callers that really may delete must pass
+    ``dry_run=False`` explicitly (the scheduled Worker does this only when the
+    delete opt-in environment flag is set). Any per-project failure is reported
+    and does not abort the other projects.
+
+    Protection is re-read before *each* project: a task created or a resource
+    Hold released/changed after the initial snapshot aborts the remaining
+    deletions instead of trusting a stale scan.
+    """
+    protection = active_training_cache_protection(repository, artifacts)
+    active_tasks = protection["task_ids"]
+    protected_snapshot_ids = set(protection["snapshot_ids"])
+    base = Path(data_dir).resolve() / "cache" / _CACHE_ROOT_NAME
+    summary: dict[str, Any] = {
+        "ran": False,
+        "dry_run": bool(dry_run),
+        "active_task_count": len(active_tasks),
+        "hold_task_count": len(protection.get("hold_task_ids") or ()),
+        "protected_snapshot_count": len(protected_snapshot_ids),
+        "project_count": 0,
+        "projects": [],
+        "errors": [],
+        "protection_rechecks": 0,
+    }
+    if (active_tasks or protection.get("hold_task_ids")) and not dry_run:
+        summary.update(
+            skipped="active_training_tasks" if active_tasks else "unreleased_resource_holds",
+            active_tasks=active_tasks[:20],
+            hold_tasks=(protection.get("hold_task_ids") or [])[:20],
+        )
+        return summary
+    if not base.is_dir() or base.is_symlink():
+        summary.update(skipped="no_cache_root" if not base.exists() else "unsafe_cache_root")
+        return summary
+    projects: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    totals = {
+        "scanned_entries": 0,
+        "before_bytes": 0,
+        "evicted_entries": 0,
+        "evicted_bytes": 0,
+        "would_evict_entries": 0,
+        "would_evict_bytes": 0,
+        "eviction_failures": 0,
+        "skipped_locked": 0,
+        "skipped_protected": 0,
+        "skipped_recent": 0,
+    }
+    try:
+        directories = sorted(base.iterdir(), key=lambda item: item.name)
+    except OSError as error:
+        summary.update(errors=[{"project_id": "", "error": f"{type(error).__name__}: {error}"}])
+        return summary
+    for entry in directories:
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        try:
+            project_id = _safe_component(entry.name, label="project_id")
+        except ValueError:
+            errors.append({"project_id": entry.name, "error": "unsafe project directory"})
+            continue
+        if not dry_run:
+            # A stale initial scan is not proof that no task started meanwhile.
+            current = active_training_cache_protection(repository, artifacts)
+            summary["protection_rechecks"] = int(summary["protection_rechecks"]) + 1
+            if current["task_ids"] or current.get("hold_task_ids"):
+                summary.update(
+                    ran=True,
+                    aborted="protection_changed_during_scan",
+                    active_task_count=len(current["task_ids"]),
+                    hold_task_count=len(current.get("hold_task_ids") or ()),
+                    project_count=len(projects),
+                    projects=projects,
+                    totals=totals,
+                    errors=errors,
+                )
+                return summary
+            protected_snapshot_ids.update(current["snapshot_ids"])
+        try:
+            result = TrainingBundleCache(data_dir, project_id).maintain(
+                protect_snapshot_ids=sorted(protected_snapshot_ids),
+                dry_run=dry_run,
+            )
+        except Exception as error:  # one broken project must not abort the sweep
+            errors.append({"project_id": project_id, "error": f"{type(error).__name__}: {error}"})
+            continue
+        for key in totals:
+            totals[key] += int(result.get(key) or 0)
+        projects.append({
+            "project_id": project_id,
+            "after_bytes": result.get("after_bytes"),
+            "over_budget_bytes": result.get("over_budget_bytes"),
+            **{key: result.get(key) for key in (
+                "scanned_entries", "evicted_entries", "evicted_bytes",
+                "would_evict_entries", "would_evict_bytes", "eviction_failures",
+                "skipped_locked", "skipped_protected", "skipped_recent",
+            )},
+        })
+    summary.update(
+        ran=True,
+        project_count=len(projects),
+        projects=projects,
+        totals=totals,
+        errors=errors,
+    )
+    return summary

@@ -1,0 +1,100 @@
+# P0-01C-3B-2: only ephemeral GitHub-hosted Ubuntu 22.04.
+# WARNING: disposable system accounts + systemd SYSTEM unit, NEVER self-hosted.
+name: Linux Supervisor Permission Boundary (Ephemeral CPU)
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/external-algorithm-publishing
+    paths:
+      - '.github/workflows/linux-supervisor-privilege-probe.yml'
+      - 'tools/poc/linux_supervisor_privilege_probe.py'
+      - 'tools/poc/test_linux_supervisor_privilege_probe_contract.py'
+      - 'tools/poc/linux_supervisor_ipc_probe.py'
+      - 'tools/poc/test_linux_supervisor_ipc_probe_contract.py'
+      - 'tools/poc/gpu_device_acl_shadow_probe.py'
+      - 'tools/poc/test_gpu_device_acl_shadow_probe.py'
+      - 'tools/poc/linux_cgroup_poc.py'
+      - 'tools/poc/central_stop_recovery_contract.py'
+permissions:
+  contents: read
+concurrency:
+  group: p001c3b2-hosted-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  hosted-ubuntu22-sandbox:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate ephemeral GitHub-hosted Ubuntu and no real GPU
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          test "$ID" = ubuntu
+          test "$VERSION_ID" = 22.04
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_ACTIONS" = true
+          test "$(id -u)" -ne 0
+          test -d /run/systemd/system
+          test -f /sys/fs/cgroup/cgroup.controllers
+          command -v sudo
+          command -v runuser
+          command -v useradd
+          command -v systemd-run
+          python3 -m py_compile tools/poc/linux_supervisor_privilege_probe.py tools/poc/linux_supervisor_ipc_probe.py tools/poc/gpu_device_acl_shadow_probe.py
+      - name: Install Python contract dependencies in disposable venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/p001c3b2-python"
+          "$RUNNER_TEMP/p001c3b2-python/bin/python" -m pip install --disable-pip-version-check pytest cryptography
+      - name: "Prove negative contracts before any root/systemd experiment"
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/p001c3b2-python/bin/python" -m pytest -q --confcutdir=tools/poc tools/poc/test_linux_supervisor_privilege_probe_contract.py tools/poc/test_linux_supervisor_ipc_probe_contract.py tools/poc/test_gpu_device_acl_shadow_probe.py
+      - name: "Real separate UIDs, root systemd unit, cgroup escape attempts, Ed25519"
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            "$RUNNER_TEMP/p001c3b2-python/bin/python" \
+            tools/poc/linux_supervisor_privilege_probe.py \
+            --run --github-ephemeral-only | tee p001c3b2-supervisor-proof.json
+      - name: "Root socket SO_PEERCRED and unsupervised CPU escape counterexample"
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            "$RUNNER_TEMP/p001c3b2-python/bin/python" \
+            tools/poc/linux_supervisor_ipc_probe.py \
+            --run --github-ephemeral-only | tee p001c3b3-ipc-unbound-cpu.json
+      - name: "Fake device-file DAC model: agent denied, workload allowed, mode 0666 bypass"
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n env GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted \
+            "$RUNNER_TEMP/p001c3b2-python/bin/python" \
+            tools/poc/gpu_device_acl_shadow_probe.py \
+            --run --github-ephemeral-only | tee p001c3b4-regular-file-not-gpu.json
+      - name: Preserve non-secret diagnostic result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p001c3b2-root-supervisor-isolated-evidence
+          path: |
+            p001c3b2-supervisor-proof.json
+            p001c3b3-ipc-unbound-cpu.json
+            p001c3b4-regular-file-not-gpu.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -4,11 +4,22 @@ from .errors import StorageError, redact_storage_error
 from .factory import StorageProviderFactory
 from .local import LocalStorageProvider
 from .manager import StorageManager
+from .nas_health import check_nas_source, read_mount_info
 from .oss import OSSStorageProvider
 from .remote import RemoteStorageProvider
 from .s3 import S3StorageProvider
 from .models import ObjectMetadata, ObjectPage, StorageHealth, StorageType
-from .source_repository import StorageSource, StorageSourceRepository
+from .source_repository import (
+    StorageSource,
+    StorageSourceAdmissionRequired,
+    StorageSourceConflictError,
+    StorageSourceOperationBlocked,
+    StorageSourceProviderConfigError,
+    StorageSourceRepository,
+    StorageSourceRepositoryError,
+    open_storage_source_repository,
+    storage_source_lifecycle_fence,
+)
 from .yolo_import import (
     ParsedYoloBox,
     YoloDatasetLayout,
@@ -33,6 +44,13 @@ __all__ = [
     "StorageProvider",
     "StorageSource",
     "StorageSourceRepository",
+    "StorageSourceRepositoryError",
+    "StorageSourceProviderConfigError",
+    "StorageSourceAdmissionRequired",
+    "StorageSourceConflictError",
+    "StorageSourceOperationBlocked",
+    "open_storage_source_repository",
+    "storage_source_lifecycle_fence",
     "StorageType",
     "StorageManager",
     "RemoteStorageProvider",
@@ -43,4 +61,6 @@ __all__ = [
     "file_sha256",
     "redact_storage_error",
     "LocalStorageProvider",
+    "check_nas_source",
+    "read_mount_info",
 ]

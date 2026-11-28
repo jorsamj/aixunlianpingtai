@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+from functools import wraps
+from contextlib import nullcontext
+from filelock import FileLock
 import mimetypes
 import os
 import stat
@@ -20,12 +23,78 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def controlled_local_startup_guard(data_dir, *, timeout=30):
+    """Updated platform entrypoints briefly acquire this before serving/claiming.
+
+    Offline GC holds the same mutex for the whole maintenance operation. This
+    is a startup barrier, not a second process registry or business-state owner.
+    """
+    if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+        return nullcontext()
+    path = Path(data_dir).resolve() / ".local-material-maintenance.lock"
+    if path.is_symlink() or (path.exists() and getattr(path.lstat(), "st_file_attributes", 0) & 0x400):
+        raise ValueError("unsafe maintenance startup mutex")
+    return FileLock(str(path), timeout=timeout, thread_local=False)
+
+
+class _LeasedReader:
+    def __init__(self, stream, lease):
+        self._stream, self._lease = stream, lease
+        self._closed = False
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+    def __iter__(self):
+        return self
+    def __next__(self):
+        return next(self._stream)
+    def __enter__(self):
+        return self
+    def __exit__(self, *args):
+        self.close()
+    def close(self):
+        if not self._closed:
+            self._closed = True
+            try:
+                self._stream.close()
+            finally:
+                self._lease.__exit__(None, None, None)
+
+
+def _leased_local_write(function):
+    @wraps(function)
+    def guarded(self, object_key, *args, **kwargs):
+        with self.byte_lease(object_key):
+            return function(self, object_key, *args, **kwargs)
+    return guarded
+
+
 class LocalStorageProvider:
     storage_type = StorageType.LOCAL
 
     def __init__(self, source_id: str, root: str | Path) -> None:
         self.source_id = str(source_id)
         self.root = Path(root).expanduser().resolve()
+
+    def byte_lease(self, object_key: str, *, timeout=30):
+        """Controlled-local byte lifetime; returned lock supports cross-thread close."""
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+            return nullcontext()
+        path = self._path(object_key)
+        folder = self.root / ".material-byte-leases"
+        if (folder.exists() or folder.is_symlink()) and self._is_link_like(folder):
+            raise ValueError("unsafe source byte lease directory")
+        folder.mkdir(exist_ok=True)
+        key = hashlib.sha256(os.path.normcase(str(path)).encode("utf-8")).hexdigest()
+        lock_path = folder / (key + ".lock")
+        if (lock_path.exists() or lock_path.is_symlink()) and self._is_link_like(lock_path):
+            raise ValueError("unsafe source byte lease lock")
+        return FileLock(str(lock_path), timeout=timeout, thread_local=False)
+
+    def _extended_path(self, path: Path) -> Path:
+        text = str(path)
+        if os.name == "nt" and len(text) >= 240 and not text.startswith("\\\\?\\"):
+            return Path("\\\\?\\" + text)
+        return Path(path)
 
     def _path(self, object_key: str, *, allow_empty: bool = False) -> Path:
         raw = str(object_key or "")
@@ -59,7 +128,11 @@ class LocalStorageProvider:
                 solution="请检查对象路径。",
                 context={"source_id": self.source_id},
             )
-        return resolved
+        # Windows MAX_PATH: canonical artifact keys can exceed 260 characters
+        # once the project-local storage root is prepended. Use the extended
+        # length form for filesystem operations only; object keys and URLs keep
+        # the normal POSIX form.
+        return self._extended_path(resolved)
 
     def health_check(self) -> StorageHealth:
         try:
@@ -74,10 +147,21 @@ class LocalStorageProvider:
                 f"本地存储目录不可访问：{error}", details={"root": str(self.root)}
             )
 
+    def _relative_to_root(self, path: Path) -> Path:
+        """Relative path that is stable across normal and \\?\ forms."""
+        candidate = Path(str(path))
+        root = Path(str(self.root))
+        if str(candidate).startswith("\\\\?\\"):
+            candidate = Path(str(candidate)[4:])
+        if str(root).startswith("\\\\?\\"):
+            root = Path(str(root)[4:])
+        return candidate.relative_to(root)
+
     def _metadata(self, path: Path, *, object_key: str | None = None) -> ObjectMetadata:
+        path = self._extended_path(path)
         stat_result = path.stat()
         return ObjectMetadata(
-            key=object_key if object_key is not None else path.relative_to(self.root).as_posix(),
+            key=object_key if object_key is not None else self._relative_to_root(path).as_posix(),
             size_bytes=stat_result.st_size,
             etag=f'"{stat_result.st_mtime_ns:x}-{stat_result.st_size:x}"',
             content_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
@@ -98,6 +182,7 @@ class LocalStorageProvider:
         return self._metadata(path, object_key=Path(object_key).as_posix())
 
     def _is_link_like(self, path: Path) -> bool:
+        path = self._extended_path(path)
         try:
             if path.is_symlink():
                 return True
@@ -114,7 +199,7 @@ class LocalStorageProvider:
             return True
 
     def _has_symlink_component(self, path: Path) -> bool:
-        relative = path.relative_to(self.root)
+        relative = self._relative_to_root(path)
         current = self.root
         for part in relative.parts:
             current = current / part
@@ -123,15 +208,15 @@ class LocalStorageProvider:
         return False
 
     def _is_import_staging_segment(self, segment: str) -> bool:
-        return os.path.normcase(segment) == os.path.normcase(".import-staging")
+        return os.path.normcase(segment) in {os.path.normcase(name) for name in
+            (".import-staging", ".material-byte-leases", ".material-reclaim")}
 
     def _is_import_staging_path(self, path: Path) -> bool:
-        relative = path.relative_to(self.root)
+        relative = self._relative_to_root(path)
         return bool(relative.parts) and self._is_import_staging_segment(relative.parts[0])
 
-    def iter_objects(
-        self, prefix: str = "", *, recursive: bool = True,
-    ) -> Iterator[ObjectMetadata]:
+    def _iter_keys(self, prefix: str = "", *, recursive: bool = True) -> Iterator[str]:
+        """Yield canonical object keys without hashing file contents."""
         base = self._path(prefix, allow_empty=True)
         requested = self.root / (Path(prefix) if prefix else Path())
         if self._is_import_staging_path(base) or self._has_symlink_component(requested):
@@ -139,18 +224,17 @@ class LocalStorageProvider:
         if not base.exists():
             return
         if base.is_file():
-            yield self._metadata(base)
+            yield self._relative_to_root(base).as_posix()
             return
         if not base.is_dir():
             return
-
         pending: list[tuple[bool, Path]] = [(True, base)]
         while pending:
             is_directory, path = pending.pop()
             if not is_directory:
-                yield self._metadata(path)
+                yield self._relative_to_root(path).as_posix()
                 continue
-            directory = path
+            directory = self._extended_path(path)
             with os.scandir(directory) as scan:
                 descriptors: list[tuple[str, bool, Path]] = []
                 for entry in scan:
@@ -160,25 +244,44 @@ class LocalStorageProvider:
                     if entry.is_file(follow_symlinks=False):
                         descriptors.append((entry.name, False, path))
                     elif recursive and entry.is_dir(follow_symlinks=False):
-                        if directory == self.root and self._is_import_staging_segment(entry.name):
+                        if (not self._relative_to_root(directory).parts
+                                and self._is_import_staging_segment(entry.name)):
                             continue
                         descriptors.append((f"{entry.name}/", True, path))
             for _key, is_child_directory, path in reversed(
                 sorted(descriptors, key=lambda descriptor: descriptor[0])
             ):
-                if is_child_directory:
-                    pending.append((True, path))
-                else:
-                    pending.append((False, path))
+                pending.append((is_child_directory, path))
+
+    def iter_objects(
+        self, prefix: str = "", *, recursive: bool = True,
+    ) -> Iterator[ObjectMetadata]:
+        for key in self._iter_keys(prefix, recursive=recursive):
+            try:
+                yield self.stat(key)
+            except StorageError:
+                # The object vanished between enumeration and metadata read.
+                continue
 
     def exists(self, object_key: str) -> bool:
         return self._path(object_key).is_file()
 
     def open_reader(self, object_key: str) -> BinaryIO:
-        path = self._path(object_key)
-        if not path.is_file():
-            self.stat(object_key)
-        return path.open("rb")
+        if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") != "1":
+            path = self._path(object_key)
+            if not path.is_file():
+                self.stat(object_key)
+            return path.open("rb")
+        lease = self.byte_lease(object_key)
+        lease.__enter__()
+        try:
+            path = self._path(object_key)
+            if not path.is_file():
+                self.stat(object_key)
+            return _LeasedReader(path.open("rb"), lease)
+        except BaseException:
+            lease.__exit__(None, None, None)
+            raise
 
     def _atomic_copy(self, source: BinaryIO, destination: Path) -> tuple[int, str]:
         """Copy once, fsync once, and compute the content hash in the same pass."""
@@ -225,6 +328,7 @@ class LocalStorageProvider:
             sha256=digest, last_modified=metadata.last_modified,
         )
 
+    @_leased_local_write
     def upload(
         self, object_key: str, source: BinaryIO | str | Path, *,
         content_type: str = "application/octet-stream",
@@ -265,6 +369,7 @@ class LocalStorageProvider:
             last_modified=str(stat_result.st_mtime_ns),
         )
 
+    @_leased_local_write
     def delete(self, object_key: str) -> None:
         try:
             self._path(object_key).unlink(missing_ok=True)
@@ -282,20 +387,19 @@ class LocalStorageProvider:
         base = self._path(prefix, allow_empty=True)
         if not base.exists():
             return ObjectPage(())
-        if base.is_file():
-            candidates = [base]
-        else:
-            candidates = list(base.rglob("*") if recursive else base.glob("*"))
-        keys = sorted(
-            path.relative_to(self.root).as_posix()
-            for path in candidates if path.is_file()
-        )
+        keys = sorted(self._iter_keys(prefix, recursive=recursive))
         if cursor:
             keys = [key for key in keys if key > str(cursor)]
         bounded = max(1, min(10000, int(limit)))
         visible = keys[:bounded]
         next_cursor = visible[-1] if len(keys) > bounded else None
-        return ObjectPage(tuple(self.stat(key) for key in visible), next_cursor)
+        items = []
+        for key in visible:
+            try:
+                items.append(self.stat(key))
+            except StorageError:
+                continue
+        return ObjectPage(tuple(items), next_cursor)
 
     def generate_preview_url(self, object_key: str, *, expires_seconds: int = 900) -> str | None:
         del expires_seconds

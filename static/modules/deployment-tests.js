@@ -28,6 +28,10 @@ export function deploymentTaskView(task = {}) {
   const waitReason = String(task.resource_wait_reason || '').trim();
   const workerId = String(task.worker_id || task.task_worker_id || '').trim();
   const phase = canonicalTaskPhase(task);
+  const phaseText = ({UPLOADING_IMAGE:'上传图片',CREATING_TASK:'创建任务',queued:'排队等待',running:'任务已领取',PREPARING_MODEL:'准备模型',PREPARING_INPUT:'准备图片与远程传输',
+    LOADING_RUNTIME:'准备运行环境',INFERENCING:'正在推理',GENERATING_RESULT:'生成检测结果',RUNTIME_VERIFIED:'检测结果已生成',
+    REMOTE_DOWNLOADING_INPUT:'远端读取图片',REMOTE_PREPARING_MODEL:'远端准备模型',REMOTE_LOADING_RUNTIME:'远端准备运行环境',
+    REMOTE_INFERENCING:'远端正在推理',REMOTE_GENERATING_RESULT:'远端生成检测结果',REMOTE_VERIFYING_RESULT:'校验检测结果',REMOTE_UPLOADING_RESULT:'回传检测结果'})[phase] || phase;
   const currentItem = String(task.current_item || '').trim();
   const runtime = [];
 
@@ -36,6 +40,7 @@ export function deploymentTaskView(task = {}) {
   }
   if (status === 'WAITING_RESOURCE' && waitReason) runtime.push(waitReason);
   if (status === 'RUNNING' && workerId) runtime.push(`Worker ${workerId}`);
+  if (task.preparation?.worker_id) runtime.push(`准备 Worker ${task.preparation.worker_id}`);
   if (currentItem) runtime.push(currentItem);
 
   return {
@@ -44,6 +49,7 @@ export function deploymentTaskView(task = {}) {
     statusText: String(task.status_text || statusFallback(status)),
     percent: progress.percent,
     phase,
+    phaseText,
     runtimeText: runtime.join(' · '),
     active: isTaskActive(task),
   };

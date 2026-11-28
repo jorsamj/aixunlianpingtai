@@ -8,8 +8,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .annotation_repository import AnnotationRepository
-from .material_repository import MaterialRepository, normalize_material
+from .material_repository import MaterialRepository, normalize_material, controlled_material_write_fence
 from .material_selection import MaterialFilters
+from .u3_owner_change_log import (
+    append_material_deletes,
+    append_material_events,
+    project_id_for_database,
+)
 
 
 _SQL_ID_BATCH = 500
@@ -17,7 +22,8 @@ MUTABLE_MATERIAL_FIELDS = frozenset({
     "filename", "processing_status", "split", "labels", "label_counts",
     "box_count", "annotated", "annotation_state", "annotation_status",
     "annotation_preview", "annotation_summary_at", "negative_sample",
-    "cleaned_at", "updated_at", "width", "height", "dataset_id",
+    "cleaned_at", "clean_skipped", "clean_decision", "clean_decision_at",
+    "clean_task_id", "updated_at", "width", "height", "dataset_id",
 })
 
 # App-level upload paths construct repositories once per image. Schema creation
@@ -47,7 +53,7 @@ def _install_repository_initialization_cache() -> None:
                 original_material_init(self, project)
                 _MATERIAL_INIT_READY.add(self.path.resolve())
 
-        MaterialRepository.__init__ = cached_material_init
+        MaterialRepository.__init__ = controlled_material_write_fence(cached_material_init)
         MaterialRepository._schema_init_cache_installed = True
 
     if not getattr(AnnotationRepository, "_schema_init_cache_installed", False):
@@ -65,7 +71,7 @@ def _install_repository_initialization_cache() -> None:
                 original_annotation_init(self, project)
                 _ANNOTATION_INIT_READY.add(self.path.resolve())
 
-        AnnotationRepository.__init__ = cached_annotation_init
+        AnnotationRepository.__init__ = controlled_material_write_fence(cached_annotation_init)
         AnnotationRepository._schema_init_cache_installed = True
 
 
@@ -124,7 +130,13 @@ def _persist_batch(database, rows: list[dict[str, Any]]) -> None:
             row["processing_status"], row["box_count"], int(row["annotated"]),
             row["created_at"], row["updated_at"], payload, row["id"],
         ))
-        label_rows.extend((row["id"], label) for label in row["labels"])
+        label_rows.extend(
+            (
+                row["id"], label,
+                max(0, int((row.get("label_counts") or {}).get(label) or 0)),
+            )
+            for label in row["labels"]
+        )
     database.executemany(
         "UPDATE materials SET filename=?, storage_source_id=?, storage_type=?, object_key=?, "
         "content_sha256=?, size_bytes=?, etag=?, processing_status=?, box_count=?, annotated=?, "
@@ -136,8 +148,12 @@ def _persist_batch(database, rows: list[dict[str, Any]]) -> None:
     database.execute(f"DELETE FROM material_labels WHERE material_id IN ({placeholders})", ids)
     if label_rows:
         database.executemany(
-            "INSERT INTO material_labels(material_id, label_code) VALUES (?, ?)", label_rows,
+            "INSERT INTO material_labels(material_id, label_code, box_count) VALUES (?, ?, ?)",
+            label_rows,
         )
+    append_material_events(
+        database, rows, project_id=project_id_for_database(database),
+    )
 
 
 def _transform_many(
@@ -318,11 +334,19 @@ def _remove_many(
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
+                stored = database.execute(
+                    f"SELECT id,payload_json FROM materials WHERE id IN ({placeholders})", batch,
+                ).fetchall()
+                removed_rows = [self._row_payload(row) for row in stored]
                 cursor = database.execute(
                     f"DELETE FROM materials WHERE id IN ({placeholders})", batch,
                 )
                 count = max(0, int(cursor.rowcount))
                 if count:
+                    append_material_deletes(
+                        database, removed_rows, reason="remove_many",
+                        project_id=project_id_for_database(database),
+                    )
                     self._bump_revision(database)
                 database.execute("COMMIT")
                 removed += count
@@ -364,11 +388,16 @@ def _chunked_remove(self: MaterialRepository, image_ids: Iterable[str]) -> list[
                     f"SELECT id, payload_json FROM materials WHERE id IN ({placeholders})",
                     batch,
                 ).fetchall()
+                removed_rows = [self._row_payload(row) for row in rows]
                 by_id.update({str(row["id"]): self._row_payload(row) for row in rows})
                 if rows:
                     database.execute(
                         f"DELETE FROM materials WHERE id IN ({placeholders})",
                         [str(row["id"]) for row in rows],
+                    )
+                    append_material_deletes(
+                        database, removed_rows, reason="remove",
+                        project_id=project_id_for_database(database),
                     )
             if by_id:
                 self._bump_revision(database)
@@ -423,6 +452,13 @@ def _chunked_mutate(self: MaterialRepository, fn):
                     f"DELETE FROM materials WHERE id IN ({placeholders})",
                     batch,
                 )
+            if deleted_ids:
+                append_material_deletes(
+                    database,
+                    (json.loads(before_payload[image_id]) for image_id in deleted_ids),
+                    reason="mutate",
+                    project_id=project_id_for_database(database),
+                )
             for image_id in changed_ids:
                 self._write_row(database, after[image_id])
             if deleted_ids or changed_ids:
@@ -439,13 +475,13 @@ def install_material_repository_batch_guards() -> None:
     if getattr(MaterialRepository, "_large_id_guards_installed", False):
         return
     MaterialRepository.get_many = _chunked_get_many
-    MaterialRepository.remove = _chunked_remove
-    MaterialRepository.mutate = _chunked_mutate
-    MaterialRepository.patch_many = _patch_many
-    MaterialRepository.patch_filtered = _patch_filtered
-    MaterialRepository.add_labels_many = _add_labels_many
-    MaterialRepository.remove_labels_many = _remove_labels_many
-    MaterialRepository.remove_many = _remove_many
+    MaterialRepository.remove = controlled_material_write_fence(_chunked_remove)
+    MaterialRepository.mutate = controlled_material_write_fence(_chunked_mutate)
+    MaterialRepository.patch_many = controlled_material_write_fence(_patch_many)
+    MaterialRepository.patch_filtered = controlled_material_write_fence(_patch_filtered)
+    MaterialRepository.add_labels_many = controlled_material_write_fence(_add_labels_many)
+    MaterialRepository.remove_labels_many = controlled_material_write_fence(_remove_labels_many)
+    MaterialRepository.remove_many = controlled_material_write_fence(_remove_many)
     MaterialRepository._large_id_guards_installed = True
 
 

@@ -1,0 +1,594 @@
+{
+  "base": "08a3c2b02f52277339c226ff6ff961ce57a69f5f",
+  "files": [
+    {
+      "path": "platform_core/algorithms.py",
+      "git_blob": "4a4d32df880afa11b050519afbc15e097f1e300a"
+    },
+    {
+      "path": "platform_core/gpu_resources.py",
+      "git_blob": "df812e5d25fcf0e0d9ee2ed9353890e9a03516e6"
+    },
+    {
+      "path": "platform_core/labels.py",
+      "git_blob": "964612983764e2de0a0f9f08da89c2aed515fcbe"
+    },
+    {
+      "path": "platform_core/local_login_auth.py",
+      "git_blob": "6a3d899b671473a7651aa063a74852914c150657"
+    },
+    {
+      "path": "platform_core/node_agent_training_runtime.py",
+      "git_blob": "dc62526743eafb6d6748f3619e0a96c1a54a96da"
+    },
+    {
+      "path": "platform_core/remote_training_inputs.py",
+      "git_blob": "4b7fff6a7253d108342471ca89a0b6a69f4a5376"
+    },
+    {
+      "path": "platform_core/remote_training_results.py",
+      "git_blob": "faf22eb5c2b81e10949e14f0581992ec6bdf3c2c"
+    },
+    {
+      "path": "platform_core/remote_training_tasks.py",
+      "git_blob": "abd4119f9549c3bcb8ac30eb6724841a875b3421"
+    },
+    {
+      "path": "platform_core/remote_training_transport.py",
+      "git_blob": "772c997dcca1f4e569b29315aba87a203711985b"
+    },
+    {
+      "path": "platform_core/snapshots.py",
+      "git_blob": "bc84cb6480143e600ed8042f82049379b9891660"
+    },
+    {
+      "path": "platform_core/task_runtime/__init__.py",
+      "git_blob": "9ea72a4c4479f8d8b975bf7dde672aa176f42c29"
+    },
+    {
+      "path": "platform_core/task_runtime/artifacts.py",
+      "git_blob": "cefd11e88da446b3302f411bfa95e3b172c84eaa"
+    },
+    {
+      "path": "platform_core/task_runtime/fenced_repository.py",
+      "git_blob": "87fbcadbb8582d8a5813b272d55136479f6752a6"
+    },
+    {
+      "path": "platform_core/task_runtime/inference_resources.py",
+      "git_blob": "357e02a9babb841c9e95b5dbdbbf5b3678394626"
+    },
+    {
+      "path": "platform_core/task_runtime/models.py",
+      "git_blob": "59c8553d84d4f51d1a5c8a6d1209d72a6cac25fa"
+    },
+    {
+      "path": "platform_core/task_runtime/process_control.py",
+      "git_blob": "473e08263999f3a039c5535b0f4426760d6914d7"
+    },
+    {
+      "path": "platform_core/task_runtime/process_start_gate.py",
+      "git_blob": "d8a84e4325bf641f109bb60df529f96cc6751683"
+    },
+    {
+      "path": "platform_core/task_runtime/public.py",
+      "git_blob": "9c254d27332778a98de7230a96885833b3de5656"
+    },
+    {
+      "path": "platform_core/task_runtime/repository.py",
+      "git_blob": "f2a2ef7e2a28f3fcc0bd6e042e9dd417ef483c39"
+    },
+    {
+      "path": "platform_core/task_runtime/scheduler.py",
+      "git_blob": "67b8c13e793e3b90fb1026a7ffd36ac869a6baeb"
+    },
+    {
+      "path": "platform_core/task_runtime/sqlite_busy.py",
+      "git_blob": "1afe5f2392bbd0ef890edd7388382c7c21bfe3ff"
+    },
+    {
+      "path": "platform_core/task_runtime/task_logs.py",
+      "git_blob": "389728a272efcc3b8f53ae19c538869c3c6a8a74"
+    },
+    {
+      "path": "platform_core/task_runtime/worker.py",
+      "git_blob": "0e13f1d856b3fa313e175a8c919025e7290d9303"
+    },
+    {
+      "path": "platform_core/task_runtime/worker_instances.py",
+      "git_blob": "ed7466b180410cf4c97ff892908c0b90f1966270"
+    },
+    {
+      "path": "platform_core/training_bundle_cache.py",
+      "git_blob": "b8560e9236c16341537db346a0977cec6b68da5a"
+    },
+    {
+      "path": "platform_core/training_checkpoint_resume_tasks.py",
+      "git_blob": "f29577b1888b09fa4a839f4002cca3d02b558828"
+    },
+    {
+      "path": "platform_core/training_compatibility.py",
+      "git_blob": "644090fd6364e7b68e4400b091a4aa52720cc965"
+    },
+    {
+      "path": "platform_core/training_devices.py",
+      "git_blob": "b69422756e41de13817ea8197dde5ccea3a2c179"
+    },
+    {
+      "path": "platform_core/training_evaluation.py",
+      "git_blob": "48ef6d8c769bfccadb533249dd763e4cda798064"
+    },
+    {
+      "path": "platform_core/training_hardened_tasks.py",
+      "git_blob": "45d69387cfefb06a06a13cfe009b5b747a97dc5a"
+    },
+    {
+      "path": "platform_core/training_history_projection.py",
+      "git_blob": "7636e8e973862979fb7dcf380579d64024b5eda7"
+    },
+    {
+      "path": "platform_core/training_job_projection.py",
+      "git_blob": "b17aea8f3adce3c5db44ad1e91bb274659bbb6f5"
+    },
+    {
+      "path": "platform_core/training_label_tasks.py",
+      "git_blob": "01d6b937fc4ff1b572951b49285cb323ef695bd5"
+    },
+    {
+      "path": "platform_core/training_lineage.py",
+      "git_blob": "1147338172c4efa43004800b9aafda7a80a868ab"
+    },
+    {
+      "path": "platform_core/training_material_picker_api.py",
+      "git_blob": "35c3f9f07ccfeea11958f6baff4154e744994eb3"
+    },
+    {
+      "path": "platform_core/training_material_usage.py",
+      "git_blob": "ec5bc4e7ce321feaac3f087ad03316963975f3a1"
+    },
+    {
+      "path": "platform_core/training_metrics.py",
+      "git_blob": "3be82d1be1d2d8225d84578935284d9f4eb9b554"
+    },
+    {
+      "path": "platform_core/training_precision.py",
+      "git_blob": "ffcbd1f3368306ad511be222cdfa2b668e58aaff"
+    },
+    {
+      "path": "platform_core/training_prepare_child.py",
+      "git_blob": "34c747b96d536a49bf59c17b3df0cc2379fe64aa"
+    },
+    {
+      "path": "platform_core/training_recovery_api.py",
+      "git_blob": "79bcb0f1fdef69af0a2fd181cccc7043bc63478a"
+    },
+    {
+      "path": "platform_core/training_recovery_tasks.py",
+      "git_blob": "159fb7493767bf2a6fc013fd4ab30100e9f39cdc"
+    },
+    {
+      "path": "platform_core/training_resource_policy.py",
+      "git_blob": "644eb09208be6c364a7787daab50fa872971921c"
+    },
+    {
+      "path": "platform_core/training_robustness.py",
+      "git_blob": "41bcecf73348079bfe0e2f125079df3ee98a2cc2"
+    },
+    {
+      "path": "platform_core/training_runtime_tasks.py",
+      "git_blob": "7e8d064cd4c651fbef015e1ca0317f692626284d"
+    },
+    {
+      "path": "platform_core/training_scope_review_plans.py",
+      "git_blob": "56222bad1a62bfe5b8d8c49bd26bcf968eddb507"
+    },
+    {
+      "path": "platform_core/training_selection_reference.py",
+      "git_blob": "07131035c9f5510d3669391bb3a6dc4a6b6bba16"
+    },
+    {
+      "path": "platform_core/training_splits.py",
+      "git_blob": "c9f4045deef88af0a9cb03728177dbce91627b31"
+    },
+    {
+      "path": "platform_core/training_tasks.py",
+      "git_blob": "eacb26bd4186fed59a2ab024d10ad0d36ecd8252"
+    },
+    {
+      "path": "platform_core/training_timing.py",
+      "git_blob": "b68dc82d17b8992211ec65ea2e16e2691674e032"
+    },
+    {
+      "path": "platform_core/training_usage_maintenance.py",
+      "git_blob": "7923c38736c1fc03efe4aca3e309fc791208634d"
+    },
+    {
+      "path": "platform_core/training_workspace_http.py",
+      "git_blob": "316d54207a1256200b6377c682c2330bb4b7980e"
+    },
+    {
+      "path": "platform_core/training_workspace_lifecycle.py",
+      "git_blob": "931b7bf0f7fbc7e8f94aa2e9bb6c0514005b0e82"
+    },
+    {
+      "path": "train_worker.py",
+      "git_blob": "9546e99545aa044df28a5c537e7c64c6747d5471"
+    },
+    {
+      "path": "task_worker.py",
+      "git_blob": "e3c8c496d6ecc05a2ee134662f6665e9bd48d79a"
+    },
+    {
+      "path": "remote_train_server.py",
+      "git_blob": "4060e6eba7548ce388baba2f8de39c43cff7e4e0"
+    },
+    {
+      "path": "remote_deploy_server.py",
+      "git_blob": "47e5aa34e0ea4465e18763320239f104af14071f"
+    },
+    {
+      "path": "start_remote_server.sh",
+      "git_blob": "63e2f97ba30f8abd4bf9a28677e00b8d41572590"
+    },
+    {
+      "path": "start_remote_server.bat",
+      "git_blob": "726464a4f564f440535088c7110ab87856953190"
+    },
+    {
+      "path": "node_agent.py",
+      "git_blob": "78a638dc3d7d8eaf6d33bd68f9070cce656618cc"
+    },
+    {
+      "path": "platform_core/annotation_candidates.py",
+      "git_blob": "b06eb2b27b16e17e807f8e123397caa39a7ab246"
+    },
+    {
+      "path": "platform_core/annotation_runtime.py",
+      "git_blob": "bbcbd0838619e7c53c08ae496e8617766246caf4"
+    },
+    {
+      "path": "platform_core/annotation_inference.py",
+      "git_blob": "4d95652741bafef4f78699e879b6255d9a79e360"
+    },
+    {
+      "path": "platform_core/inference_policy.py",
+      "git_blob": "8422389e74e1caff529f66055562fee373ae3ce3"
+    },
+    {
+      "path": "platform_core/providers/__init__.py",
+      "git_blob": "b3e9f5cfcee3b1d44c0ae84c4c7c8314c9692010"
+    },
+    {
+      "path": "platform_core/providers/base.py",
+      "git_blob": "7fd49ef97fcdf5c7983f8c094de093167335d475"
+    },
+    {
+      "path": "platform_core/providers/ollama_vision.py",
+      "git_blob": "ecaf4e7b43313c3a95fa8c65c29f9706e04aa07b"
+    },
+    {
+      "path": "platform_core/providers/openai_vision.py",
+      "git_blob": "b19e386c3cbc36fcdc6b4ff9cbf3fedd99ed8d80"
+    },
+    {
+      "path": "platform_core/providers/wevisone_vision.py",
+      "git_blob": "39ad6bb9ebc7b0ec11c8a94ba322c77e7368cb23"
+    }
+  ],
+  "app_training_definitions": [
+    {
+      "name": "_cancel_training_prepare_child",
+      "occurrence": 0,
+      "ast_sha256": "d8e0d1443a149dbab8ec6366040cc871ece44765df702995522a4c910f39022a"
+    },
+    {
+      "name": "TrainingRobustnessPolicyReq",
+      "occurrence": 0,
+      "ast_sha256": "f5f9c38280ccc41051538cefbecd74ba740aeda3ea9fa4108f1cf7e08bea9e3f"
+    },
+    {
+      "name": "training_robustness_policy",
+      "occurrence": 0,
+      "ast_sha256": "dfda6feb76cb418e2a6a6ba9bef52e495d9d21aa0cf844cba87eb946c5502756"
+    },
+    {
+      "name": "save_training_robustness_policy",
+      "occurrence": 0,
+      "ast_sha256": "6095e7322c3590881ad776914e519a47bf7aca5649899f83663e5a13ea1ae9ef"
+    },
+    {
+      "name": "training_catalog",
+      "occurrence": 0,
+      "ast_sha256": "32403d3af5b525b5f7d40f5dcac4d140d3ddc4410cc2395af4ad24504eafa5bc"
+    },
+    {
+      "name": "training_options",
+      "occurrence": 0,
+      "ast_sha256": "9d695e04124872fa241b9c752df1026a95e62bd90656fccbdd8272200bd81a6c"
+    },
+    {
+      "name": "TrainServerReq",
+      "occurrence": 0,
+      "ast_sha256": "f7d984e2e40e732aa7063ab4dbade4a851de0bda5b5076ab0af69bb87f301039"
+    },
+    {
+      "name": "list_train_servers",
+      "occurrence": 0,
+      "ast_sha256": "532f8f0a89031ec4f39436124dc3fd06dd26d4c76bfcf1a7d68b721a035ee310"
+    },
+    {
+      "name": "save_train_server",
+      "occurrence": 0,
+      "ast_sha256": "f52ee3850d6e15d9ce556bb39f7838936284b49284498c5af915194f7ebb2d29"
+    },
+    {
+      "name": "delete_train_server",
+      "occurrence": 0,
+      "ast_sha256": "a296372e6dcef175d120fcddc10353f8213644702744560eeb403b4dea5fb30d"
+    },
+    {
+      "name": "test_train_server",
+      "occurrence": 0,
+      "ast_sha256": "93f7498ff28f7f23fa16b4ea4efb9ac51723ce0b3afeba98a5615831c7cf04a9"
+    },
+    {
+      "name": "test_saved_train_server",
+      "occurrence": 0,
+      "ast_sha256": "cc1ecc3c6c3a68bb7b43f37f2617b01f466fd3acc433aa44308e3bc382e27a7e"
+    },
+    {
+      "name": "training_devices",
+      "occurrence": 0,
+      "ast_sha256": "fa294bb405def689b084e162db475f4920f2d2ffaaaf66fdeaf98f6b1906e176"
+    },
+    {
+      "name": "TrainReq",
+      "occurrence": 0,
+      "ast_sha256": "9f1f1a249052ef193b06ac4886182eaf182e05db4d70c1474716b6f8a4217198"
+    },
+    {
+      "name": "validate_train_request",
+      "occurrence": 0,
+      "ast_sha256": "a5fc01a33a4e94f9bbb7fc3e3d2456e39c0e5275d96e92faf9a1b0b798e963bd"
+    },
+    {
+      "name": "_explicit_training_split",
+      "occurrence": 0,
+      "ast_sha256": "d130252c2bd47e281378a6c8025d421665dc2911650631f2a61b80cdce7c30b9"
+    },
+    {
+      "name": "_training_reusable_benchmark",
+      "occurrence": 0,
+      "ast_sha256": "e5525b997fe17a074257b7e94c37ba41ec66943d2937783d56a694a1a7305468"
+    },
+    {
+      "name": "_training_compatibility_request",
+      "occurrence": 0,
+      "ast_sha256": "01214f7179afec371f63085c37a4b4bc208fedec04dfa47007ce907935d7e803"
+    },
+    {
+      "name": "training_benchmark_reuse",
+      "occurrence": 0,
+      "ast_sha256": "8bf76859655bbdc13f30e657247456b961f013e39ad70f42ed2d9cb28454d7dd"
+    },
+    {
+      "name": "_training_supplement_candidate_set",
+      "occurrence": 0,
+      "ast_sha256": "252d26ac6f140a54487960206d0a0d09899f9934bbcb6f7da3e502fa3c1f8384"
+    },
+    {
+      "name": "training_inherited_labels_preview",
+      "occurrence": 0,
+      "ast_sha256": "0fbbb3198a924d740956b9bc03b58787d2e18d1aa2b168d2c336903c4e9b93b1"
+    },
+    {
+      "name": "_new_training_task_id",
+      "occurrence": 0,
+      "ast_sha256": "b433ac3b8e5b979fa9d29be1ff3aff2685a109250b30b14e8b72e668f17da9ac"
+    },
+    {
+      "name": "_ensure_training_create_job",
+      "occurrence": 0,
+      "ast_sha256": "718a0c7947da083f1e4ee2ede9191ce39b7a96f7f366ccdd148f1037d98e685f"
+    },
+    {
+      "name": "_ensure_training_prepare_child",
+      "occurrence": 0,
+      "ast_sha256": "afbd81edd7eff0cb247c634795762d619cd6770e1d7372a9c4f6c58daa2f6f88"
+    },
+    {
+      "name": "_reconcile_training_create_replay",
+      "occurrence": 0,
+      "ast_sha256": "a3a3299e41452ac99575f3bc9a57057fb4dc9f8036b4e04fd4e2cfa633a7c0e5"
+    },
+    {
+      "name": "_enqueue_explicit_training",
+      "occurrence": 0,
+      "ast_sha256": "2d376a066b7010be716fe9af79b188b3b4bde71162615910e39e206d12a100e1"
+    },
+    {
+      "name": "_enqueue_explicit_training_locked",
+      "occurrence": 0,
+      "ast_sha256": "49217e8cb84b6e67cc291752efb62a05a66b4e91a841ffa97836c18a943517e9"
+    },
+    {
+      "name": "check_ultralytics_train_runtime",
+      "occurrence": 0,
+      "ast_sha256": "2c213d247ccb2936467c007138952e45f7644fce725157ff384aaf1c5ad982be"
+    },
+    {
+      "name": "start_train",
+      "occurrence": 0,
+      "ast_sha256": "5536ba1f2025467e36bbe29241b598f3e17e56a26ecc390aac093d89a24e94ef"
+    },
+    {
+      "name": "_training_event_row",
+      "occurrence": 0,
+      "ast_sha256": "d4af7d3e3eced1c46673a25be54759582e2471f17f47f22337062c38a23b047d"
+    },
+    {
+      "name": "_training_event_rows",
+      "occurrence": 0,
+      "ast_sha256": "3b9f2a0b32e72c495e5b1db3523eede01e7897dbecd3352c02beaccb34f7f856"
+    },
+    {
+      "name": "_training_event_signature",
+      "occurrence": 0,
+      "ast_sha256": "47fccb708fceb3ebff1d584080bfcba03600aad59932858cfe24d3e20d8b42e9"
+    },
+    {
+      "name": "_training_sse_message",
+      "occurrence": 0,
+      "ast_sha256": "c4b697c749e0c3fd6fb5cbd51eabe56b53487ae73c5b3d64a2f24b6872db90e8"
+    },
+    {
+      "name": "v64_training_events",
+      "occurrence": 0,
+      "ast_sha256": "9f80ce868678767a3c0ee77694bc65ce9201a40d7c36eea89e9cf7174493d17d"
+    },
+    {
+      "name": "_tail_training_log_text",
+      "occurrence": 0,
+      "ast_sha256": "ee6e0e7dcd45a7667e80998ba56ec2f2f18e955d34e4deee3e50811a23eaf6af"
+    },
+    {
+      "name": "_training_job_is_active",
+      "occurrence": 0,
+      "ast_sha256": "3e02b0706d7b2550d18ec3dfb743e06137c1ffaf34c9de87439fffd637ef1ba3"
+    },
+    {
+      "name": "_training_job_index_rows",
+      "occurrence": 0,
+      "ast_sha256": "d22e7184b99da4c9f3cfe717afade8a0756c2db6160be7c112f3aeb8c024123d"
+    },
+    {
+      "name": "_training_history_context",
+      "occurrence": 0,
+      "ast_sha256": "4eb427be7aa278c9b1f80a804766cbc862e7e336a6bd77f87d5927ed98f1c4f8"
+    },
+    {
+      "name": "_successful_training_counts",
+      "occurrence": 0,
+      "ast_sha256": "7eb1b68481dacef6a40c406298e7989aab46b45892a97fa949b53e5a78b62841"
+    },
+    {
+      "name": "_validated_training_iteration_action",
+      "occurrence": 0,
+      "ast_sha256": "2c09f56004443500f05f149f2d1412e1c650944493c39e4e2ed4c1feb3deee00"
+    },
+    {
+      "name": "v12_start_train_api",
+      "occurrence": 0,
+      "ast_sha256": "4c266a02618802e93d8f357624ea8b9c7566ec6fea594a4c6a90254ca6f594d1"
+    },
+    {
+      "name": "v12_start_train",
+      "occurrence": 0,
+      "ast_sha256": "694cca5553ba6149278514dc3a2a1e0d38466ddc18fa96214b4b3e484e2d02fc"
+    },
+    {
+      "name": "_v56_training_queue_sort_key",
+      "occurrence": 0,
+      "ast_sha256": "77adf4a96a09b08085c3c8983ce58e3f97cb4fb8a10610cd7bcc679df61cdb10"
+    },
+    {
+      "name": "_v48_dispatch_training_queues",
+      "occurrence": 0,
+      "ast_sha256": "b6e025963915360047081310f5008f427500e6dfb12c6db064eb4fd250548b58"
+    },
+    {
+      "name": "_v48_dispatch_training_queues_locked",
+      "occurrence": 0,
+      "ast_sha256": "916a4a7d71ec6e8ab741ede4d3dec257fb4e0a8964f21fbd248a6897b72aa225"
+    },
+    {
+      "name": "_v48_start_legacy_training_maintenance",
+      "occurrence": 0,
+      "ast_sha256": "3cfc1b55cbd0c18f91ff1193c9128f64f8b4301f049ad6c88cb8db7f8b3919f1"
+    },
+    {
+      "name": "_v48_stop_legacy_training_maintenance",
+      "occurrence": 0,
+      "ast_sha256": "94935a62e45e5d2e81fa6c95bce70041538db28eab61b9a79a4a2ac662529e5b"
+    },
+    {
+      "name": "_durable_training_task",
+      "occurrence": 0,
+      "ast_sha256": "eccb72c0134a218773587374ede3eef28d2f1cd33acc33fbd8a4b44e144ba3b8"
+    },
+    {
+      "name": "V48TrainingBatchDeleteReq",
+      "occurrence": 0,
+      "ast_sha256": "4fc0fb3d4ac4a181356810b6fc96dae36eedba92586716624e06cbcbb6dac28c"
+    },
+    {
+      "name": "_purge_terminal_training_job_record",
+      "occurrence": 0,
+      "ast_sha256": "d64c50fe363d6db815e8017bedb6bf1b1d57b3aa654b94f6ab3d0770a0bfea52"
+    },
+    {
+      "name": "_v48_archive_training_version",
+      "occurrence": 0,
+      "ast_sha256": "4c999cae6ba6a9afae577f36515afabe0aaa4dc3e4e84aaba50ba9634cbbe925"
+    },
+    {
+      "name": "_v48_archive_training_version_locked",
+      "occurrence": 0,
+      "ast_sha256": "885c41fad14ea3110817b7a86e1171e1b608ce17681bc521e582c8a93ac487cf"
+    },
+    {
+      "name": "_version_deploy_training_job",
+      "occurrence": 0,
+      "ast_sha256": "cd293f4a6b395fce4d49c264a316198f01671533a57bbb02fbb18c971e846ac8"
+    },
+    {
+      "name": "_v42_wait_train",
+      "occurrence": 0,
+      "ast_sha256": "f9db2327dfda7235be470c9395fb9999a018a83774723e9017452ce8bab53f46"
+    },
+    {
+      "name": "_training_success_rate_stats",
+      "occurrence": 0,
+      "ast_sha256": "2046873acfbc7357131f5d9d1510454815b2d724f22d812ed0344d7ba8019076"
+    },
+    {
+      "name": "v44_training_report",
+      "occurrence": 0,
+      "ast_sha256": "718984ecb5c9f2bd268e7198d07113c33fe7984b83b810e1d3cb3a9063634aa6"
+    },
+    {
+      "name": "_v45_training_history",
+      "occurrence": 0,
+      "ast_sha256": "9d5188ce40d65221c3960e70a73a82da1a2d23ca19e7c7005671da29c3516f73"
+    },
+    {
+      "name": "v44_supplement_training_data",
+      "occurrence": 0,
+      "ast_sha256": "3cef1a4baf1a92ff17c816de2b57af9258497f072aec0bc7ab1337e8b75bec9d"
+    },
+    {
+      "name": "_prepare_agent_training_model_uploads",
+      "occurrence": 0,
+      "ast_sha256": "cc98584d851d8d8e60b35c6765f9a67fe1ad5152566911866ce05845544feab9"
+    },
+    {
+      "name": "_confirm_agent_training_model_uploads",
+      "occurrence": 0,
+      "ast_sha256": "2cf22e5ec7cc1ece9c7e47fb58edbb9b4811a64e97ec37fd2a4cdd859a7f8c14"
+    },
+    {
+      "name": "_agent_training_inputs",
+      "occurrence": 0,
+      "ast_sha256": "b7019c952dee874c13e40b3f4d68712c11f4ea5ae828ec44a8e0a6f608883458"
+    },
+    {
+      "name": "_review_training_negative",
+      "occurrence": 0,
+      "ast_sha256": "ebe709b13faf51c713540f2e8d719870830040f6bce8fed4f730dd731e577278"
+    },
+    {
+      "name": "_negative_pool_training_usage",
+      "occurrence": 0,
+      "ast_sha256": "21f2cb4661d2adf85d513aa8f12bb814c9da9bcfe6af2638b7bb3d2f54d08265"
+    }
+  ]
+}

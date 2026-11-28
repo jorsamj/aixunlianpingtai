@@ -1,0 +1,154 @@
+"""Isolated real-entry acceptance server. Never points at an existing DATA_DIR.
+
+Uses real auth, catalog operations/receipts, references, service-node repository
+and HTTP routes. Startup schedulers/recovery and SDK probes are deliberately off.
+All node/device evidence below is synthetic and is not hardware verification.
+"""
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+os.environ['MC_TRAIN_DATA_DIR'] = tempfile.mkdtemp(prefix='changlian-vue-p1bd-')
+os.environ['MC_LOCAL_USERNAME'] = 'vue-acceptance'
+os.environ['MC_LOCAL_PASSWORD'] = 'isolated-test-only'
+os.environ['MC_PLATFORM_VERSION'] = 'isolated-vue-acceptance'
+os.environ['YOLO_CONFIG_DIR'] = str(Path(os.environ['MC_TRAIN_DATA_DIR']) / 'ultralytics')
+
+import app as api
+from platform_core.service_nodes import ServiceNodeRepository
+
+def forbidden(*_args, **_kwargs):
+    raise RuntimeError('Hardware/SDK probing forbidden in Vue acceptance')
+
+# Existing legacy GETs may otherwise launch implicit SDK probes.
+api._builtin_deploy_resources = lambda force=False: api._builtin_deploy_resource_summary()
+api._scan_builtin_deploy_resources = forbidden
+api._detect_local_deploy_resource = forbidden
+api._v53_bootstrap_worker()
+assert api._V53_BOOTSTRAP_STATUS['status'] == 'ready'
+
+# Saved synthetic version/job records only: never create or execute a training or
+# conversion task. Exercise the original SQL and history owners through HTTP.
+from platform_core.algorithms import save_algorithms
+project_id=api.read_json(api.PROJECTS_FILE,[])[0]['id']
+save_algorithms(api.algorithms_file(project_id),[{
+    'id':'acceptance-algorithm','name':'隔离验收模型（合成数据）',
+    'algorithm_type':'yolo_ultralytics','industry':'验收','source_type':'LOCAL',
+    'current_version_id':'acceptance-v0','created_at':'2026-11-01',
+    'versions':[{'id':f'acceptance-v{i}','version_name':f'合成版本 {i}',
+        'framework':'ultralytics','training_status':'SUCCEEDED',
+        'created_at':'2026-11-15','stored_path':'/isolated/private/best.pt',
+        'job_id':'acceptance-train-00' if i==0 else '',
+        'sha256':'synthetic-source-sha','metrics':{'map50':None},
+        'val_metrics':{'map50':0},'evaluation':{'metrics':{'map50':.72},'samples':['FROZEN_GT_SENTINEL']},
+        'label_codes':['smoke'],'training_lineage':{'parameters':{'actual':{'epochs':50,'imgsz':640}}}}
+        for i in range(22)]}])
+for i in range(25):
+    directory=api.deploy_root(project_id)/'jobs'/f'acceptance-conversion-{i:02}'
+    directory.mkdir(parents=True,exist_ok=True)
+    api.write_json(directory/'job.json',{'id':f'acceptance-conversion-{i:02}',
+        'source_id':'version::acceptance-algorithm::acceptance-v0',
+        'source_trace':{'algorithm_id':'acceptance-algorithm','version_id':'acceptance-v0','sha256':'synthetic-source-sha'},
+        'status':'failed' if i%2 else 'done','target':'onnx',
+        'created_at':f'2026-11-15T12:{i:02}:00Z','finished_at':f'2026-11-15T12:{i:02}:30Z',
+        'params':{'precision':'fp16','chip':'fixture-chip','csc':{'preset':'none'}},
+        'outputs':[{'name':'model.onnx','path':str(directory/'missing.onnx')}],
+        'error':'合成诊断：依赖缺失 token=PRIVATE_SENTINEL /isolated/private/file' if i%2 else ''})
+
+from dataclasses import replace
+from platform_core.task_runtime import TaskRecord,TaskKind,TaskStatus
+for i in range(25):
+    task_id=f'acceptance-train-{i:02}'
+    task=TaskRecord.new(task_id,project_id,TaskKind.TRAINING,'payload.json','training:auto')
+    api.shared_task_repository().create(replace(task,status=TaskStatus.SUCCEEDED if i%2==0 else TaskStatus.FAILED,
+        progress=100,stage='finished',worker_id='synthetic-worker',finished_at='2026-11-17T00:00:00Z'))
+    api.shared_task_artifacts().atomic_write_json(task_id,'payload.json',{'asset_algorithm_id':'acceptance-algorithm',
+        'asset_algorithm_name':'隔离验收模型（合成数据）','epochs':50,'batch':4,'imgsz':640,
+        'dataset_selected_ids':['FROZEN_GT_SENTINEL'],'token':'PRIVATE_SENTINEL'})
+    api.shared_task_artifacts().atomic_write_json(task_id,'result.json',{
+        'training_report':{'metrics':{'precision':0,'recall':None,'map50':None,'map50_95':.5},
+            'history':[{'epoch':j,'map50':j/100,'box_loss':1-j/50,'val_box_loss':.8} for j in range(1,15)]},
+        'evaluation':{'status':'succeeded','metrics':{'map50':.72},'error_samples':['FROZEN_GT_SENTINEL']},
+        'execution':{'node_id':'synthetic-node','worker_id':'synthetic-worker','started_at':'2026-11-16T23:00:00Z'},
+        'metric_credibility':{'status':'unavailable','message':'合成数据，仅验展示，不代表现场质量'}})
+    directory=api.project_dir(project_id)/'jobs'/task_id;directory.mkdir(parents=True,exist_ok=True)
+    api.write_json(directory/'job.json',{'id':task_id,'status':'done' if i%2==0 else 'failed','framework':'ultralytics',
+        'asset_algorithm_id':'acceptance-algorithm','epochs':50,'batch':4,'imgsz':640,'metrics':{'map50':.99}})
+
+# P1K–P1N: real local bytes and formal GT in the same temporary repository.
+# No training runner is started. All image/algorithm identities are synthetic.
+import io,hashlib
+from PIL import Image,ImageDraw
+from platform_core.annotation_repository import AnnotationRepository
+from platform_core.algorithms import list_algorithms
+api.add_label(project_id,api.AddLabelReq(label='smoke'))
+algorithms=list_algorithms(api.algorithms_file(project_id))
+algorithms.append({'id':'acceptance-material-algorithm','name':'素材选材隔离验收算法',
+    'algorithm_type':'yolo_ultralytics','source_type':'LOCAL','versions':[],'created_at':'2026-11-17'})
+save_algorithms(api.algorithms_file(project_id),algorithms)
+# P1V opt-in identity fixture. These are saved synthetic identity/version
+# descriptors only; publication, storage and external HTTP must be intercepted
+# by the acceptance browser. Existing LOCAL records remain unchanged.
+if os.environ.get('MC_VUE_DELIVERY_FIXTURE') == '1':
+    from platform_core.external_algorithm_platform import PROVIDER_CHANGLIAN
+    algorithms=list_algorithms(api.algorithms_file(project_id))
+    algorithms.append({
+        'id':'acceptance-external-delivery','name':'隔离新畅联交付算法（合成身份）',
+        'algorithm_type':'yolo_ultralytics','source_type':'EXTERNAL','provider_type':PROVIDER_CHANGLIAN,
+        'source_name':'新畅联（隔离合成）','external_product_id':'isolated-product',
+        'external_product_code':'isolated-product-code','external_analysis_id':'isolated-analysis',
+        'external_analysis_ids':['isolated-analysis'],
+        'external_analyses':[{'analysis_id':'isolated-analysis','analysis_name':'隔离合成分析'}],
+        'external_active':True,'external_deletion_status':'NORMAL',
+        'current_version_id':'acceptance-delivery-v1','created_at':'2026-11-17',
+        'versions':[{'id':'acceptance-delivery-v1','version_name':'隔离交付版本（非真实模型验收）',
+            'framework':'ultralytics','training_status':'SUCCEEDED','artifact_verified':True,
+            'trainable':True,'model_name':'isolated-fixture.pt','stored_path':'/isolated/non-executable/delivery-fixture.pt',
+            'external_analysis_id':'isolated-analysis','label_codes':['smoke']}],
+    })
+    save_algorithms(api.algorithms_file(project_id),algorithms)
+manager=api.storage_manager(project_id)
+materials=[];annotations=[]
+for index in range(125):
+    image=Image.new('RGB',(640,480),(225,index%120+100,235));draw=ImageDraw.Draw(image)
+    draw.rectangle((64,48,320,240),outline=(40,80,140),width=5);draw.text((20,400),f'ISOLATED {index}',fill=(20,30,40))
+    stream=io.BytesIO();image.save(stream,format='JPEG');data=stream.getvalue();image_id=f'acceptance-material-{index:03}'
+    key=f'uploads/{image_id}.jpg';manager.upload_object('default_local',key,io.BytesIO(data),content_type='image/jpeg')
+    sha=hashlib.sha256(data).hexdigest()
+    materials.append({'id':image_id,'filename':f'隔离合成素材 {index:03}.jpg','storage_source_id':'default_local',
+        'storage_type':'local','object_key':key,'content_sha256':sha,'size_bytes':len(data),'width':640,'height':480,
+        'processing_status':'processed','source_available':True,'import_batch_id':'isolated-p1kn','created_at':f'2026-11-17T00:{index//60:02}:{index%60:02}Z'})
+    annotations.append({'image_id':image_id,'annotation_state':'annotated','annotation_scope':['smoke'],
+        'reviewed_label_codes':['smoke'],'source_content_sha256':sha,
+        'boxes':[{'class_id':0,'label':'smoke','x1':64,'y1':48,'x2':320,'y2':240}]})
+api.material_store(project_id).upsert_many(materials)
+AnnotationRepository(api.project_dir(project_id)).upsert_many(annotations)
+# Explicit P1S-only fixture: this newly created algorithm has no execution
+# history to reconcile. Use the original maintenance Owner to certify coverage,
+# preserving the default fixture's conservative unknown-history behavior.
+if os.environ.get('MC_VUE_TRAINING_CREATE_COVERAGE') == '1':
+    from platform_core.training_material_usage import TrainingMaterialUsage
+    TrainingMaterialUsage(api.DATA_DIR/'task_runtime'/'tasks.sqlite3').mark_coverage(
+        project_id, 'acceptance-material-algorithm', complete=True)
+# A fixture mother file only prevents automatic network acquisition; no trainer reads it.
+mother=api.DATA_DIR/'models'/'yolo11n.pt';mother.parent.mkdir(parents=True,exist_ok=True)
+mother.write_bytes(b'isolated-non-executable-fixture-model'*128)
+
+registry = ServiceNodeRepository(api.shared_task_repository())
+_, token = registry.create({'node_id': 'acceptance-arm64', 'display_name': 'ARM64 测试快照节点', 'connection_mode': 'agent', 'allowed_capabilities': ['training', 'conversion']})
+registry.heartbeat('acceptance-arm64', token, {
+    'hostname': 'isolated-fixture', 'os_name': 'Linux', 'architecture': 'aarch64',
+    'agent_version': 'acceptance-fixture', 'reported_capabilities': ['conversion'],
+    'resources': {'cpu': {'usage_percent': 18, 'physical_cores': 8, 'logical_cores': 16},
+                  'memory': {'usage_percent': 25, 'used_bytes': 4294967296, 'total_bytes': 17179869184, 'available_bytes': 12884901888},
+                  'gpu': {'gpus': []}},
+    'last_error': '合成心跳，仅验证展示合同，不代表真实硬件。',
+})
+registry.create({'node_id': 'acceptance-never', 'display_name': '未连接测试节点', 'connection_mode': 'local', 'allowed_capabilities': []})
+
+if __name__ == '__main__':
+    import uvicorn
+    print('Isolated Vue acceptance server; synthetic heartbeat; SDK disabled.', flush=True)
+    uvicorn.run(api.app, host='127.0.0.1', port=int(os.environ.get('MC_VUE_ACCEPTANCE_PORT', '8028')), lifespan='off', log_level='warning')

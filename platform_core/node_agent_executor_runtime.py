@@ -1,0 +1,1676 @@
+"""Agent-side client/runtime primitives for remote task execution.
+
+This module is intentionally database-free.  A service-node Agent talks only to
+control-plane HTTP APIs and a task-local work directory.  It must never import
+or open the control-plane TaskRepository/SQLite database and must never assume a
+shared NFS path.
+
+Task-kind-specific portable runners are layered on top of these primitives.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+import shutil
+import tempfile
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable, Mapping
+from urllib.parse import quote, urlparse
+
+import requests
+
+
+_SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
+DEFAULT_EXECUTOR_TIMEOUT_SECONDS = 15.0
+DEFAULT_RESULT_CONFIRM_TIMEOUT_SECONDS = 300.0
+DEFAULT_EXECUTION_HEARTBEAT_SECONDS = 5.0
+# Fallback lease-validity window. The monitor normally derives the real window
+# from the execution lease the control plane granted at start; this value only
+# covers an unparseable/stale expiry and deliberately matches the control
+# plane's own default execution lease TTL. A deployment that configures a
+# *shorter* execution lease must pass ``lease_seconds`` explicitly, otherwise an
+# unproven renewal could outlive the moment the task may be reassigned.
+DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS = 30.0
+# Answers that carry no ownership verdict: the request never produced a
+# control-plane decision, so retrying it says nothing about the lease.
+_TRANSPORT_STATUS_CODES = frozenset({0, 408, 425, 429})
+
+
+class NodeExecutorHTTPError(RuntimeError):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status_code: int = 0,
+        retryable: bool = False,
+    ) -> None:
+        self.code = str(code or "NODE_EXECUTOR_REQUEST_FAILED")
+        self.status_code = int(status_code or 0)
+        self.retryable = bool(retryable)
+        super().__init__(str(message or self.code))
+
+    @property
+    def outcome_unknown(self) -> bool:
+        """The server may have committed before this error was observed."""
+        return (
+            self.status_code == 0
+            or self.status_code >= 500
+            or self.code in {"NODE_EXECUTOR_TRANSPORT_FAILED",
+                             "NODE_EXECUTOR_INVALID_RESPONSE"}
+        )
+
+
+class RemoteExecutionFenced(RuntimeError):
+    """The Agent can no longer prove ownership of the current execution."""
+
+
+def _safe_component(value: object, field: str) -> str:
+    text = str(value or "").strip()
+    if not _SAFE_COMPONENT.fullmatch(text) or text in {".", ".."}:
+        raise ValueError(f"{field} must be one safe path component")
+    return text
+
+
+def _control_plane_base(value: object) -> str:
+    base = str(value or "").strip().rstrip("/")
+    parsed = urlparse(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("control plane URL must be an absolute http(s) URL")
+    if parsed.username or parsed.password:
+        raise ValueError("control plane URL must not contain userinfo")
+    return base
+
+
+def _lease_window_seconds(
+    lease: RemoteExecutionLease, override: float | None,
+) -> float:
+    """How long an unproven renewal may last before ownership must be dropped.
+
+    Derived from the execution lease the control plane granted, so the Agent
+    never outlives the moment another node could be handed the same task.
+    """
+    if override is not None:
+        try:
+            return max(1.0, float(override))
+        except (TypeError, ValueError):
+            pass
+    raw = str(getattr(lease, "lease_expires_at", "") or "").strip()
+    try:
+        expiry = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS
+    now = datetime.now(expiry.tzinfo) if expiry.tzinfo is not None else datetime.now()
+    remaining = (expiry - now).total_seconds()
+    if remaining >= 1.0:
+        return min(600.0, remaining)
+    # A past expiry only means the start response is old: the control plane has
+    # renewed the lease on every heartbeat since. Fall back to the default TTL
+    # instead of fencing on the first blip of a long-running execution.
+    return DEFAULT_EXECUTION_TRANSPORT_GRACE_SECONDS
+
+def _granted_lease_seconds(lease: RemoteExecutionLease, ttl: float) -> float:
+    """Seconds this execution is provably owned for, from the granted lease.
+
+    The start response carries the exact deadline the control plane granted.
+    A monitor constructed late must not be handed a full TTL on top of it, so
+    the initial deadline is the smaller of that remaining time and one TTL.
+    """
+    raw = str(getattr(lease, "lease_expires_at", "") or "").strip()
+    try:
+        expiry = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return ttl
+    now_wall = datetime.now(expiry.tzinfo) if expiry.tzinfo is not None else datetime.now()
+    remaining = (expiry - now_wall).total_seconds()
+    if remaining <= 0:
+        # Already past the granted deadline: allow exactly one bounded renewal
+        # attempt (a control plane that is up will renew), never a full TTL.
+        return min(float(ttl), 1.0)
+    return min(float(ttl), remaining)
+
+
+def _json_error(body: object, fallback: str) -> tuple[str, str]:
+    detail = body.get("detail") if isinstance(body, Mapping) else None
+    if isinstance(detail, Mapping):
+        return (
+            str(detail.get("code") or "NODE_EXECUTOR_REQUEST_FAILED"),
+            str(detail.get("message") or fallback),
+        )
+    if detail:
+        return "NODE_EXECUTOR_REQUEST_FAILED", str(detail)
+    return "NODE_EXECUTOR_REQUEST_FAILED", fallback
+
+
+@dataclass(frozen=True)
+class RemoteExecutionLease:
+    task_id: str
+    kind: str
+    project_id: str
+    generation: int
+    lease_token: str
+    lease_expires_at: str
+    worker_id: str
+    payload: dict[str, Any]
+    assignment: dict[str, Any]
+    transport: dict[str, Any]
+    payload_ref: str = ""
+    # Slot contract recorded by the control plane when this execution started.
+    # 0 means the control plane did not report it (pre-marker / legacy response).
+    execution_slots: int = 0
+
+    @classmethod
+    def from_start_response(cls, body: Mapping[str, Any]) -> "RemoteExecutionLease":
+        task = body.get("task")
+        execution = body.get("execution")
+        if not isinstance(task, Mapping) or not isinstance(execution, Mapping):
+            raise ValueError("executor start response is missing task/execution")
+        task_id = _safe_component(task.get("task_id"), "task_id")
+        kind = str(task.get("kind") or "").strip()
+        project_id = str(task.get("project_id") or "").strip()
+        token = str(execution.get("lease_token") or "").strip()
+        worker_id = str(execution.get("worker_id") or "").strip()
+        expiry = str(execution.get("lease_expires_at") or "").strip()
+        try:
+            generation = int(execution.get("generation"))
+        except (TypeError, ValueError) as error:
+            raise ValueError("executor start response has invalid generation") from error
+        if not kind or not token or generation <= 0 or not worker_id or not expiry:
+            raise ValueError("executor start response is incomplete")
+        raw_slots = execution.get("execution_slots")
+        if raw_slots is None:
+            execution_slots = 0
+        elif type(raw_slots) is int and int(raw_slots) in (1, 2):
+            execution_slots = int(raw_slots)
+        else:
+            raise ValueError("executor start response has invalid execution_slots")
+        payload = body.get("payload")
+        if not isinstance(payload, Mapping):
+            raise ValueError("executor start response payload must be an object")
+        assignment = body.get("assignment")
+        transport = body.get("transport")
+        return cls(
+            task_id=task_id,
+            kind=kind,
+            project_id=project_id,
+            generation=generation,
+            lease_token=token,
+            lease_expires_at=expiry,
+            worker_id=worker_id,
+            payload=dict(payload),
+            assignment=dict(assignment) if isinstance(assignment, Mapping) else {},
+            transport=dict(transport) if isinstance(transport, Mapping) else {},
+            payload_ref=str(task.get('payload_ref') or ''),
+            execution_slots=execution_slots,
+        )
+
+
+class NodeExecutorClient:
+    def __init__(
+        self,
+        control_plane_url: str,
+        node_id: str,
+        token: str,
+        *,
+        session: requests.Session | None = None,
+        timeout: float = DEFAULT_EXECUTOR_TIMEOUT_SECONDS,
+    ) -> None:
+        self.base_url = _control_plane_base(control_plane_url)
+        self.node_id = _safe_component(node_id, "node_id")
+        self.token = str(token or "").strip()
+        if not self.token:
+            raise ValueError("node token is required")
+        self.session = session or requests.Session()
+        self.timeout = max(1.0, float(timeout))
+
+    @property
+    def _prefix(self) -> str:
+        return (
+            f"{self.base_url}/api/v63/node-executor/"
+            f"{quote(self.node_id, safe='')}"
+        )
+
+    def _get(self, suffix: str) -> dict[str, Any]:
+        try:
+            response = self.session.get(
+                self._prefix + suffix,
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_TRANSPORT_FAILED",
+                f"{type(error).__name__}: {error}", retryable=True,
+            ) from error
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if not response.ok:
+            code, message = _json_error(body, f"control plane returned HTTP {response.status_code}")
+            raise NodeExecutorHTTPError(code, message, status_code=int(response.status_code),
+                                       retryable=int(response.status_code) >= 500)
+        if not isinstance(body, dict):
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_INVALID_RESPONSE",
+                "control plane returned a non-object executor response",
+            )
+        return body
+
+    def _post(
+        self,
+        suffix: str,
+        payload: Mapping[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        request_timeout = self.timeout if timeout is None else max(1.0, float(timeout))
+        try:
+            response = self.session.post(
+                self._prefix + suffix,
+                headers={"Authorization": f"Bearer {self.token}"},
+                json=dict(payload or {}),
+                timeout=request_timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_TRANSPORT_FAILED",
+                f"{type(error).__name__}: {error}",
+                retryable=True,
+            ) from error
+        try:
+            body = response.json()
+        except ValueError as error:
+            if response.ok:
+                raise NodeExecutorHTTPError(
+                    "NODE_EXECUTOR_INVALID_RESPONSE",
+                    "control plane returned non-JSON executor response",
+                    status_code=int(response.status_code),
+                ) from error
+            body = {}
+        if not response.ok:
+            code, message = _json_error(
+                body,
+                f"control plane returned HTTP {response.status_code}",
+            )
+            raise NodeExecutorHTTPError(
+                code,
+                message,
+                status_code=int(response.status_code),
+                retryable=int(response.status_code) in {408, 425, 429} or int(response.status_code) >= 500,
+            )
+        if not isinstance(body, dict):
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_INVALID_RESPONSE",
+                "control plane returned a non-object executor response",
+            )
+        return body
+
+    def recovery_diagnosis(self, task_id: str) -> dict[str, Any]:
+        """Read the original node's recovery hold without changing ownership.
+
+        In particular, the response is diagnostic metadata, NOT proof that
+        the remote child process has stopped. This never invokes release/retry.
+        """
+        key = _safe_component(task_id, "task_id")
+        try:
+            response = self.session.get(
+                self._prefix + f"/executions/{quote(key, safe='')}/recovery",
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_TRANSPORT_FAILED",
+                f"{type(error).__name__}: {error}",
+                retryable=True,
+            ) from error
+        try:
+            body = response.json()
+        except ValueError as error:
+            if response.ok:
+                raise NodeExecutorHTTPError(
+                    "NODE_EXECUTOR_INVALID_RESPONSE",
+                    "control plane returned non-JSON recovery diagnosis",
+                    status_code=int(response.status_code),
+                ) from error
+            body = {}
+        if not response.ok:
+            code, message = _json_error(
+                body, f"control plane returned HTTP {response.status_code}",
+            )
+            raise NodeExecutorHTTPError(
+                code, message,
+                status_code=int(response.status_code),
+                retryable=(
+                    int(response.status_code) in {408, 425, 429}
+                    or int(response.status_code) >= 500
+                ),
+            )
+        if (
+            not isinstance(body, Mapping)
+            or str(body.get("task_id") or "") != key
+            or str(body.get("node_id") or "") != self.node_id
+            or str(body.get("recovery_state") or "") != "STOP_PROOF_REQUIRED"
+            or body.get("automatic_reassignment_allowed") is not False
+            or body.get("stop_proof_verified") is not False
+            or type(body.get("execution_generation")) is not int
+            or int(body["execution_generation"]) <= 0
+            or str(body.get("task_status") or "") not in {"RUNNING", "CANCEL_REQUESTED"}
+        ):
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_INVALID_RESPONSE",
+                "recovery diagnosis is inconsistent or implies unsafe release",
+            )
+        return dict(body)
+
+    def training_inputs_manifest(self, lease: RemoteExecutionLease) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/training-inputs/manifest",
+            {"execution_lease_token": lease.lease_token, "execution_generation": lease.generation},
+        )
+
+    def formal_test_gate(self, lease):
+        return self._post(f"/executions/{quote(lease.task_id, safe='')}/training-inputs/manifest",
+            {'execution_lease_token':lease.lease_token,'execution_generation':lease.generation,'formal_test_gate':True})
+
+    def open_training_source(self, lease: RemoteExecutionLease, image_id: str) -> requests.Response:
+        try:
+            response = self.session.post(
+                f"{self._prefix}/executions/{quote(lease.task_id, safe='')}/training-inputs/read",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"execution_lease_token": lease.lease_token,
+                      "execution_generation": lease.generation, "image_id": image_id},
+                stream=True, allow_redirects=False, timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError("NODE_EXECUTOR_TRANSPORT_FAILED", str(error), retryable=True) from error
+        if not 200 <= response.status_code < 300:
+            try:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {}
+                code, message = _json_error(body, f"control plane returned HTTP {response.status_code}")
+                raise NodeExecutorHTTPError(code, message, status_code=int(response.status_code),
+                                            retryable=response.status_code in {408, 425, 429} or response.status_code >= 500)
+            finally:
+                response.close()
+        return response
+
+    def open_model_install_source(self, lease: RemoteExecutionLease) -> requests.Response:
+        """Lease-authenticated streaming PT source; no signed/object-storage URL."""
+        try:
+            response = self.session.post(
+                f"{self._prefix}/executions/{quote(lease.task_id, safe='')}/mother-model/read",
+                headers={"Authorization": f"Bearer {self.token}"},
+                json={"execution_lease_token": lease.lease_token,
+                      "execution_generation": lease.generation},
+                stream=True, allow_redirects=False, timeout=self.timeout,
+            )
+        except requests.RequestException as error:
+            raise NodeExecutorHTTPError("NODE_EXECUTOR_TRANSPORT_FAILED", str(error), retryable=True) from error
+        if response.status_code != 200:
+            try:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {}
+                code, message = _json_error(body, f"model transfer returned HTTP {response.status_code}")
+                raise NodeExecutorHTTPError(code, message, status_code=int(response.status_code))
+            finally:
+                response.close()
+        return response
+
+    def confirm_model_install(self, lease: RemoteExecutionLease, receipt: Mapping[str, Any]) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/mother-model/receipt",
+            {"execution_lease_token": lease.lease_token,
+             "execution_generation": lease.generation, "receipt": dict(receipt)},
+        )
+
+    def claim_assignment(self) -> dict[str, Any] | None:
+        body = self._post("/assignments/claim")
+        if not bool(body.get("claimed")):
+            return None
+        item = body.get("item")
+        if not isinstance(item, Mapping):
+            raise NodeExecutorHTTPError(
+                "NODE_EXECUTOR_INVALID_RESPONSE",
+                "claimed assignment response is missing item",
+            )
+        return dict(item)
+
+    def start_execution(
+        self,
+        task_id: str,
+        assignment_lease_token: str,
+    ) -> RemoteExecutionLease:
+        key = _safe_component(task_id, "task_id")
+        token = str(assignment_lease_token or "").strip()
+        if not token:
+            raise ValueError("assignment lease token is required")
+        body = self._post(
+            f"/assignments/{quote(key, safe='')}/start",
+            {"assignment_lease_token": token},
+        )
+        return RemoteExecutionLease.from_start_response(body)
+
+    def heartbeat(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        progress: float | None = None,
+        stage: str | None = None,
+        current_item: str | None = None,
+        resource_resolution: Mapping[str, Any] | None = None,
+        runtime_resources: Mapping[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "execution_lease_token": lease.lease_token,
+            "execution_generation": lease.generation,
+        }
+        if progress is not None:
+            payload["progress"] = float(progress)
+        if stage is not None:
+            payload["stage"] = str(stage)
+        if current_item is not None:
+            payload["current_item"] = str(current_item)
+        if resource_resolution is not None:
+            payload["resource_resolution"] = dict(resource_resolution)
+        if runtime_resources is not None:
+            payload["runtime_resources"] = dict(runtime_resources)
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/heartbeat",
+            payload,
+            timeout=timeout,
+        )
+
+    def append_log(self, lease: RemoteExecutionLease, text: str) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/logs",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "text": str(text or ""),
+            },
+        )
+
+    def material_scan_page(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "execution_lease_token": lease.lease_token,
+            "execution_generation": lease.generation,
+            "limit": max(1, min(100, int(limit))),
+        }
+        if cursor:
+            payload["cursor"] = str(cursor)
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/material-scan/page",
+            payload,
+        )
+
+    def material_scan_read(
+        self,
+        lease: RemoteExecutionLease,
+        object_key: str,
+    ) -> dict[str, Any]:
+        key = str(object_key or "").strip()
+        if not key:
+            raise ValueError("material scan object_key is required")
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/material-scan/read",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "object_key": key,
+            },
+        )
+
+    def clean_selection_page(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        cursor: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "execution_lease_token": lease.lease_token,
+            "execution_generation": lease.generation,
+            "limit": max(1, min(500, int(limit))),
+        }
+        if cursor:
+            payload["cursor"] = str(cursor)
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/clean-selection/page",
+            payload,
+        )
+
+    def clean_selection_read(
+        self,
+        lease: RemoteExecutionLease,
+        image_id: str,
+    ) -> dict[str, Any]:
+        key = str(image_id or "").strip()
+        if not key:
+            raise ValueError("cleaning image_id is required")
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/clean-selection/read",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "image_id": key,
+            },
+        )
+
+    def prepare_training_model_uploads(
+        self,
+        lease: RemoteExecutionLease,
+        models: list[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/training-models/prepare",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "models": [dict(item) for item in models],
+            },
+        )
+
+    def confirm_training_model_uploads(
+        self,
+        lease: RemoteExecutionLease,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/training-models/confirm",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+            },
+        )
+
+    def prepare_result_upload(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        sha256: str,
+        size_bytes: int,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/result-upload/prepare",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "sha256": str(sha256 or ""),
+                "size_bytes": int(size_bytes),
+            },
+        )
+
+    def confirm_result_upload(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        runtime_result: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "execution_lease_token": lease.lease_token,
+            "execution_generation": lease.generation,
+        }
+        if runtime_result is not None:
+            payload["runtime_result"] = dict(runtime_result)
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/result-upload/confirm",
+            payload,
+            timeout=max(self.timeout, DEFAULT_RESULT_CONFIRM_TIMEOUT_SECONDS),
+        )
+
+    def begin_finalization(self, lease: RemoteExecutionLease) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/begin-finalization",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+            },
+        )
+
+    def execution_status(self, task_id: str) -> dict[str, Any]:
+        return self._get(f"/executions/{quote(str(task_id), safe='')}/status")
+
+    def requeue_resource_wait(self, lease, payload):
+        return self._post(f"/executions/{quote(lease.task_id, safe='')}/resource-wait", payload)
+
+    def resource_wait_receipt(self, task_id, *, assignment_generation, execution_generation):
+        return self._get(
+            f"/executions/{quote(str(task_id), safe='')}/resource-wait"
+            f"?assignment_generation={int(assignment_generation)}&execution_generation={int(execution_generation)}"
+        )
+
+    def recover_execution(
+        self,
+        task_id: str,
+        *,
+        assignment_generation: int,
+        execution_generation: int,
+        gpu_uuid: str,
+        process_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._post(f"/executions/{quote(str(task_id), safe='')}/recover", {
+            "assignment_generation": int(assignment_generation),
+            "execution_generation": int(execution_generation),
+            "gpu_uuid": str(gpu_uuid),
+            "process_identity": dict(process_identity),
+        })
+
+    def record_start_identity(
+        self,
+        lease: RemoteExecutionLease,
+        process_identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{lease.task_id}/start-identity",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "process_identity": dict(process_identity),
+            },
+        )
+
+    def record_stop_proof(
+        self,
+        lease: RemoteExecutionLease,
+        *,
+        assignment_generation: int,
+        gpu_uuid: str,
+        process_identity: Mapping[str, Any],
+        stop_verified: bool = True,
+        no_process_launched: bool = False,
+        no_launch_evidence: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._post(
+            f"/executions/{lease.task_id}/stop-proof",
+            {
+                "execution_lease_token": lease.lease_token,
+                "execution_generation": lease.generation,
+                "assignment_generation": int(assignment_generation),
+                "gpu_uuid": str(gpu_uuid),
+                "process_identity": dict(process_identity),
+                "stop_verified": bool(stop_verified),
+                "no_process_launched": bool(no_process_launched),
+                "no_launch_evidence": dict(no_launch_evidence or {}),
+            },
+        )
+
+    def finish(
+        self,
+        lease: RemoteExecutionLease,
+        status: str,
+        *,
+        result_ref: str | None = None,
+        error: str | None = None,
+        accepted: bool | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "execution_lease_token": lease.lease_token,
+            "execution_generation": lease.generation,
+            "status": str(status or ""),
+        }
+        if result_ref is not None:
+            payload["result_ref"] = str(result_ref)
+        if error is not None:
+            payload["error"] = str(error)
+        if accepted is not None:
+            payload["accepted"] = bool(accepted)
+        return self._post(
+            f"/executions/{quote(lease.task_id, safe='')}/finish",
+            payload,
+        )
+
+
+def _persistable_payload(value: object) -> object:
+    """Remove ephemeral transport credentials before writing debug metadata."""
+    if isinstance(value, Mapping):
+        sanitized: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            key = str(raw_key)
+            lowered = key.lower()
+            if lowered in {
+                "url",
+                "authorization",
+                "token",
+                "lease_token",
+                "assignment_lease_token",
+                "execution_lease_token",
+            }:
+                continue
+            if lowered == "headers":
+                # Signed headers can contain temporary authorization or
+                # provider-specific credential material. Keep only their names.
+                if isinstance(raw_value, Mapping):
+                    sanitized["header_names"] = sorted(str(name) for name in raw_value)
+                continue
+            sanitized[key] = _persistable_payload(raw_value)
+        return sanitized
+    if isinstance(value, (list, tuple)):
+        return [_persistable_payload(item) for item in value]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
+
+
+class AgentExecutionWorkdir:
+    """Task-local Agent work directory with no interpretation of central paths."""
+
+    def __init__(self, root: str | Path) -> None:
+        self.root = Path(root).expanduser().resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _contained_directory(self, path: Path, *, create: bool) -> Path | None:
+        root = self.root.resolve()
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not path.is_dir():
+                raise ValueError("execution workdir contains an unsafe path component")
+        elif create:
+            path.mkdir()
+        else:
+            return None
+        resolved = path.resolve()
+        if resolved != root and root not in resolved.parents:
+            raise ValueError("execution workdir escaped Agent state root")
+        return resolved
+
+    def path_for(self, lease: RemoteExecutionLease) -> Path:
+        task_id = _safe_component(lease.task_id, "task_id")
+        generation = str(int(lease.generation))
+        executions = self.root / "executions"
+        self._contained_directory(executions, create=True)
+        task_dir = executions / task_id
+        self._contained_directory(task_dir, create=True)
+        target = task_dir / generation
+        resolved = self._contained_directory(target, create=True)
+        if resolved is None:
+            raise RuntimeError("failed to create execution workdir")
+        return resolved
+
+    @staticmethod
+    def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+        )
+        temp_path = Path(temporary)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+                json.dump(dict(value), stream, ensure_ascii=False, sort_keys=True)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temp_path, path)
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+    def stop_evidence_path(self, task_id: str, generation: int) -> Path:
+        """The persisted trusted-stop witness for one execution attempt."""
+        task = _safe_component(task_id, "task_id")
+        target = self.root / "executions" / task / str(int(generation))
+        resolved = self._contained_directory(target, create=False)
+        if resolved is None:
+            raise ValueError("execution workdir is missing")
+        return resolved / "process-stop-verified.json"
+
+    def prepare(self, lease: RemoteExecutionLease) -> Path:
+        target = self.path_for(lease)
+        self._atomic_write_json(
+            target / "request.json",
+            _persistable_payload(lease.payload),
+        )
+        # Do not persist Node/Assignment/Execution secrets. If the Agent process
+        # dies, the central lease expires and a newer generation takes over.
+        self._atomic_write_json(target / "execution.json", {
+            "task_id": lease.task_id,
+            "kind": lease.kind,
+            "project_id": lease.project_id,
+            "generation": lease.generation,
+            "payload_ref": lease.payload_ref,
+            "worker_id": lease.worker_id,
+            "lease_expires_at": lease.lease_expires_at,
+            "assignment": lease.assignment,
+            "execution_slots": int(getattr(lease, "execution_slots", 0) or 0),
+            "transport": lease.transport,
+        })
+        return target
+
+    @staticmethod
+    def _validated_process_identity(value: object) -> dict[str, Any]:
+        if not isinstance(value, Mapping):
+            raise ValueError("persisted process identity must be an object")
+        try:
+            pid = int(value.get("pid"))
+            create_time = float(value.get("create_time"))
+        except (TypeError, ValueError) as error:
+            raise ValueError("persisted process identity has invalid pid/create_time") from error
+        command_hash = str(value.get("command_hash") or "").strip().lower()
+        group_token = str(value.get("group_token") or "").strip().lower()
+        if (
+            pid <= 0
+            or not math.isfinite(create_time)
+            or create_time <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", command_hash)
+            or (group_token and not re.fullmatch(r"[0-9a-f]{48}", group_token))
+        ):
+            raise ValueError("persisted process identity is incomplete")
+        return {
+            "pid": pid,
+            "create_time": create_time,
+            "command_hash": command_hash,
+            "group_token": group_token,
+        }
+
+    @staticmethod
+    def _sync_launch_intent_directories(marker: Path, root: Path) -> None:
+        """Persist the marker's rename and newly created task directory entries.
+
+        fsync(file) alone does not make os.replace's directory entry durable
+        across a sudden power loss. POSIX requires syncing each newly-created
+        ancestor through the stable state-root parent before spawning a child.
+        A directory fsync failure aborts launch and retains the marker.
+        Windows needs a separate durable execution-boundary implementation.
+        """
+        if os.name != "posix":
+            return
+        directory = marker.parent
+        stop = root.parent
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        while True:
+            descriptor = os.open(directory, flags)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            if directory == stop:
+                break
+            if stop not in directory.parents:
+                raise ValueError("process launch intent escaped Agent state root")
+            directory = directory.parent
+
+    def begin_process_launch(self, lease: RemoteExecutionLease) -> Path:
+        """Record a possible child BEFORE spawning; absence of PID is not stop proof."""
+        kind = str(lease.kind)
+        if kind not in {"TRAINING", "MODEL_CONVERSION"}:
+            raise ValueError("process launch intent requires training or conversion")
+        marker = self.path_for(lease) / "process-launch-intent.json"
+        if marker.exists() or marker.is_symlink():
+            raise ValueError("process launch intent already exists")
+        self._atomic_write_json(marker, {
+            "task_id": _safe_component(lease.task_id, "task_id"),
+            "generation": int(lease.generation),
+            "kind": kind,
+        })
+        self._sync_launch_intent_directories(marker, self.root)
+        return marker
+
+    def clear_process_launch_intent(self, task_id: str, generation: int) -> None:
+        marker = (
+            self.path_for(SimpleNamespace(task_id=str(task_id), generation=int(generation)))
+            / "process-launch-intent.json"
+        )
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise ValueError("process launch intent path is unsafe")
+        if marker.is_file():
+            marker.unlink()
+        self._sync_launch_intent_directories(marker, self.root)
+
+    def read_process_launch_intent(self, lease) -> dict[str, Any] | None:
+        marker = self.path_for(lease) / "process-launch-intent.json"
+        if not marker.exists() and not marker.is_symlink():
+            return None
+        if marker.is_symlink() or not marker.is_file():
+            raise ValueError("process launch intent path is unsafe")
+        try:
+            raw = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("process launch intent is unreadable") from error
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"task_id", "generation", "kind"}
+            or raw.get("task_id") != _safe_component(lease.task_id, "task_id")
+            or type(raw.get("generation")) is not int
+            or raw["generation"] != int(lease.generation)
+            or raw.get("kind") not in {"TRAINING", "MODEL_CONVERSION"}
+            or getattr(lease, "kind", raw["kind"]) != raw["kind"]
+        ):
+            raise ValueError("process launch intent lineage mismatch")
+        return raw
+
+    def list_unverified_process_launch_intents(self, kind: str | None = None) -> list[dict[str, Any]]:
+        """Find unpaired launch hazards; no kind means all shared-compute hazards.
+
+        One Agent workdir is shared by TRAINING and MODEL_CONVERSION runners.
+        Neither runner may claim a new task while the other kind has an
+        unverified possibly-live child process.
+        """
+        if kind is not None and kind not in {"TRAINING", "MODEL_CONVERSION"}:
+            raise ValueError("unsupported process launch kind")
+        known = {
+            (item["task_id"], item["generation"])
+            for item in self.list_process_identities()
+        }
+        result: list[dict[str, Any]] = []
+        base = self.root / "executions"
+        for marker in sorted(base.glob("*/*/process-launch-intent.json")):
+            task_id = _safe_component(marker.parent.parent.name, "task_id")
+            try:
+                generation = int(marker.parent.name)
+            except ValueError as error:
+                raise ValueError("process launch intent generation is invalid") from error
+            if generation <= 0:
+                raise ValueError("process launch intent generation is invalid")
+            item = self.read_process_launch_intent(
+                SimpleNamespace(task_id=task_id, generation=generation)
+            )
+            if item and (kind is None or item["kind"] == kind) and (task_id, generation) not in known:
+                result.append(item)
+        return result
+
+    def persist_process_identity(
+        self,
+        lease: RemoteExecutionLease,
+        identity,
+    ) -> Path:
+        target = self.path_for(lease)
+        value = self._validated_process_identity({
+            "pid": getattr(identity, "pid", None),
+            "create_time": getattr(identity, "create_time", None),
+            "command_hash": getattr(identity, "command_hash", None),
+            "group_token": getattr(identity, "group_token", ""),
+        })
+        value.update({
+            "task_id": str(lease.task_id),
+            "generation": int(lease.generation),
+        })
+        path = target / "process-identity.json"
+        self._atomic_write_json(path, value)
+        return path
+
+    def read_process_identity(
+        self,
+        lease: RemoteExecutionLease,
+    ) -> dict[str, Any] | None:
+        task_id = _safe_component(lease.task_id, "task_id")
+        generation = str(int(lease.generation))
+        executions = self._contained_directory(
+            self.root / "executions",
+            create=False,
+        )
+        if executions is None:
+            return None
+        task_dir = self._contained_directory(
+            Path(executions) / task_id,
+            create=False,
+        )
+        if task_dir is None:
+            return None
+        target = self._contained_directory(
+            Path(task_dir) / generation,
+            create=False,
+        )
+        if target is None:
+            return None
+        path = Path(target) / "process-identity.json"
+        if not path.exists() and not path.is_symlink():
+            return None
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("persisted process identity path is unsafe")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("persisted process identity is unreadable") from error
+        identity = self._validated_process_identity(raw)
+        if (
+            str(raw.get("task_id") or "") != task_id
+            or int(raw.get("generation") or 0) != int(lease.generation)
+        ):
+            raise ValueError("persisted process identity lineage mismatch")
+        return identity
+
+    def clear_process_identity(self, lease: RemoteExecutionLease) -> None:
+        self.clear_process_identity_record(lease.task_id, lease.generation)
+
+    def clear_process_identity_record(
+        self,
+        task_id: str,
+        generation: int,
+    ) -> None:
+        task_id = _safe_component(task_id, "task_id")
+        generation = str(int(generation))
+        executions = self._contained_directory(
+            self.root / "executions",
+            create=False,
+        )
+        if executions is None:
+            return
+        task_dir = self._contained_directory(
+            Path(executions) / task_id,
+            create=False,
+        )
+        if task_dir is None:
+            return
+        target = self._contained_directory(
+            Path(task_dir) / generation,
+            create=False,
+        )
+        if target is None:
+            return
+        path = Path(target) / "process-identity.json"
+        marker = Path(target) / "process-launch-intent.json"
+        if path.is_symlink() or marker.is_symlink():
+            raise ValueError("persisted process identity or launch intent path is unsafe")
+        if marker.exists() and not marker.is_file():
+            raise ValueError("process launch intent path is unsafe")
+        # Only callers that verified termination may clear either record.
+        # Remove marker first so interrupted cleanup preserves PID identity.
+        marker.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+
+    def read_stop_evidence(
+        self, task_id: str, generation: int,
+    ) -> dict[str, Any] | None:
+        """Read the persisted trusted-stop witness with the identity safety rules."""
+        task = _safe_component(task_id, "task_id")
+        executions = self._contained_directory(self.root / "executions", create=False)
+        if executions is None:
+            return None
+        task_dir = self._contained_directory(Path(executions) / task, create=False)
+        if task_dir is None:
+            return None
+        target = self._contained_directory(
+            Path(task_dir) / str(int(generation)), create=False,
+        )
+        if target is None:
+            return None
+        path = Path(target) / "process-stop-verified.json"
+        if not path.exists() and not path.is_symlink():
+            return None
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("persisted stop evidence path is unsafe")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("persisted stop evidence is unreadable") from error
+        if not isinstance(raw, dict):
+            raise ValueError("persisted stop evidence is invalid")
+        # The lineage fields are never coerced: ``int("3")`` or ``int(True)``
+        # must not be accepted as this execution attempt.
+        if (type(raw.get("task_id")) is not str
+                or raw["task_id"] != task
+                or type(raw.get("execution_attempt")) is not int
+                or raw["execution_attempt"] != int(generation)):
+            raise ValueError("persisted stop evidence lineage mismatch")
+        return raw
+
+    def clear_stop_evidence(self, task_id: str, generation: int) -> None:
+        """Remove the trusted-stop witness of exactly this settled attempt.
+
+        Only a caller that already verified an authoritative central settlement
+        for this execution may call this.  The operation is idempotent and
+        never follows a symlink or deletes anything but the witness itself, so
+        an interrupted cleanup simply converges on the next attempt.
+        """
+        task = _safe_component(task_id, "task_id")
+        executions = self._contained_directory(self.root / "executions", create=False)
+        if executions is None:
+            return
+        task_dir = self._contained_directory(Path(executions) / task, create=False)
+        if task_dir is None:
+            return
+        target = self._contained_directory(
+            Path(task_dir) / str(int(generation)), create=False,
+        )
+        if target is None:
+            return
+        path = Path(target) / "process-stop-verified.json"
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("persisted stop evidence path is unsafe")
+        path.unlink(missing_ok=True)
+
+    def read_stop_evidence_present(self, task_id: str, generation: int) -> bool:
+        """Whether an unverified trusted-stop witness is still stored."""
+        task = _safe_component(task_id, "task_id")
+        executions = self._contained_directory(self.root / "executions", create=False)
+        if executions is None:
+            return False
+        task_dir = self._contained_directory(Path(executions) / task, create=False)
+        if task_dir is None:
+            return False
+        target = self._contained_directory(
+            Path(task_dir) / str(int(generation)), create=False,
+        )
+        if target is None:
+            return False
+        path = Path(target) / "process-stop-verified.json"
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("persisted stop evidence path is unsafe")
+        return path.exists()
+
+    def read_execution_metadata(self, task_id: str, generation: int) -> dict[str, Any]:
+        """Read the recovery metadata persisted with the start response.
+
+        The returned Assignment generation/GPU UUID come only from this
+        workdir's own execution.json, which was written from the verified start
+        response before any child process could be launched. They are never
+        filled in from a fresh central value during recovery.
+
+        Historical workdirs written before Assignment evidence was persisted
+        legitimately have no ``assignment`` object and are reported as not
+        recorded (0/""). An ``assignment`` object that exists but is unusable is
+        corruption: it must fail closed instead of degrading to the legacy shape.
+        """
+        lease = SimpleNamespace(task_id=str(task_id), generation=int(generation))
+        target = self.path_for(lease)
+        path = target / "execution.json"
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("persisted execution metadata path is unsafe")
+        if not path.is_file():
+            return {"assignment_generation": 0, "gpu_uuid": "", "execution_slots": 0}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("persisted execution metadata is unreadable") from error
+        if (not isinstance(raw, dict) or raw.get("task_id") != str(task_id)
+                or int(raw.get("generation") or 0) != int(generation)):
+            raise ValueError("persisted execution metadata lineage mismatch")
+        raw_slots = raw.get("execution_slots")
+        if raw_slots is None:
+            execution_slots = 0
+        elif type(raw_slots) is int and int(raw_slots) in (0, 1, 2):
+            execution_slots = int(raw_slots)
+        else:
+            raise ValueError("persisted execution slot contract is invalid")
+        assignment = raw.get("assignment")
+        if assignment is None or assignment == {}:
+            return {
+                "assignment_generation": 0,
+                "gpu_uuid": "",
+                "execution_slots": execution_slots,
+            }
+        if not isinstance(assignment, dict):
+            raise ValueError("persisted execution assignment evidence is invalid")
+        raw_generation = assignment.get("generation")
+        if raw_generation is None:
+            raw_generation = 0
+        if type(raw_generation) is not int or int(raw_generation) < 0:
+            raise ValueError("persisted execution assignment generation is invalid")
+        assignment_generation = int(raw_generation)
+        gpu_uuid = ""
+        config = assignment.get("resolved_execution_config")
+        if config is not None:
+            if not isinstance(config, dict):
+                raise ValueError("persisted execution config is invalid")
+            selected = config.get("selected_gpu")
+            if selected is not None:
+                if not isinstance(selected, dict):
+                    raise ValueError("persisted execution selected GPU is invalid")
+                raw_uuid = selected.get("uuid")
+                if raw_uuid is not None and not isinstance(raw_uuid, str):
+                    raise ValueError("persisted execution GPU UUID is invalid")
+                gpu_uuid = str(raw_uuid or "").strip()
+                if gpu_uuid and not _SAFE_COMPONENT.fullmatch(gpu_uuid):
+                    raise ValueError("persisted execution GPU UUID is invalid")
+        return {
+            "assignment_generation": assignment_generation,
+            "gpu_uuid": gpu_uuid,
+            "execution_slots": execution_slots,
+        }
+
+    def list_process_identities(self) -> list[dict[str, Any]]:
+        executions = self._contained_directory(
+            self.root / "executions",
+            create=False,
+        )
+        if executions is None:
+            return []
+        result: list[dict[str, Any]] = []
+        for raw_task_dir in sorted(Path(executions).iterdir(), key=lambda item: item.name):
+            if raw_task_dir.is_symlink() or not raw_task_dir.is_dir():
+                raise ValueError("execution workdir contains an unsafe task directory")
+            task_id = _safe_component(raw_task_dir.name, "task_id")
+            task_dir = self._contained_directory(raw_task_dir, create=False)
+            if task_dir is None:
+                continue
+            for raw_generation_dir in sorted(
+                Path(task_dir).iterdir(),
+                key=lambda item: item.name,
+            ):
+                if raw_generation_dir.is_symlink() or not raw_generation_dir.is_dir():
+                    raise ValueError("execution workdir contains an unsafe generation directory")
+                try:
+                    generation = int(raw_generation_dir.name)
+                except ValueError as error:
+                    raise ValueError("execution workdir generation is invalid") from error
+                if generation <= 0:
+                    raise ValueError("execution workdir generation is invalid")
+                generation_dir = self._contained_directory(
+                    raw_generation_dir,
+                    create=False,
+                )
+                if generation_dir is None:
+                    continue
+                path = Path(generation_dir) / "process-identity.json"
+                if not path.exists() and not path.is_symlink():
+                    continue
+                if path.is_symlink() or not path.is_file():
+                    raise ValueError("persisted process identity path is unsafe")
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError) as error:
+                    raise ValueError("persisted process identity is unreadable") from error
+                identity = self._validated_process_identity(raw)
+                if (
+                    str(raw.get("task_id") or "") != task_id
+                    or int(raw.get("generation") or 0) != generation
+                ):
+                    raise ValueError("persisted process identity lineage mismatch")
+                execution_metadata = self.read_execution_metadata(task_id, generation)
+                result.append({
+                    "task_id": task_id,
+                    "generation": generation,
+                    "assignment_generation": int(
+                        execution_metadata.get("assignment_generation") or 0),
+                    "gpu_uuid": str(execution_metadata.get("gpu_uuid") or ""),
+                    "execution_slots": int(
+                        execution_metadata.get("execution_slots") or 0),
+                    **identity,
+                })
+        return result
+
+    def list_resource_wait_requests(self) -> list[dict[str, Any]]:
+        """Read credential-bearing recovery requests without exposing their contents."""
+        from .node_agent_settlement import canonical_digest, no_launch_evidence
+
+        base = self._contained_directory(self.root / "executions", create=False)
+        if base is None:
+            return []
+        result = []
+        for marker in sorted(Path(base).glob("*/*/resource-wait-request.json")):
+            self._contained_directory(marker.parent.parent, create=False)
+            self._contained_directory(marker.parent, create=False)
+            if marker.is_symlink() or not marker.is_file():
+                raise ValueError("resource-wait request path is unsafe")
+            task_id = _safe_component(marker.parent.parent.name, "task_id")
+            try:
+                generation = int(marker.parent.name)
+                request = json.loads(marker.read_text(encoding="utf-8"))
+                execution_path = marker.parent / "execution.json"
+                if execution_path.is_symlink() or not execution_path.is_file():
+                    raise ValueError()
+                execution = json.loads(execution_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                raise ValueError("resource-wait request or execution metadata is unreadable") from None
+            required = {"execution_lease_token", "execution_generation", "assignment_generation",
+                        "gpu_uuid", "no_launch_evidence", "admission"}
+            if (generation <= 0 or str(generation) != marker.parent.name
+                    or not isinstance(request, dict) or set(request) != required
+                    or type(request.get("execution_generation")) is not int or request["execution_generation"] != generation
+                    or type(request.get("assignment_generation")) is not int or request["assignment_generation"] <= 0
+                    or not isinstance(request.get("execution_lease_token"), str) or not request["execution_lease_token"]
+                    or not isinstance(request.get("gpu_uuid"), str)
+                    or not isinstance(request.get("admission"), dict)
+                    or not isinstance(request.get("no_launch_evidence"), dict)
+                    or not isinstance(execution, dict) or execution.get("task_id") != task_id
+                    or type(execution.get("generation")) is not int or execution["generation"] != generation
+                    or execution.get("kind") != "TRAINING"
+                    or not str(execution.get("worker_id") or "").startswith("agent:")
+                    or len(str(execution["worker_id"])) <= 6):
+                raise ValueError("resource-wait request identity is invalid")
+            admission = request["admission"]
+            if (set(admission) != {"classification", "code", "reason", "required_bytes", "total_bytes", "available_bytes"}
+                    or admission.get("classification") not in {"TEMPORARILY_UNAVAILABLE", "INCOMPATIBLE", "UNKNOWN"}
+                    or admission.get("code") not in {"RESOURCE_HOST_MEMORY_INSUFFICIENT", "RESOURCE_HOST_MEMORY_UNKNOWN",
+                                                      "RESOURCE_MANUAL_INVALID", "GPU_MEMORY_INSUFFICIENT", "RESOURCE_RAM_UNSAFE"}
+                    or not isinstance(admission.get("reason"), str) or not admission["reason"] or len(admission["reason"]) > 1000
+                    or type(admission.get("required_bytes")) is not int or admission["required_bytes"] <= 0
+                    or any(value is not None and (type(value) is not int or value < 0)
+                           for value in (admission.get("total_bytes"), admission.get("available_bytes")))):
+                raise ValueError("resource-wait admission evidence is invalid")
+            metadata = self.read_execution_metadata(task_id, generation)
+            assignment = execution.get("assignment") or {}
+            config = assignment.get("resolved_execution_config") or {}
+            node_id = str(execution["worker_id"])[6:]
+            if (metadata["assignment_generation"] != request["assignment_generation"]
+                    or metadata["gpu_uuid"] != request["gpu_uuid"] or metadata["execution_slots"] not in (1, 2)
+                    or (assignment.get("node_id") is not None and assignment["node_id"] != node_id)
+                    or (not request["gpu_uuid"] and config.get("selected_device") != "cpu")):
+                raise ValueError("resource-wait request conflicts with original Assignment")
+            record = {"task_id": task_id, "generation": generation,
+                      "assignment_generation": request["assignment_generation"], "gpu_uuid": request["gpu_uuid"]}
+            if canonical_digest(request["no_launch_evidence"]) != canonical_digest(no_launch_evidence(record)):
+                raise ValueError("resource-wait no-launch proof is invalid")
+            lease = SimpleNamespace(task_id=task_id, generation=generation, kind="TRAINING")
+            if (self.read_process_launch_intent(lease) is not None or self.read_process_identity(lease) is not None
+                    or self.read_stop_evidence(task_id, generation) is not None):
+                raise ValueError("resource-wait execution has conflicting launch evidence")
+            result.append({**record, "node_id": node_id, "execution_slots": metadata["execution_slots"], "request": request})
+        return result
+
+    def clear_resource_wait_request(self, task_id: str, generation: int, request_sha256: str) -> None:
+        from .node_agent_settlement import canonical_digest
+
+        marker = self.path_for(SimpleNamespace(task_id=task_id, generation=generation)) / "resource-wait-request.json"
+        if marker.is_symlink() or (marker.exists() and not marker.is_file()):
+            raise ValueError("resource-wait request path is unsafe")
+        if not marker.exists():
+            return
+        try:
+            current = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raise ValueError("resource-wait request is unreadable") from None
+        if not isinstance(current, dict) or canonical_digest(current) != request_sha256:
+            raise ValueError("resource-wait request changed during recovery")
+        marker.unlink()
+
+    def cleanup(self, lease: RemoteExecutionLease) -> None:
+        task_id = _safe_component(lease.task_id, "task_id")
+        generation = str(int(lease.generation))
+        executions = self._contained_directory(self.root / "executions", create=False)
+        if executions is None:
+            return
+        task_dir = self._contained_directory(Path(executions) / task_id, create=False)
+        if task_dir is None:
+            return
+        target = self._contained_directory(Path(task_dir) / generation, create=False)
+        if target is not None:
+            pending = Path(target) / "resource-wait-request.json"
+            if pending.exists() or pending.is_symlink():
+                raise ValueError("unsettled resource-wait request blocks workspace cleanup")
+            if self.read_process_launch_intent(lease) is not None:
+                raise ValueError("unverified process launch blocks workspace cleanup")
+            # An interrupted clear_process_identity_record() can leave the
+            # exact PID identity after its launch-intent marker was deleted.
+            # Legacy workdirs can also contain identities without markers.
+            # Neither is proof the original process stopped: never erase the
+            # last recovery evidence through the general workspace cleanup.
+            if self.read_process_identity(lease) is not None:
+                raise ValueError("unverified process identity blocks workspace cleanup")
+            # A trusted-stop witness is local recovery evidence too. It is
+            # removed by the settlement that verified the stop, never by the
+            # general workspace cleanup of an unsettled execution.
+            if self.read_stop_evidence(task_id, int(generation)) is not None:
+                raise ValueError("unsettled stop evidence blocks workspace cleanup")
+            shutil.rmtree(target)
+
+
+class ExecutionLeaseMonitor:
+    """Fail-closed background lease renewal and cancellation observation.
+
+    Safety invariant: a launched worker may keep running only while this Agent's
+    execution lease could still be valid.  Ownership is proven by the control
+    plane, never by the absence of a local exception, so the monitor:
+
+    * fences at once on any control-plane *answer* that refuses the renewal
+      (an HTTP 4xx/5xx means the control plane is reachable and ownership can no
+      longer be proven);
+    * retries a *transport* failure (connection reset, timeout, no response,
+      invalid response) with a bounded backoff, because a reset is not evidence
+      that the lease was lost and destroying a live execution on one strands the
+      task RUNNING with its GPU Hold still HELD while the worker is already dead;
+    * fences once the lease validity window elapses without a verified renewal,
+      the instant the control plane could hand the task to another node.
+    """
+
+    def __init__(
+        self,
+        client: NodeExecutorClient,
+        lease: RemoteExecutionLease,
+        *,
+        interval: float = DEFAULT_EXECUTION_HEARTBEAT_SECONDS,
+        on_fenced: Callable[[], None] | None = None,
+        lease_seconds: float | None = None,
+        retry_sleep: float = 0.25,
+    ) -> None:
+        self.client = client
+        self.lease = lease
+        self.interval = max(1.0, float(interval))
+        self.on_fenced = on_fenced
+        self.cancel_requested = threading.Event()
+        self.fenced = threading.Event()
+        self.stop_event = threading.Event()
+        self.last_error = ""
+        self.transport_failures = 0
+        self.last_transport_error = ""
+        self._lease_seconds = _lease_window_seconds(lease, lease_seconds)
+        self._retry_sleep = max(0.0, float(retry_sleep))
+        # Monotonic deadline of the lease we were actually granted. It never
+        # extends a lease the control plane has not renewed: a successful beat
+        # moves it to now + TTL (the control plane renews on every beat), and
+        # nothing else moves it forward.
+        now = time.monotonic()
+        granted = _granted_lease_seconds(lease, self._lease_seconds)
+        self._deadline = now + granted
+        self._last_verified = now
+        self._beat_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def transport_verified(self) -> bool:
+        """True while the last renewal attempt was confirmed by the control plane."""
+        return not self.transport_failures
+
+    @property
+    def lease_seconds(self) -> float:
+        return self._lease_seconds
+
+    @property
+    def remaining_lease_seconds(self) -> float:
+        """Seconds left before ownership would have to be dropped (never negative)."""
+        return max(0.0, self._deadline - time.monotonic())
+
+    def _mark_fenced(self, error: BaseException) -> None:
+        detail = f"{type(error).__name__}: {error}"
+        code = str(getattr(error, "code", "") or "")
+        self.last_error = f"{code}: {detail}" if code and code not in detail else detail
+        self.fenced.set()
+        if self.on_fenced is not None:
+            try:
+                self.on_fenced()
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_authoritative_fence(error: BaseException) -> bool:
+        """Decide whether a failed renewal may fence and stop the worker.
+
+        Only a control-plane *answer* counts. An HTTP 4xx/5xx is an answer: the
+        control plane is reachable and refused the renewal, so ownership can no
+        longer be proven and the worker must stop (the established contract, and
+        the behaviour the loopback partition test pins). A transport failure -
+        connection reset, timeout, no response at all - is NOT an answer about
+        ownership; retrying it must never destroy a live execution.
+        """
+        if not isinstance(error, NodeExecutorHTTPError):
+            return False
+        status = int(getattr(error, "status_code", 0) or 0)
+        return status >= 400 and status not in _TRANSPORT_STATUS_CODES
+
+    def _lease_window_exhausted(self) -> bool:
+        return time.monotonic() >= self._deadline
+
+    def _request_timeout(self) -> float:
+        """Never let a renewal request outlive the lease it is renewing."""
+        client_timeout = float(getattr(self.client, "timeout", 0) or 0)
+        remaining = self.remaining_lease_seconds
+        ceiling = client_timeout if client_timeout > 0 else DEFAULT_EXECUTOR_TIMEOUT_SECONDS
+        # A sub-second remainder must shrink the request, not be rounded up.
+        return max(0.05, min(ceiling, remaining))
+
+    @staticmethod
+    def _deadline_from_receipt(body: object, fallback_ttl: float) -> float | None:
+        """Prefer the control plane's own expiry for the renewed lease.
+
+        The heartbeat response may carry the new deadline; when it does, the
+        local deadline is derived from it instead of assuming receipt time plus
+        the initial TTL. A missing/unparseable value returns None so the caller
+        keeps the conservative receipt-time-plus-TTL rule.
+        """
+        if not isinstance(body, Mapping):
+            return None
+        candidates = []
+        execution = body.get("execution")
+        if isinstance(execution, Mapping):
+            candidates.append(execution.get("lease_expires_at"))
+        candidates.append(body.get("lease_expires_at"))
+        for raw in candidates:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            try:
+                expiry = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            now_wall = (
+                datetime.now(expiry.tzinfo) if expiry.tzinfo is not None else datetime.now()
+            )
+            remaining = (expiry - now_wall).total_seconds()
+            if remaining <= 0:
+                continue
+            return time.monotonic() + remaining
+        return None
+
+    def beat(
+        self,
+        *,
+        progress=None,
+        stage=None,
+        current_item=None,
+        resource_resolution: Mapping[str, Any] | None = None,
+        runtime_resources: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        heartbeat_kwargs = {
+            "progress": progress,
+            "stage": stage,
+            "current_item": current_item,
+            "resource_resolution": resource_resolution,
+        }
+        if runtime_resources is not None:
+            heartbeat_kwargs["runtime_resources"] = runtime_resources
+        # Single-flight: foreground stage beats and the background renewal may
+        # not interleave their state updates, and a response that arrives after
+        # another thread fenced must not resurrect the execution.
+        with self._beat_lock:
+            if self.fenced.is_set():
+                raise RemoteExecutionFenced(
+                    self.last_error or "remote execution is fenced"
+                )
+            while True:
+                if self.stop_event.is_set():
+                    raise RemoteExecutionFenced(
+                        "execution monitor was stopped before the lease was renewed"
+                    )
+                # Always attempt the renewal first: an expired granted deadline
+                # is not proof of loss until the control plane also refuses it.
+                try:
+                    body = self.client.heartbeat(
+                        self.lease, timeout=self._request_timeout(), **heartbeat_kwargs
+                    )
+                except (NodeExecutorHTTPError, requests.RequestException, OSError) as error:
+                    if self._is_authoritative_fence(error):
+                        self._mark_fenced(error)
+                        raise RemoteExecutionFenced(self.last_error) from error
+                    self.transport_failures += 1
+                    self.last_transport_error = f"{type(error).__name__}: {error}"[:400]
+                    if self._lease_window_exhausted():
+                        self._mark_fenced(NodeExecutorHTTPError(
+                            "EXECUTION_LEASE_UNVERIFIED",
+                            "execution lease was not renewed within its validity window "
+                            f"({self._lease_seconds:.1f}s): {self.last_transport_error}",
+                        ))
+                        raise RemoteExecutionFenced(self.last_error) from error
+                    if self._retry_sleep:
+                        # Cancellable wait: a stopped monitor must not keep the
+                        # runner alive for the rest of the lease window.
+                        if self.stop_event.wait(self._retry_sleep):
+                            raise RemoteExecutionFenced(
+                                "execution monitor was stopped before the lease was renewed"
+                            )
+                    continue
+                if self.fenced.is_set():
+                    # Another beat fenced while this request was in flight.
+                    raise RemoteExecutionFenced(
+                        self.last_error or "remote execution is fenced"
+                    )
+                self.transport_failures = 0
+                self.last_transport_error = ""
+                self._last_verified = time.monotonic()
+                # Trust the control plane's own expiry when it is reported;
+                # otherwise the renewal is valid for one full TTL from receipt.
+                reported = self._deadline_from_receipt(body, self._lease_seconds)
+                self._deadline = reported or (self._last_verified + self._lease_seconds)
+                if bool(body.get("cancel_requested")):
+                    self.cancel_requested.set()
+                return body
+
+    def _serve(self) -> None:
+        while not self.stop_event.wait(self.interval):
+            try:
+                self.beat()
+            except RemoteExecutionFenced:
+                return
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self.stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._serve,
+            name=f"agent-execution-lease-{self.lease.task_id}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.interval + 1.0)
+
+    def assert_active(self) -> None:
+        if self.fenced.is_set():
+            raise RemoteExecutionFenced(self.last_error or "remote execution is fenced")
+        if self._lease_window_exhausted():
+            # The lease window closed without a verified renewal: ownership can
+            # no longer be proven even though no request has failed yet.
+            self._mark_fenced(NodeExecutorHTTPError(
+                "EXECUTION_LEASE_UNVERIFIED",
+                "execution lease expired before it could be renewed",
+            ))
+            raise RemoteExecutionFenced(self.last_error)
+        if self.cancel_requested.is_set():
+            raise InterruptedError("remote task cancellation requested")
+
+
+__all__ = [
+    "AgentExecutionWorkdir",
+    "DEFAULT_EXECUTION_HEARTBEAT_SECONDS",
+    "DEFAULT_EXECUTOR_TIMEOUT_SECONDS",
+    "DEFAULT_RESULT_CONFIRM_TIMEOUT_SECONDS",
+    "ExecutionLeaseMonitor",
+    "NodeExecutorClient",
+    "NodeExecutorHTTPError",
+    "RemoteExecutionFenced",
+    "RemoteExecutionLease",
+]

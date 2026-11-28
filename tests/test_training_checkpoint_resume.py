@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from platform_core import training_checkpoint_resume_tasks as resume
 
 
@@ -66,7 +68,13 @@ def build_context(tmp_path: Path, *, snapshot_id="snap-1", attempt=2):
         artifacts.artifact_path(task_id, "payload.json"),
         {"epochs": 100, "imgsz": 640, "requested_device": "auto", "val_max_samples": 0},
     )
-    write_json(artifacts.artifact_path(task_id, "snapshot.json"), {"snapshot_id": snapshot_id})
+    write_json(
+        artifacts.artifact_path(task_id, "snapshot.json"),
+        {
+            "snapshot_id": snapshot_id,
+            "label_schema": [{"code": "fire", "class_id": 0}],
+        },
+    )
     write_json(
         artifacts.artifact_path(task_id, "assignment.json"),
         {
@@ -289,3 +297,91 @@ def test_algorithm_version_replay_is_idempotent_by_training_task(tmp_path):
     assert replay["id"] == "version-a"
     assert len(saved["versions"]) == 1
     assert saved["versions"][0]["task_id"] == "train-task-1"
+
+
+def test_resume_admission_passes_frozen_class_names_to_the_worker(tmp_path, monkeypatch):
+    data_dir, _project, context, _checkpoint = build_context(tmp_path)
+    monkeypatch.setattr(resume.base, "_training_python", lambda _data_dir: sys.executable)
+    monkeypatch.setattr(
+        resume.base,
+        "_verify_materialized_dataset_evidence",
+        lambda _manifest: {"snapshot_id": "snap-1"},
+    )
+    candidate = resume.inspect_training_resume_candidate(context, data_dir)
+    assert candidate["eligible"] is True
+    assert candidate["expected_class_names"] == ["fire"]
+    assert "--expected-class-names" in candidate["argv"]
+
+
+def test_resume_requires_a_frozen_class_schema(tmp_path, monkeypatch):
+    data_dir, _project, context, _checkpoint = build_context(tmp_path)
+    write_json(
+        context.artifacts.artifact_path(context.task.task_id, "snapshot.json"),
+        {"snapshot_id": "snap-1"},
+    )
+    monkeypatch.setattr(resume.base, "_training_python", lambda _data_dir: sys.executable)
+    candidate = resume.inspect_training_resume_candidate(context, data_dir)
+    assert candidate["eligible"] is False
+    assert candidate["reason"] == "class_schema_unavailable"
+
+
+def _checkpoint_state(*, names=None, epoch=35, optimizer=None):
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(names=names) if names is not None else SimpleNamespace()
+    return {
+        "model": model,
+        "epoch": epoch,
+        "optimizer": {"state": {"0": {}}} if optimizer is None else optimizer,
+    }
+
+
+def test_resume_checkpoint_validation_accepts_a_full_matching_state():
+    import train_checkpoint_resume_worker as resume_worker
+
+    inspection = resume_worker.validate_resume_checkpoint_state(
+        _checkpoint_state(names={0: "fire", 1: "smoke"}),
+        ["fire", "smoke"], 36,
+    )
+    assert inspection["class_names"] == ["fire", "smoke"]
+    assert inspection["has_optimizer_state"] is True
+    assert inspection["checkpoint_epoch"] == 35
+
+
+def test_resume_checkpoint_without_optimizer_state_is_rejected():
+    import train_checkpoint_resume_worker as resume_worker
+
+    with pytest.raises(RuntimeError, match="RESUME_OPTIMIZER_STATE_MISSING"):
+        resume_worker.validate_resume_checkpoint_state(
+            _checkpoint_state(names={0: "fire"}, optimizer={}),
+            ["fire"], 36,
+        )
+
+
+def test_resume_checkpoint_class_mapping_mismatch_is_rejected():
+    import train_checkpoint_resume_worker as resume_worker
+
+    with pytest.raises(RuntimeError, match="RESUME_CLASS_MAPPING_MISMATCH"):
+        resume_worker.validate_resume_checkpoint_state(
+            _checkpoint_state(names={0: "smoke", 1: "fire"}),
+            ["fire", "smoke"], 36,
+        )
+
+
+def test_resume_checkpoint_without_class_names_is_rejected():
+    import train_checkpoint_resume_worker as resume_worker
+
+    with pytest.raises(RuntimeError, match="RESUME_CLASS_NAMES_UNAVAILABLE"):
+        resume_worker.validate_resume_checkpoint_state(
+            _checkpoint_state(names=None), ["fire"], 36,
+        )
+
+
+def test_resume_checkpoint_older_than_admitted_epoch_is_rejected():
+    import train_checkpoint_resume_worker as resume_worker
+
+    with pytest.raises(RuntimeError, match="RESUME_CHECKPOINT_EPOCH_INVALID"):
+        resume_worker.validate_resume_checkpoint_state(
+            _checkpoint_state(names={0: "fire"}, epoch=10),
+            ["fire"], 36,
+        )

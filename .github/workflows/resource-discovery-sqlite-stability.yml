@@ -7,24 +7,28 @@ on:
       - main
     paths:
       - app.py
+      - platform_core/runtime_catalog_*.py
       - static/modules/resource-discovery.js
       - platform_core/resource_discovery/cache.py
       - platform_core/resource_discovery/request_scope.py
       - platform_core/resource_discovery/scanner.py
       - platform_core/resource_discovery/tasks.py
       - tests/unit/test_resource_discovery_sqlite_lifecycle.py
+      - test_support/resource_discovery_spawn.py
       - tests/unit/test_resource_discovery_scope_contract.py
       - tests/integration/test_resource_discovery_durable_chain.py
       - .github/workflows/resource-discovery-sqlite-stability.yml
   pull_request:
     paths:
       - app.py
+      - platform_core/runtime_catalog_*.py
       - static/modules/resource-discovery.js
       - platform_core/resource_discovery/cache.py
       - platform_core/resource_discovery/request_scope.py
       - platform_core/resource_discovery/scanner.py
       - platform_core/resource_discovery/tasks.py
       - tests/unit/test_resource_discovery_sqlite_lifecycle.py
+      - test_support/resource_discovery_spawn.py
       - tests/unit/test_resource_discovery_scope_contract.py
       - tests/integration/test_resource_discovery_durable_chain.py
       - .github/workflows/resource-discovery-sqlite-stability.yml
@@ -54,6 +58,7 @@ jobs:
           platform_core/resource_discovery/request_scope.py
           platform_core/resource_discovery/scanner.py
           platform_core/resource_discovery/tasks.py
+          test_support/resource_discovery_spawn.py
           tests/unit/test_resource_discovery_sqlite_lifecycle.py
           tests/unit/test_resource_discovery_scope_contract.py
           tests/integration/test_resource_discovery_durable_chain.py

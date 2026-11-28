@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
+from functools import wraps
 import re
 import sqlite3
-from contextlib import closing
+import threading
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from .errors import redact_storage_error
 from .models import StorageType
@@ -20,6 +25,7 @@ CREATE TABLE IF NOT EXISTS storage_sources (
     type TEXT NOT NULL,
     config_json TEXT NOT NULL DEFAULT '{}',
     secret_ref TEXT NOT NULL DEFAULT '',
+    runtime_revision INTEGER NOT NULL DEFAULT 1,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     is_default INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
     health_status TEXT NOT NULL DEFAULT 'UNKNOWN',
@@ -36,6 +42,370 @@ ON storage_sources(type, enabled);
 
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 _SENSITIVE = re.compile(r"(?i)(secret|password|token|api[_-]?key|access[_-]?key)")
+_INITIALIZATION_LOCKS: dict[str, threading.Lock] = {}
+_INITIALIZATION_LOCKS_GUARD = threading.Lock()
+_SOURCE_LIFECYCLE_LOCK = ".storage-source-lifecycle.lock"
+_SOURCE_LIFECYCLE_LOCAL = threading.local()
+#: One mutex shared by the cutover switch and every SQLite writer. A writer holds
+#: it across *(authority check -> write)* and the switch holds it across
+#: *(marker publication -> snapshot -> admission)*, so a writer that already
+#: passed the check cannot slip a write past the switch boundary.
+_SWITCH_LOCK_FILENAME = ".storage-source-switch.lock"
+_SWITCH_LOCK_LOCAL = threading.local()
+
+#: Storage-source provider boundary (U2).  The default provider is SQLite and
+#: keeps the existing behaviour; PostgreSQL needs an explicit DSN plus a cutover
+#: admission record and never falls back.  These names mirror the algorithm
+#: domain so operators see one convention across migrated domains.
+PROVIDER_SQLITE = "sqlite"
+PROVIDER_POSTGRESQL = "postgresql"
+SUPPORTED_PROVIDERS = (PROVIDER_SQLITE, PROVIDER_POSTGRESQL)
+ENV_PROVIDER = "STORAGE_SOURCE_PROVIDER"
+ENV_DSN = "STORAGE_SOURCE_POSTGRES_DSN"
+ENV_ADMISSION = "STORAGE_SOURCE_ADMISSION_RECORD"
+ENV_DELETE_ADMISSION = "STORAGE_SOURCE_DELETE_ADMISSION"
+ADMISSION_DIRNAME = "storage_source_migration"
+ADMISSION_FILENAME = "cutover_admission.json"
+CONTRACT_VERSION = "storage-source-repository-v1"
+#: The platform-wide scope of storage-source metadata (one PostgreSQL database may
+#: host several deployments, so every row is scoped explicitly).
+DEFAULT_SCOPE = "platform"
+
+
+class StorageSourceRepositoryError(RuntimeError):
+    """Provider-boundary failure with a stable machine-readable code."""
+
+    def __init__(self, code: str, message: str, *, detail: str = ""):
+        super().__init__(message)
+        self.code = str(code)
+        self.detail = str(detail or "")
+
+
+class StorageSourceProviderConfigError(StorageSourceRepositoryError):
+    """Provider selection or DSN configuration is missing/invalid."""
+
+
+class StorageSourceAdmissionRequired(StorageSourceRepositoryError):
+    """A cutover admission record is required but missing/invalid/stale."""
+
+
+class StorageSourceConflictError(ValueError):
+    """A write conflicts with an existing source (duplicate id or name)."""
+
+
+class StorageSourceOperationBlocked(StorageSourceRepositoryError):
+    """A cross-domain operation is withheld until its evidence is admitted."""
+
+
+def storage_source_config_digest(source: "StorageSource | Mapping[str, Any]") -> str:
+    """Deterministic identity digest of one source's configuration.
+
+    Binds the delete/rollback evidence to *this* source's configuration (id, type,
+    config and the SecretStore reference). The plaintext credential is never part
+    of it - only the reference - and the bytes are canonicalised so two owners that
+    store the same map with different key order produce the same digest.
+    """
+    import hashlib
+
+    def value(key: str) -> Any:
+        if isinstance(source, Mapping):
+            return source.get(key)
+        return getattr(source, key, None)
+
+    body = json.dumps(
+        {
+            "id": str(value("id") or ""),
+            "type": str(value("type") or ""),
+            "config": dict(value("config") or {}),
+            "secret_ref": str(value("secret_ref") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def scope_for_path(path: str | Path, *, default: str = DEFAULT_SCOPE) -> str:
+    """The business scope of one storage-source database path."""
+    Path(path)
+    return str(default)
+
+
+def admission_record_path(path: str | Path) -> Path:
+    return Path(path).parent / ADMISSION_DIRNAME / ADMISSION_FILENAME
+
+
+def admission_transition_path(record_path: str | Path) -> Path:
+    """Marker published before a cutover changes the authoritative writer."""
+    target = Path(record_path)
+    return target.with_name(target.name + ".transition")
+
+
+def load_storage_source_admission_record(path: str | Path) -> dict[str, Any] | None:
+    """Read the local admission record; a malformed record is refused.
+
+    ``authoritative_provider`` must be one of the supported providers.  A missing
+    or unknown value is *not* "assume SQLite": that would silently let a stale or
+    hand-written record re-open writes on the wrong store.
+    """
+    target = Path(path)
+    if not target.is_file():
+        return None
+    try:
+        value = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_ADMISSION_RECORD_INVALID",
+            "cutover admission record cannot be read",
+            detail=str(error),
+        ) from error
+    if not isinstance(value, dict):
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_ADMISSION_RECORD_INVALID",
+            "cutover admission record is not an object",
+        )
+    if str(value.get("contract_version") or "") != CONTRACT_VERSION:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_ADMISSION_RECORD_INVALID",
+            "cutover admission record contract does not match",
+            detail=f"contract={value.get('contract_version')!r}",
+        )
+    provider = str(value.get("authoritative_provider") or "").strip().lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_ADMISSION_RECORD_INVALID",
+            "cutover admission record names an unknown provider",
+            detail=(
+                f"authoritative_provider={value.get('authoritative_provider')!r} "
+                f"supported={list(SUPPORTED_PROVIDERS)}"
+            ),
+        )
+    value["authoritative_provider"] = provider
+    return value
+
+
+def resolve_provider(
+    provider: str | None = None, *, environ: Mapping[str, str] | None = None
+) -> str:
+    environment = os.environ if environ is None else environ
+    selected = str(
+        provider or environment.get(ENV_PROVIDER) or PROVIDER_SQLITE
+    ).strip().lower()
+    if selected not in SUPPORTED_PROVIDERS:
+        raise StorageSourceProviderConfigError(
+            "STORAGE_SOURCE_PROVIDER_UNKNOWN",
+            "unknown storage-source provider",
+            detail=f"provider={selected!r} supported={list(SUPPORTED_PROVIDERS)}",
+        )
+    return selected
+
+
+def _refuse_stale_sqlite(
+    path: str | Path, record_path: str | Path | None = None
+) -> None:
+    """Refuse a SQLite write/read when PostgreSQL owns this source metadata.
+
+    Every SQLite write path calls this under the same lifecycle fence it already
+    uses, so a cutover cannot leave two admitted writers; a transition marker
+    blocks both sides until the cutover is finished or rolled back.
+    """
+    target = Path(path)
+    record = Path(record_path) if record_path else admission_record_path(target)
+    if admission_transition_path(record).exists():
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_CUTOVER_IN_PROGRESS",
+            "a storage-source cutover is unresolved; neither provider may write",
+            detail=(
+                "a transition marker is present next to the admission record; "
+                "inspect it and finish or roll back the cutover before writing"
+            ),
+        )
+    value = load_storage_source_admission_record(record)
+    if value is None:
+        return
+    if value.get("revoked_at"):
+        return
+    provider = str(value.get("authoritative_provider") or "")
+    # Strictly validated by the loader: only an explicit, supported provider can
+    # reach this point. Everything except PostgreSQL keeps SQLite authoritative;
+    # a missing/unknown provider raised above instead of silently allowing writes.
+    if provider != PROVIDER_POSTGRESQL:
+        return
+    raise StorageSourceAdmissionRequired(
+        "STORAGE_SOURCE_SQLITE_STALE_AFTER_CUTOVER",
+        "SQLite is no longer the authoritative storage-source writer",
+        detail=(
+            f"PostgreSQL admission {value.get('admission_id')} is active; run the "
+            "rollback assessment before serving SQLite again"
+        ),
+    )
+
+
+def open_storage_source_repository(
+    path: str | Path,
+    *,
+    provider: str | None = None,
+    dsn: str | None = None,
+    reference_counter: Callable[[str], int] | None = None,
+    environ: Mapping[str, str] | None = None,
+    admission_path: str | Path | None = None,
+    allow_stale_sqlite: bool = False,
+    allow_cross_domain_delete: bool | None = None,
+    scope: str | None = None,
+):
+    """Open the storage-source owner for one deployment.
+
+    Default: SQLite with the existing behaviour.  PostgreSQL requires a DSN and a
+    cutover admission record; selecting it never falls back to SQLite.  Selecting
+    SQLite while a PostgreSQL admission is active is refused unless a migration
+    tool passes ``allow_stale_sqlite``.
+    """
+    environment = os.environ if environ is None else environ
+    selected = resolve_provider(provider, environ=environment)
+    target = Path(path)
+    record_path = Path(admission_path) if admission_path else admission_record_path(target)
+
+    if selected == PROVIDER_SQLITE:
+        if not allow_stale_sqlite:
+            _refuse_stale_sqlite(target, record_path)
+        return StorageSourceRepository(target, reference_counter=reference_counter)
+
+    resolved_dsn = str(dsn or environment.get(ENV_DSN) or "").strip()
+    if not resolved_dsn:
+        raise StorageSourceProviderConfigError(
+            "STORAGE_SOURCE_POSTGRES_DSN_MISSING",
+            "PostgreSQL provider requires a DSN",
+            detail=f"pass dsn= or set {ENV_DSN}",
+        )
+    record = load_storage_source_admission_record(record_path)
+    if record is None:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_POSTGRES_ADMISSION_REQUIRED",
+            "PostgreSQL provider requires a cutover admission record",
+            detail=f"expected {record_path}",
+        )
+    resolved_scope = str(scope or record.get("scope") or scope_for_path(target))
+    if allow_cross_domain_delete is None:
+        allow_cross_domain_delete = (
+            str(environment.get(ENV_DELETE_ADMISSION) or "").strip() == "1"
+        )
+    from ..storage_source_postgres_store import PostgresStorageSourceRepository
+
+    return PostgresStorageSourceRepository(
+        resolved_dsn,
+        resolved_scope,
+        admission=record,
+        admission_path=record_path,
+        reference_counter=reference_counter,
+        allow_cross_domain_delete=bool(allow_cross_domain_delete),
+    )
+
+
+@contextmanager
+def storage_source_lifecycle_fence(
+    repository_path: str | Path, *, timeout: float = 60,
+):
+    """Serialize short source-config commits with durable task admission.
+
+    The fence owns no business state.  Network/storage I/O must stay outside;
+    callers use it only for a final source-generation check plus Task/Source
+    repository commits.
+    """
+    database_path = Path(repository_path).resolve()
+    lock_path = str(database_path.parent / _SOURCE_LIFECYCLE_LOCK)
+    held = getattr(_SOURCE_LIFECYCLE_LOCAL, "held", None)
+    if held is None:
+        held = {}
+        _SOURCE_LIFECYCLE_LOCAL.held = held
+    depth = held.get(lock_path)
+    if depth is not None:
+        held[lock_path] = depth + 1
+        try:
+            yield
+        finally:
+            held[lock_path] -= 1
+        return
+    with FileLock(lock_path, timeout=timeout):
+        held[lock_path] = 1
+        try:
+            yield
+        finally:
+            held.pop(lock_path, None)
+
+
+def storage_source_switch_lock_path(path: str | Path) -> Path:
+    """One canonical lock identity for a storage-source owner.
+
+    Callers legitimately hold different paths for the same owner: a writer has the
+    database file, the cutover tool has the admission record (which lives in the
+    ``storage_source_migration`` directory next to it).  Deriving the lock from
+    the passed path's parent alone therefore produced *two* different locks, and
+    the switch could not wait for an admitted SQLite writer.  Every caller now
+    resolves through this function, which always returns
+    ``<storage-dir>/.storage-source-switch.lock`` for any path that belongs to that
+    owner (database file, admission record, transition marker or the lock itself).
+    """
+    target = Path(path).resolve()
+    if target.name == _SWITCH_LOCK_FILENAME:
+        return target
+    # Admission artifacts: <storage>/storage_source_migration/<file>
+    if target.parent.name == ADMISSION_DIRNAME:
+        return target.parent.parent / _SWITCH_LOCK_FILENAME
+    if target.is_dir():
+        return target / _SWITCH_LOCK_FILENAME
+    return target.parent / _SWITCH_LOCK_FILENAME
+
+
+@contextmanager
+def storage_source_switch_lock(
+    path: str | Path, *, timeout: float = 5.0,
+):
+    """The writer/switch mutex described by the cutover protocol.
+
+    Re-entrant inside one thread (a writer may trigger another writer, e.g. the
+    constructor bootstrap followed by a create).  A writer that cannot enter
+    within ``timeout`` fails closed with ``STORAGE_SOURCE_CUTOVER_IN_PROGRESS``
+    instead of writing while a switch is deciding authority.
+
+    The lock identity is canonical (:func:`storage_source_switch_lock_path`), so
+    the SQLite writers, ``admit_cutover``, ``finish_cutover`` and
+    ``abort_cutover`` all contend on the same file even though they pass
+    different paths.
+    """
+    lock_path = str(storage_source_switch_lock_path(path))
+    held = getattr(_SWITCH_LOCK_LOCAL, "held", None)
+    if held is None:
+        held = {}
+        _SWITCH_LOCK_LOCAL.held = held
+    depth = held.get(lock_path)
+    if depth is not None:
+        held[lock_path] = depth + 1
+        try:
+            yield
+        finally:
+            held[lock_path] -= 1
+        return
+    Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(lock_path, timeout=timeout, thread_local=False):
+            held[lock_path] = 1
+            try:
+                yield
+            finally:
+                held.pop(lock_path, None)
+    except FileLockTimeout as error:
+        raise StorageSourceAdmissionRequired(
+            "STORAGE_SOURCE_CUTOVER_IN_PROGRESS",
+            "a storage-source cutover is in progress",
+            detail="the storage-source switch lock is held by another writer",
+        ) from error
+
+
+def _initialization_lock(path: Path) -> threading.Lock:
+    key = str(path.resolve())
+    with _INITIALIZATION_LOCKS_GUARD:
+        return _INITIALIZATION_LOCKS.setdefault(key, threading.Lock())
 
 
 def _now() -> str:
@@ -69,6 +439,7 @@ class StorageSource:
     last_checked_at: str | None = None
     created_at: str = ""
     updated_at: str = ""
+    runtime_revision: int = 1
 
     def to_public_dict(
         self, *, secret_configured: bool = False, secret_masked: str = ""
@@ -98,6 +469,7 @@ def _from_row(row: sqlite3.Row) -> StorageSource:
         type=str(row["type"]),
         config=dict(json.loads(row["config_json"] or "{}")),
         secret_ref=str(row["secret_ref"] or ""),
+        runtime_revision=int(row["runtime_revision"]),
         enabled=bool(row["enabled"]),
         is_default=bool(row["is_default"]),
         health_status=str(row["health_status"] or "UNKNOWN"),
@@ -108,7 +480,52 @@ def _from_row(row: sqlite3.Row) -> StorageSource:
     )
 
 
+def _controlled_source_write(function):
+    @wraps(function)
+    def fenced(self, *args, **kwargs):
+        # Two locks, always in this order (lifecycle -> switch):
+        #  * the switch mutex makes *(authority check -> write)* atomic against a
+        #    cutover that publishes the transition marker and the admission;
+        #  * the lifecycle fence keeps the existing material-commit serialization
+        #    the controlled local GC mode requires.
+        path = getattr(self, "path", None)
+        if path is None and args:
+            path = Path(args[0])
+        if path is None:
+            return function(self, *args, **kwargs)
+        path = Path(path)
+        controlled = os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") == "1"
+
+        def write() -> Any:
+            with storage_source_switch_lock(path):
+                _refuse_stale_sqlite(path)
+                return function(self, *args, **kwargs)
+
+        if not controlled:
+            return write()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from ..material_repository import _LIFECYCLE_LOCAL
+        # Existing flows can hold project->source while compatibility holds
+        # source->project. Never wait on the reverse edge in controlled mode.
+        timeout = 0 if getattr(_LIFECYCLE_LOCAL, "held", {}) else 60
+        with storage_source_lifecycle_fence(path, timeout=timeout):
+            return write()
+    return fenced
+
+
 class StorageSourceRepository:
+    @classmethod
+    def open_readonly(cls, path: str | Path):
+        """No source defaults, schema upgrade, lifecycle write lock or mkdir."""
+        owner = cls.__new__(cls)
+        owner.path = Path(path)
+        owner._read_only = True
+        owner.reference_counter = lambda _source_id: 0
+        with closing(owner._connect()) as database:
+            database.execute("SELECT id,runtime_revision FROM storage_sources LIMIT 0")
+        return owner
+
+    @_controlled_source_write
     def __init__(
         self,
         path: str | Path,
@@ -118,24 +535,55 @@ class StorageSourceRepository:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.reference_counter = reference_counter or (lambda _source_id: 0)
-        with closing(self._connect()) as database:
-            database.executescript(_SCHEMA)
-            stamp = _now()
-            database.execute(
-                """
-                INSERT OR IGNORE INTO storage_sources
-                (id, name, type, config_json, enabled, is_default, created_at, updated_at)
-                VALUES ('default_local', '平台本地存储', 'local', '{}', 1, 1, ?, ?)
-                """,
-                (stamp, stamp),
-            )
+        # The storage page can load source and artifact configuration in
+        # parallel. Serialize only first/schema initialization for this exact
+        # database path so concurrent constructors cannot race the WAL switch.
+        with _initialization_lock(self.path):
+            with closing(self._connect()) as database:
+                database.executescript(_SCHEMA)
+                # Upgrade existing Storage Source owner in place. SQLite's
+                # RESERVED write lock serializes schema admission across Web
+                # workers, without introducing another revision table.
+                database.execute("BEGIN IMMEDIATE")
+                try:
+                    columns = {
+                        str(column["name"])
+                        for column in database.execute("PRAGMA table_info(storage_sources)").fetchall()
+                    }
+                    if "runtime_revision" not in columns:
+                        database.execute(
+                            "ALTER TABLE storage_sources "
+                            "ADD COLUMN runtime_revision INTEGER NOT NULL DEFAULT 1"
+                        )
+                    stamp = _now()
+                    database.execute(
+                        """
+                        INSERT OR IGNORE INTO storage_sources
+                        (id, name, type, config_json, enabled, is_default, created_at, updated_at)
+                        VALUES ('default_local', '平台本地存储', 'local', '{}', 1, 1, ?, ?)
+                        """,
+                        (stamp, stamp),
+                    )
+                    database.execute("COMMIT")
+                except Exception:
+                    database.execute("ROLLBACK")
+                    raise
 
     def _connect(self) -> sqlite3.Connection:
+        if getattr(self, "_read_only", False):
+            database = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5, isolation_level=None)
+            database.row_factory = sqlite3.Row
+            return database
         database = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         database.row_factory = sqlite3.Row
-        database.execute("PRAGMA journal_mode=WAL")
-        database.execute("PRAGMA foreign_keys=ON")
+        # Configure lock waiting before any pragma that may need a schema/write
+        # lock. Re-applying journal_mode=WAL on every short-lived repository
+        # connection can itself contend with concurrent requests.
         database.execute("PRAGMA busy_timeout=5000")
+        current_mode = str(database.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+        if current_mode != "wal":
+            database.execute("PRAGMA journal_mode=WAL")
+        database.execute("PRAGMA foreign_keys=ON")
         return database
 
     def journal_mode(self) -> str:
@@ -165,6 +613,7 @@ class StorageSourceRepository:
             raise RuntimeError("storage source repository has no default source")
         return _from_row(row)
 
+    @_controlled_source_write
     def create(self, value: Mapping[str, Any]) -> StorageSource:
         source_id = str(value.get("id") or "").strip()
         name = str(value.get("name") or "").strip()
@@ -201,6 +650,7 @@ class StorageSourceRepository:
                 raise
         return self.get(source_id)  # type: ignore[return-value]
 
+    @_controlled_source_write
     def update(self, source_id: str, changes: Mapping[str, Any]) -> StorageSource:
         current = self.get(source_id)
         if current is None:
@@ -219,11 +669,19 @@ class StorageSourceRepository:
             enabled=bool(changes.get("enabled", current.enabled)),
             updated_at=_now(),
         )
+        # A->B->A must change the durable epoch even if the final config
+        # bytes match the original. Renaming alone leaves this epoch stable.
+        bump_runtime_revision = int(
+            updated.config != current.config
+            or updated.secret_ref != current.secret_ref
+            or updated.enabled != current.enabled
+        )
         with closing(self._connect()) as database:
             database.execute(
                 """
                 UPDATE storage_sources
-                SET name = ?, config_json = ?, secret_ref = ?, enabled = ?, updated_at = ?
+                SET name = ?, config_json = ?, secret_ref = ?, enabled = ?,
+                    updated_at = ?, runtime_revision = runtime_revision + ?
                 WHERE id = ?
                 """,
                 (
@@ -232,11 +690,13 @@ class StorageSourceRepository:
                     updated.secret_ref,
                     int(updated.enabled),
                     updated.updated_at,
+                    bump_runtime_revision,
                     updated.id,
                 ),
             )
         return self.get(source_id)  # type: ignore[return-value]
 
+    @_controlled_source_write
     def set_default(self, source_id: str) -> StorageSource:
         source = self.get(source_id)
         if source is None:
@@ -258,6 +718,11 @@ class StorageSourceRepository:
         return self.get(source_id)  # type: ignore[return-value]
 
     def record_health(self, source_id: str, *, ok: bool, message: str) -> StorageSource:
+        with storage_source_switch_lock(self.path):
+            _refuse_stale_sqlite(self.path)
+            return self._record_health(source_id, ok=ok, message=message)
+
+    def _record_health(self, source_id: str, *, ok: bool, message: str) -> StorageSource:
         checked = _now()
         safe_message = redact_storage_error(message)
         with closing(self._connect()) as database:
@@ -273,6 +738,7 @@ class StorageSourceRepository:
                 raise KeyError(f"storage source does not exist: {source_id}")
         return self.get(source_id)  # type: ignore[return-value]
 
+    @_controlled_source_write
     def delete(self, source_id: str) -> bool:
         if str(source_id) == "default_local":
             raise ValueError("default local storage cannot be deleted")

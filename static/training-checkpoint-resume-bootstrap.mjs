@@ -1,4 +1,4 @@
-import {installTrainingCheckpointResumeUI} from './modules/training-checkpoint-resume-ui.js?v=422531';
+import {installTrainingCheckpointResumeUI} from './modules/training-checkpoint-resume-ui.js?v=422541';
 
 let installed = false;
 

@@ -1,240 +1,317 @@
-# Repository Agent Handoff
+# 畅联云算法训练平台｜Agent 长期开发规则
 
-本仓库由 Codex、ChatGPT 和人工开发共同维护。开始修改前必须先读取实际分支/HEAD，不得只根据 README 或 `VERSION.txt` 推断开发状态。
+> 本文件是当前唯一长期有效的 Agent 指令。历史阶段指令、已完成专项说明和旧交接记录已归档，不再在每次会话自动加载。
+>
+> 生效日期：2026-11-29。仓库：`jorsamj/aixunlianpingtai`。
 
-## 必读顺序
+## 1. 当前执行规则（最高优先级）
 
-1. `docs/TECH_DEBT_CLOSURE_V42_25.md` — 当前技术债关闭总账 / 第一权威来源。
-2. `docs/CODEX_CURRENT_STATE.md` — 当前代码验收点、owner、下一批准确范围。
-3. `docs/frontend-legacy-audit.md` — classic `static/app.js` override / owner 审计。
-4. `docs/FRONTEND_OWNER_MAP_V42_25.md` — 前端 owner map。
-5. 其余历史 handoff/spec；冲突时以实际代码 + 上述当前文档为准。
+当用户授权多个开发任务、多个批次或创建 Goal 时：
 
-修改前确认 live branch/HEAD、`git diff main...HEAD` / `git log main..HEAD` 或等价 GitHub API。
+1. 完成一项立即进入下一项，不逐项等待用户确认。
+2. 某项遇到真实阻断，记录具体源码、错误和原因后，继续其他独立授权任务。
+3. 已有功能确实正确时，提供必要代码/测试证据后继续，不制造无价值修改。
+4. commit、push、构建通过、定向测试通过、CI_PENDING 都不是整个开发目标的结束条件。
+5. 推送后只查询一次准确 SHA 的 CI；CI_PENDING 时继续其他独立工作，不轮询、不空等、不重复触发。
+6. 只有全部可执行目标完成、存在真实阻断，或达到用户明确授权的执行资源边界时才停止。
+7. 普通 Turn 结束不代表 Goal 完成。
+8. Goal 内某个子任务完成，不得把整个 Goal 标记为 complete。
+9. 不得以更新 handoff、写交付文档或输出总结替代实际开发。
+10. 不把计划、代码核对、构建通过冒充业务功能已完成。
 
-## 当前开发状态
+历史阶段的“完成后停止”“等待独立审计后再继续”等语句，若已被后续用户指令取代，视为历史失效；仍有效的安全审批边界继续保留。最新用户指令始终优先于历史归档。
 
-```text
-stable branch:               main
-active branch:               refactor/frontend-runtime-stabilization
-latest full code acceptance: 60305921402204e77b8e7ed4ec8e576d9f857c4b
-Frontend Runtime run:        34733035739
-formal VERSION.txt:          42.24.0
-frontend badge:              v42.24.0
-app.js cache:                42.25.95
-main.mjs cache:              42.25.92
-NavigationStability:         422512
-```
+## 2. Goal 与任务执行
 
-`34730512607` 已通过 syntax、永久 owner/navigation guards、全量 frontend unit tests、Real Chrome runtime regressions；Real Chrome 33/33。Navigation Action Fencing 永久 workflow `34730512602` 全绿；Resource Discovery SQLite 永久 workflow `34700900542` 继续保持 Ubuntu + Windows 双平台通过。
+DSH 当前可用能力以实际工具清单为准，不假设不存在的能力。
 
-**技术债清理主线已按用户要求暂停；后续优先真实功能、性能、数据完整性与生产验收。A800 RC 是否推进由后续任务决定。** 未取得用户明确授权，不得 merge `main`、修改正式 `VERSION.txt`、tag 或 release。
+采用 Goal 时：
 
-## 当前前端 owner 状态
+- 设置有限的自动轮次，不默认 256 轮。
+- 用 `todo_write` 持久维护未完成事项。
+- 每轮从最后一个未完成项接续，不重复完成历史任务。
+- 只有客观完成条件达到时才 `update_goal(complete)`。
+- 达到轮次上限时保留未完成清单，不虚报完成。
+- Goal 内子项完成时只更新清单，不结束整个 Goal。
+- 需要恢复已暂停 Goal 时使用 `update_goal(action="resume")`。
+- 典型可用工具：`get_goal`、`create_goal`、`update_goal`、`todo_write`、`subagent`、`subagent_fork`、`workflow`。`ralph` 当前不可用。
 
-### Training
+子 Agent：
 
-```text
-train-v3 UI
-→ state.trainingDraft
-→ TrainingDraftRuntime
-→ TrainingSubmitRuntime
-→ /api/v12/projects/{project_id}/train/start
-```
+- 只用于真正独立、互不共享文件/状态的任务。
+- 同一文件、同一业务 Owner、同一安全合同、同一数据库事务的修改必须串行。
+- 未经用户明确授权，不调用 Codex 子 Agent，以节省 Codex 额度。
+- 子 Agent 的结论必须回到主 Agent 复核，不直接当作验收。
 
-历史 mirror `trainingLabelSelected / trainSplitV3 / train429Selected / train428AlgorithmId / train428Config / trainingDraftFromLegacyState` 已退休，不得恢复。
+## 3. Git、分支与版本
 
-### Polling
+- 唯一开发分支：`feature/external-algorithm-publishing`。
+- 不新建开发分支，不合并 main，不发布 Release/Tag。
+- VERSION 保持 `42.24.592`，不擅自修改。
+- 允许自主 commit 和正常快进 push。
+- 禁止 `force push`、`reset --hard`、`clean`、擅自 `stash`、`rebase`、`merge`。
+- 不覆盖其他开发成果，不提交无关文件。
+- 每批形成独立可审计提交；可集中正常推送。
+- 推送后按准确 SHA 查询 CI 一次，报告真实状态；未通过不得宣称通过。
 
-```text
-training-jobs → PollRegistry + TrainingTaskRuntime
-AutoLabel      → AutoLabelPollRuntime + PollRegistry
-video          → PollRegistry(video-frames)
-sources        → PollRegistry(sources)
-```
+## 4. 四份受保护未跟踪文档
 
-旧 timer、`setupPagePolling` shell、creation-wrapper/adoption compatibility 均已退休。
+以下文件保持未跟踪、内容不变，禁止修改、移动、删除或提交：
 
-### Navigation — CLOSED
+| 文件 | SHA256 |
+|---|---|
+| `DSH_C2B_HANDOFF_20261121.md` | `F1B88032EA60265FD6B724CB3741C3F204486FA253AD4B11223AA550B56B72C8` |
+| `docs/architecture/P2B_4A_2A_TASK_RUNTIME_ARCHITECTURE_AUDIT_20261118.md` | `FD611A41B13EDA29A1086DCD1361CA39A20306E0619665CD7AAB07982AA35B12` |
+| `docs/architecture/P2B_4A_2B_LOCAL_CLAIM_PIPELINE_20261118.md` | `179C2A63049365F675BF544FEF8BCA3C19A2BEDACD85D216416401C6B562BEC0` |
+| `docs/architecture/P2B_4A_2B_PAYLOAD_PUBLICATION_DESIGN_20261118.md` | `67A3DFC5926C6769F0714F904AFDED149E3DB24CEEE6521CEE30D18B666FEA9D` |
 
-`static/app.js` 的 classic `setPage` owner family 已清零。以下均已物理退休：
+若发现哈希不一致，停止相关操作并报告，不自行覆盖。
 
-```text
-set423Base / setBase424
-V37 duplicate baseSetPage
-oldSetV39 / oldSet42 / set422Base
-v34/v35/v42.4 direct setPage
-v42.7 direct alias setPage
-setPageReady414
-baseSetPage417
-initial bootstrap function setPage(p){state.page=p;render()} / window.setPage=setPage
-```
+## 5. 产品合同保护
 
-最终 owner：
+未经用户明确批准，不得改变：
 
-```text
-NavigationStability
-  → normalizeNavigationPage
-  → PageRequestScope / navigation epoch
-  → PollRegistry before/after
-  → waitForNavigationReady
-  → beforeInvokeNavigation
-  → performNavigation(page): state.page=page; render()
-  → persistNavigationState
-```
+- 菜单名称、分组、顺序、页面职责和既有操作入口。
+- 算法库名称必须保持“算法库”，保持卡片式产品定位；不得改为“算法管理与模型版本”表格页。
+- 素材库必须保留正式人工标注台入口，以及原 Annotorious/GT/审核/治理 Owner。
+- AI 审核工作台保持三栏结构及既有批量审核、正式 GT 入库合同。
+- 训练创建、训练任务、训练报告的既有业务字段、默认值、Train/Val/Test 口径和历史保护。
+- 原 API 路径、请求/响应结构、HTTP 状态码、权限、项目隔离和错误语义。
+- 原快捷键、返回路径、页面状态恢复、批量任务状态和刷新行为。
+- 既有数据/任务/模型/存储/发布 Owner 和不可变证据合同。
 
-永久 CI 禁止 `static/app.js` 再出现 `window.setPage=` classic owner。Real Chrome 已验证 inline 菜单与 programmatic `window.setPage`、readiness、sidebar、polling、alias、persistence 均正常。
+产品级改动必须先说明：当前功能、问题、原因、方案、收益、可能丢失能力、使用习惯影响、数据/API 影响、可否暂缓、优先级；得到明确确认后才能实施。
 
-## 当前边界：技术债清理 PAUSED
+### 5.1 功能保留台账
 
-除非出现真实功能故障、明显性能问题、数据完整性风险或发布验收阻断，不再继续 dead-code / zero-point / 命名 / cache-busting 类清理。剩余债务保留为 OPEN/DEFERRED，不影响当前功能使用时不主动扩展。
+- 每次涉及菜单、页面、按钮或操作链路的变化，按实际差异更新 `docs/architecture/EXISTING_FEATURE_PRESERVATION.md`。
+- 结论只使用“保持一致 / 发现差异 / 尚未核实”，不得把未核实写成通过。
+- 未迁移功能保留原入口，不以新壳替代旧功能，不静默删除旧按钮或旧回退路径。
+- `vue_*` 试点开关只作为受控入口，不能冒充正式默认入口。
 
-### 当前产品主线 — ZIP 10k import scalability CLOSED
+## 6. 技术栈与组件
 
-Technical-debt cleanup remains paused by user request. Product productionization is the active line.
+保持现有技术栈：
 
-- **Deployment Artifact E2E CLOSED** — successful conversion jobs surface only verified, existing deployment artifacts. Product `b75b7d09780f691b01e4207c3107977b0500d8aa`, focused run `34726749756`, cleanup `8f3d3e394ceed73e5f522cba512622286fead7a5`.
-- **Unified Task Truth API Phase 1 CLOSED** — `/api/v62/projects/{project_id}/tasks` remains the durable public truth for queue/resource/worker/progress metadata. Product `aa5b82ebd2140d3a9f03dc6ae6754c9b7a55afcc`, focused run `34727100684`, cleanup `6de0758e9f0c0cd45d79c48bf7fb022dde8f9ca6`.
-- **Unified Task Progress Phase 2 CLOSED** — model conversion, AI annotation and cleaning/material-batch business surfaces expose durable waiting-resource/queue/worker/progress truth without parallel polling owners. Products `9817f450b3fbd20256279c3c861b0938ffdcef16` and `ff31f879b6d501a501188fed8bc78426d9eb31ea`.
-- **SSE/event stream evaluation DEFERRED** — current page-scoped polling remains lifecycle-managed; no EventSource/replay/reconnect base is introduced without demonstrated need.
-- **Training Progress v2 CLOSED** — existing `training-metrics.sqlite3` persists truthful latest-epoch duration, rolling ETA, throughput, losses, trainer metrics/mAP when supplied, LR and elapsed time; Worker mirrors the compact snapshot into `job.json` without extra list requests. Product `70110f9668e593215bc77c8614dd9d6dd55b7601`, focused run `34730431744`.
-- **ZIP 10k import scalability CLOSED — hot-state/candidate split + live v19 owner**: baseline proved the final v36 visible ZIP action still delegated to synchronous `doImportData()` / `/api/v18/.../import`, and a synthetic 10,000-candidate v19 `job.json` was **1,370,177 bytes**. The product now routes final v36 ZIP upload through existing v19 background jobs and stores the full candidate manifest once in `scan-images.json`; hot `job.json`, running list polling and detail polling no longer carry the 10k candidate array. Create response is bounded to 500 candidates for the picker; selecting-job list preview is bounded to 300; running/terminal task state stays O(1) in candidate count. Selected-path validation reads the cold manifest. Product `b4875ada5ff084fd4e21d7c5f026f5b09128033b`, focused run `34731027723`, cleanup `e819a35c71f6aa20f7739281ddfc75e8502104ce`.
-- **ZIP 10k acceptance**: focused CI created a real ZIP with **10,000 image members** and passed the v19 create/scalability contract plus existing server-import/storage regressions. The permanent legacy unit guard was migrated, not weakened (`27654cba1fb3406567a40754904531c2b53aa53f`), and the permanent Chrome material/import contract was migrated to the real v19 sequence (`60305921402204e77b8e7ed4ec8e576d9f857c4b`): create → start → list polling → terminal done → labels/current paged-material scoped refresh, with an explicit assertion that no `/api/v18/` request or broad reload occurs. Final Frontend Runtime `34733035739` passed all frontend unit guards and Real Chrome **33/33 PASS (53.9s)**; Action Fencing `34733035761` PASS.
-- **Release boundary unchanged** — formal `VERSION.txt` remains `42.24.0`; visible version remains `v42.24.0`; classic `app.js` cache is `42.25.95`; `main.mjs` cache remains `42.25.92`. No merge/tag/release.
+- Vue 3、TypeScript、Vite、Vue Router、Pinia、Element Plus。
+- Annotorious、ECharts、Uppy、Panzoom/Floating UI 等既有专业组件。
+- FastAPI 模块化单体、现有 Router/Service/Repository/Dependency 注入方式。
 
-**Current next product scope: ZIP 10k processing-phase scalability audit. The UI/background-state amplification is closed, but this does not yet prove that importing 10,000 valid images with annotations is fast enough. Benchmark the real worker path and inspect per-image image decode/copy, AnnotationRepository writes, progress cadence, v50 buffered material commit, label/project writes and finalization. Optimize only measured hotspots; preserve YOLO/COCO/VOC semantics, project serialization, data integrity and cross-platform behavior.**
+禁止：
 
-### R20n — shadowed Model Config generations retirement CLOSED / 技术债主线暂停
+- 引入第二套组件库或第二套前端工程。
+- 重写为微服务。
+- 另建重复 Repository/Service/状态机/调度器。
+- 用 CDN 替换已锁定离线 vendor。
+- 大规模无确认的 UI 重构。
 
-Source-order 与删除前/后的同一套 M4 Real Chrome 合同证明：旧 v35 / v426 / v427 `openModelConfigModalV35 → saveModelConfigV35/saveModelConfig426/saveModelConfig427` generations 已被最终 M4 owner 覆盖，运行时不可达。R20n 仅物理删除这 3 套历史 modal/save generation；最终 `saveVisionModelM4`、`testModelConfigV35`、M4 capture/final activation、模型配置字段与 API 语义均保持不变。
+视觉要求：
 
-```text
-baseline + migration run: 34725790087
-product:                  9acaa534e596464a1ebe129e435916ed7dd9cdf2
-cleanup:                  fce8034a861e1f9c5c0d37568891717309845794
-contract alignment / accepted HEAD: b83b2bf360b891265157e602f622d409d1d2332f
-Frontend Runtime:         34725907423
-full Real Chrome:         33/33 PASS
-Navigation Action Fencing:34725907404 PASS
-formal VERSION.txt:       42.24.0 unchanged
-app.js cache:                42.25.95
-main.mjs cache:              42.25.92
-```
+- 以黑白/中性色为主，保持现有整体风格。
+- 标注框使用统一颜色。
+- 减少重复提示语，不堆叠无价值说明。
+- 不擅自增加大面积装饰。
 
-永久 source contract：`tests/frontend/shadowed-model-config-generations-r20n.test.mjs`；最终 M4 行为继续由 `tests/browser/navigation-action-fencing-r2.spec.mjs` 与现有 Action Fencing workflow 覆盖。一次性 R20n migration helper/workflow 已物理删除。
+### 6.1 能力归属与反嵌套
 
-**按用户要求，从 R20n 起技术债清理主线 PAUSED。** 剩余 R20 global reload/request zero-point、stale-async final scan、cache-busting、历史 dead code、命名/结构归一化、Resource Lifecycle production soak 等均保持 OPEN/DEFERRED，不宣称 CLOSED；除非出现真实功能故障、明显性能问题、数据完整性风险或发布验收阻断，否则不得为了“代码更干净”继续展开技术债批次。
+- 一个能力一个 final owner。
+- 一份状态一个 canonical truth。
+- 兼容入口统一走 normalize / redirect / delegate，不得复制第二套业务实现。
+- 页面层级遵循 Page → Surface → Content，禁止新旧页面互相嵌套或重复挂载同一 Owner。
+- 同一 DOM 区域只能有一个最终渲染 Owner；兼容壳不得反向调用旧全局渲染。
+- 新增组件前先确认既有 Surface/Content/Owner 是否已覆盖；存在时优先接入，不新建平行页面。
 
-### R20m — shadowed v423 algorithm CRUD generation retirement CLOSED
+## 7. 数据、任务与安全 Owner
 
-Source-order + Real Chrome 已证明旧 v423 create/edit generation 从运行时不可达：删除前 `algorithm-list-performance.spec.mjs` 已完整通过，真实 UI 一直解析到后面的 stable 414 owner。R20m 因此没有“迁移 broad refresh”，而是物理删除旧 `openNewAlgorithm423(async) / saveNewAlgorithm423 / editAlgorithm423(old modal) / saveEditAlgorithm423` generation；后面的 `saveNewAlgorithm414 / saveEditAlgorithm414` authoritative local-state owner 保持不变。
+必须保持：
 
-```text
-baseline:                  243bcb1b17074848d91c2c9c64d47dbed54e5e9b
-baseline + migration run: 34724242632
-product:                   71cdb2ad192ec99b0e21bfe3c1f70bffca0f586e
-cleanup / acceptance:      40a87bf70402dccfc0387950b6856a561ce1ebe1
-Frontend Runtime:          34724354775
-full Real Chrome:          33/33 PASS
-Navigation Action Fencing: 34724354790 PASS
-formal VERSION.txt:        42.24.0 unchanged
-app.js cache:                42.25.95
-main.mjs cache:              42.25.92
-```
+- TaskRepository、Scheduler、Node Agent、Supervisor、Worker 的既有安全核心。
+- attempt、lease、fencing、CAS、可信停止证明、不可变 Payload、执行锚点。
+- 正式 GT、CandidateStore、人工确认、草稿 CAS、审核回执和重复提交保护。
+- 模型、存储、发布、外部交付的既有 Owner 与幂等边界。
+- SQLite 作为当前唯一业务 Owner；PostgreSQL 读取投影不得擅自成为正式写入 Owner。
+- 不擅自更换数据库、迁移 U5 Task、启用正式 PostgreSQL Picker 读取切换。
+- 不删除或弱化 UPDATE/DELETE 保护、历史引用、Test/退役素材隔离。
 
-永久 source contract：`tests/frontend/shadowed-algorithm-crud-r20m.test.mjs`；行为合同复用现有 `tests/browser/algorithm-list-performance.spec.mjs`。一次性 migration helper/workflow 已物理删除。**R20m CLOSED；R20 全局 reload/request zero-point 仍为 IN PROGRESS。**
+允许的最小修复不得绕过上述安全合同。涉及 Task 执行安全核心的缺陷，只记录证据并留待独立专项，不擅自改动。
 
-### R20l — source-import terminal completion scoped refresh CLOSED
+### 7.1 训练、GT 与 AI 审核
 
-最终 live `refreshSourceImportTasksV36()` 在地址读取任务进入 terminal 状态后，已从 broad `loadRelated()` 改为只刷新标签 schema 和当前可见的数据集分页素材。任务 active 期间的 1.8s polling cadence、source-import API 和任务列表 UI 均保持不变。
+- 正式 GT 只由既有 AnnotationRepository/正式提交通道写入；AI 候选、草稿、前端勾选都不是正式 GT。
+- 候选采用、拒绝、批量转负样本、正式入库必须使用既有 CandidateStore、审核回执和 CAS 合同。
+- 保持 Train/Val/Test 独立口径，固定 Test 基准、历史 Test 隔离和退役/预留素材保护。
+- 保持已确认负样本、待审核样本、样本角色和训练资格的真实服务端判定。
+- 训练素材支持服务端冻结选择引用；不得用浏览器数量或截断 ID 数组替代真实冻结集合。
+- 20,000 张以上选择优先复用既有 `selection-reference`、冻结集合摘要、成员查询和 TRAINING_PREPARE 消费合同。
+- 训练创建必须保持幂等、来源版本/母模型身份、正负样本资格、首次纯负样本限制和既有参数默认值。
+- 不得把任务受理、创建回执或前端 loading 当作训练已完成。
 
-```text
-baseline + migration run: 34723694735
-product:                  f260127d2d41281bc1d996a172e7d4290536f24c
-permanent Chrome guard:   b17bd0c33bfb99e5557fc245a89a6c4444a8257e
-cleanup / acceptance:     f8356bcf5ec1ea128fb38db2820df38146b48cfd
-Frontend Runtime:         34723808299
-full Real Chrome:         33/33 PASS
-Navigation Action Fencing:34723808298 PASS
-formal VERSION.txt:       42.24.0 unchanged
-app.js cache:                42.25.95
-main.mjs cache:              42.25.92
-```
+### 7.2 素材、上传、存储与删除
 
-永久合同：`tests/frontend/source-import-completion-scope.test.mjs` + `tests/browser/source-import-completion-scope.spec.mjs`；browser spec 已进入唯一长期 `Frontend Runtime Stabilization` Chrome 清单。一次性 R20l migration helper/workflow 已物理删除。**这只关闭 source-import terminal completion；R20 全局 reload/request zero-point 仍为 IN PROGRESS。**
+- 素材列表的 total/has_next 以服务端为准；删除后只移除已证明删除的可见行，不伪造精确总数。
+- 素材删除保持退休索引、正式 GT 生命周期、历史/活动引用保护、原图字节保留和项目/操作者隔离。
+- FILTERED 删除范围必须绑定真实筛选、排除集合、Owner 版本、冻结计划、确认凭据和真实集合摘要。
+- 清空项目必须走既有项目名称确认/actor 授权；普通批量删除不得绕过。
+- 上传、ZIP 导入、Uppy 和任务中心继续复用既有上传/确认/任务 Owner；不得另建上传体系。
+- 存储来源删除、物理字节回收、历史引用和活动任务保护保持 fail-closed；不得在实际生产存储上验证删除。
+- 缩略图、原图、标注叠加使用既有 MaterialPreview/Panzoom 等组件，不新建第二套图片查看器。
 
-### Navigation Action Fencing R1 — resource/Paddle mutation completion CLOSED
+### 7.3 模型转换与模型交付
 
-真实旧代码 baseline 已在 Real Chrome 证明：训练资源页慢 `POST /api/train_servers` 发出后，用户切到数据集并打开属于新页面的 modal；旧 POST 完成会执行 `closeModal()`，把新页面 modal 关闭并清掉 sentinel。该行为不是测试推断，而是浏览器复现。
+- 保持现有 L0–L5 转换证据、不可变 source manifest、label binding、preprocessing/output contract 和验证身份。
+- 明确区分：编译成功、软件数值一致性、检测一致性、质量准入、真实硬件验证。
+- `HARDWARE_PENDING` 不得显示为板端通过；无证据时标记 UNKNOWN/NOT_VERIFIED。
+- 不重新开发模型转换核心，不扩展新布局/新 SDK，不重新训练模型，不下载大型模型或厂商 SDK。
+- 模型下载、外部算法发布、新畅联交付沿用既有发布 Owner、幂等、确认和 OSS/外部接口合同。
+- 模型版本页面保持“当前版本”“最新创建”“最佳评测”身份区分，不能把不同基准指标直接比较。
 
-```text
-baseline / focused migration run: 34701875185
-old Chrome failure: stale save completion closed or rewrote the new-page modal
-product:            8269eb0cca84ea310f48ee13af34ab09dd1bfeff
-follow-up:          01234ef186f3e57bef2d29ac19420952beef6c36
-cleanup:            7fcfcaec0b088a851dbcd580ac226b3dd892fa83
-Frontend Runtime:   34702374386
-full Real Chrome:   32/32 PASS
-permanent Action Fencing run: 34702374346 PASS
-formal VERSION.txt: 42.24.0 unchanged
-app.js cache:                42.25.95
-main.mjs cache:              42.25.92
-NavigationStability: 422512
-```
+### 7.4 任务、报告与错误语义
 
-R1 新增 `NavigationStability.action(ownerPage)`，通过 navigation epoch/token 暴露 `isCurrent()` / `commit()`；后台 mutation 可以完成，但 stale completion 不得再提交 modal、DOM、state 或 render side effect。`saveServer` 在 POST 后和 scoped `training_options` refresh 后都执行 stale fence。Paddle 手动/一键激活同样有 action fence；若用户仍在训练资源页，只做当前页 render + toast，不再冗余导航回自己。
+- 任务状态、进度、失败原因、暂停/恢复/取消能力以服务端权威状态为准，前端不猜测。
+- 自然经过时间、有效训练时间、等待资源和终态耗时必须区分；无可靠 ETA 时显示待估算，不虚构数值。
+- 训练报告保持 Val 与独立 Test 分离、best epoch 与最终 epoch 分离、最佳模型与最终模型分离。
+- 缺失报告/指标/图片时显示真实缺失状态，不编造指标或把无证据当通过。
+- 既有 API 错误码、HTTP 状态、UNKNOWN/回执语义不得改变；网络结果未知时只查询原身份，不自动重试有副作用的写操作。
+- 旧请求/旧响应不得覆盖新项目、新任务或新选择；异步读取应复用既有取消/epoch/请求身份机制。
 
-R1 还将目标范围内的 direct page write 清零：训练资源、模型配置、部署转换、训练任务以及旧“新建算法/自动迭代 → 算法列表”renderer rewrite 不再通过 `state.page='xxx'; render()` 导航；需要跳页时统一走 `NavigationStability`/`window.setPage`。
+## 8. 开发方式与测试
 
-永久合同：
+采用：
 
-```text
-tests/frontend/navigation-action-fencing.test.mjs
-tests/frontend/training-server-refresh-owner.test.mjs
-tests/browser/navigation-action-fencing.spec.mjs
-.github/workflows/navigation-action-fencing.yml
-```
+1. 精确读取相关文件、函数和必要文档。
+2. 最小正确修改。
+3. 必要定向验证。
+4. 独立 commit。
+5. 集中正常 push。
+6. 完整回归交 GitHub CI。
 
-一次性 R1 migration/follow-up helper 与 workflow 已物理删除。
+禁止本地：
 
-**边界：Navigation Action Fencing R1 + R2 已 CLOSED，但全局 stale-async zero-point 仍为 IN PROGRESS。** R2 已关闭最终 M4 Model Config、清洗确认和 v60 AI review completion；upload/ZIP/deployment/timer-callback completion family 仍留给 final scan，不能宣称 stale async UI side effect 全局为 0。
+- 全仓 pytest。
+- 完整 Playwright。
+- 20 万级压力测试。
+- 大规模数据生成、全目录 SHA 扫描、批量模型/图片处理。
+- 重复执行未受影响的测试。
+- 为测试通过修改无关业务或降低断言。
 
-Resource Discovery SQLite 仍保持 **CODE-LEVEL CLOSED / production soak OPEN**；30–60 分钟生产 soak 和非 SQLite resource classes 不因本批改变状态。
+高成本验证交现有 GitHub CI。不得新增重复 Workflow，不得空提交触发 CI。
 
-## 不得回退的核心合同
+### 8.1 验证分级
 
-- Windows 开发与 NVIDIA Linux 生产必须共用跨平台代码；禁止写死盘符/Windows-only shell/process。
-- 已有素材、标注、算法版本不得因升级清空、移动或重新编号。
-- AnnotationRepository 是 GT authority；`unannotated` / `annotated` / `confirmed_empty` 语义必须保持。
-- 0 框普通保存不得静默变负样本；负样本必须显式确认。
-- 首训标签只能来自本次精确素材与用户明确选择；不得继承母模型类别。
-- 迭代只继承上一成功且 artifact-verified 的 trainable version；label schema 旧 ID 不重排。
-- Train/Validation/Test 按不可拆分 Component 划分并保留 leakage guard。
-- 试验/评测图片送模型时不得携带任何 GT。
-- Task Runtime 必须保持 lease/generation/PID-create_time-command-hash fencing。
-- `batch`、`workers=0`、`cache=false` 等显式用户参数不可被 Auto 偷改。
-- `state.page` 是当前页面 authority；stale async completion 不得覆盖当前页面。
-- 页面 polling 必须有 lifecycle cleanup；优先局部 DOM 更新，禁止周期性全页重绘破坏交互状态。
-- 不得通过降低/删除 duplicate-request、race、performance、Real Chrome 测试换绿灯。
+- `IMPLEMENTED`：代码已落地，但没有本地或 CI 证据。
+- `LOCALLY_VERIFIED`：只证明当前隔离环境/定向用例。
+- `CI_PENDING`：已推送，准确 SHA 的 CI 尚未完成。
+- `CI_PASS`：准确 SHA 的对应 Workflow 成功；不能外推到其他 SHA。
+- `NOT_VERIFIED` / `HARDWARE_PENDING`：缺少真实硬件、生产或完整回归证据。
 
-## 当前后续优先级
+不得把 `LOCALLY_VERIFIED` 写成 `CI_PASS`，也不得把 `CI_PENDING` 写成通过。
 
-```text
-1. 技术债清理 PAUSED；仅在真实功能/性能/数据/发布阻断时恢复
-2. Unified Task Progress + Durable Queue Runtime productionization（按后续产品任务推进）
-3. Navigation Action Fencing final scan — DEFERRED，除非出现真实 stale-async 故障
-4. External Algorithm Catalog read-only boundary
-5. Resource Lifecycle production soak + remaining non-SQLite resource classes
-6. ZIP 10k / Training Progress v2 / GPU Performance Tuner / Deployment Artifact E2E
-7. app.js / app.py normalization + cache-busting / semantic naming / deterministic cleanup
-8. technical-debt final zero-point + backend regression
-9. A800 RC only after acceptance gates
-```
+### 8.2 变更范围
 
-## 修改与交接要求
+- 一次只处理一个可审计问题或一个完整功能链路。
+- 不借修 Bug 重构无关模块。
+- 不扫描全仓寻找“顺手优化”。
+- 涉及公共 API、Schema、任务状态机、数据库迁移或产品布局时，先确认授权边界。
+- 后端模块化只迁移职责明确的入口，保持路径、参数、响应、权限和错误语义；不为拆文件而拆文件。
 
-- 每批边界清晰，不混入无关重构。
-- 旧测试锁定已确认错误旧语义时，应升级合同，不得回退正确代码。
-- 未真实执行的测试写 `NOT VERIFIED`。
-- 一次性 audit/migration helper/workflow 批次验收后必须物理删除。
-- 每批完成后同步 AGENTS.md + 四份 docs 当前 handoff 文档。
+### 8.3 提交与推送
+
+- commit message 说明实际修改和验证边界。
+- 不含敏感凭据、真实数据、模型权重或生产地址。
+- 不提交 `.env`、密钥、临时数据库、测试产物和大文件。
+- 多个独立功能可以分开 commit，集中一次 push。
+- push 后只查询一次准确 SHA；CI 失败只分析真实失败 Job，不重跑全部。
+
+## 9. 文档与 Token 控制
+
+- 只更新现有 handoff、roadmap、性能/专项文档中的必要内容。
+- 不为每个小修复创建长篇独立文档。
+- 不重复读取历史归档、旧审计报告或完整 AGENTS 历史。
+- 不重复扫描全仓；优先精确 grep、函数级读取。
+- Skills 按需加载，references 按需读取。
+- 不引用未安装或当前不可用的 Skill。
+- 交付报告集中生成，不逐批输出完整报告。
+- 多个功能独立 commit，尽量集中 push。
+
+### 9.1 交接记录
+
+- 当前实现 SHA、验证边界、未完成事项和下一步只写入 `docs/architecture/AI_DEVELOPMENT_HANDOFF.md` 的必要段落。
+- handoff 只记录当前有效信息，不复制全部历史。
+- 已完成专项只保留入口和结论，详细证据留在专项/归档文档。
+- 新会话先读 handoff 和 roadmap，不重新读取全部历史报告。
+
+### 9.2 问题定位
+
+- 先用函数名、错误码、API 路径或文件路径精确定位。
+- 不因一个报错扫描全仓。
+- 不重复审计已验收模块；只读与本次修改直接相关的合同。
+- 失败时先判断是代码、数据、环境、CI 还是真实硬件边界，再决定是否修改。
+
+### 9.3 证据文件
+
+- 本地临时证据只放临时目录或既有 artifacts，不提交生成物、日志、截图和数据库。
+- CI 状态以准确 SHA 的 workflow/run/artifact 为准；旧 SHA 的绿灯不能复用。
+- 结论必须区分代码实现、本地验证、CI 验证、生产验证和真实硬件验证。
+
+## 10. 安全与操作边界
+
+禁止：
+
+- 操作 A800、双 4070、生产数据库、生产服务、正式素材、正式模型、真实硬件。
+- 正式部署、升级、停止或重启服务。
+- 未经授权执行真实训练、真实转换、真实外部发布或生产数据修改。
+- 修改 VERSION、强推 main、创建 Release/Tag。
+- 自动清理 Change Log、自动完整重建正式项目、自动生产同步。
+- 把隔离测试称为生产验收，把 CI_PENDING 称为 CI_PASS，把 HARDWARE_PENDING 称为硬件通过。
+
+真实硬件状态保持 `HARDWARE_PENDING`，直到有独立真实板端证据。
+
+### 10.1 需要独立授权的操作
+
+以下操作即使属于已授权开发范围，也必须单独确认：
+
+- 正式部署、升级、回滚、停止或重启生产服务。
+- 修改正式数据库 Schema、执行不可逆迁移或清理生产数据。
+- 切换 PostgreSQL 为正式 Picker 读取 Owner 或正式写入 Owner。
+- 删除正式素材、模型、训练记录、GT 或发布历史。
+- 重跑真实训练、真实转换、真实外部发布或真实硬件验证。
+- 自动生产同步、自动重建正式项目、自动清理 Change Log。
+- 修改 TaskRepository/Scheduler/Node Agent/Supervisor 安全核心。
+
+未获得明确确认时，只做只读检查、隔离验证、代码修改和预检能力，不执行上述操作。
+
+### 10.2 本地重型操作与硬件保护
+
+禁止在本机执行：
+
+- 重型磁盘 I/O、压测、20 万级素材或万级候选/千级模型规模测试。
+- 大规模 SQLite/PostgreSQL 数据生成、导入导出、并发压测、备份恢复或迁移模拟。
+- 大批量文件生成、复制、解压、删除，或批量图片/训练快照物化。
+- 大量模型下载、批量权重导出/转换、全目录重复 SHA256 扫描。
+- 全量 pytest、全量前端测试、完整 Playwright、多进程高并发测试。
+
+禁止通过 `TEMP`、`WSL`、`Docker`、子 Agent、后台进程或其他磁盘路径绕过上述限制。
+
+高成本验证只能使用 GitHub-hosted CI。禁止将用户电脑作为 self-hosted Runner。CI 不可用时如实标记 `BLOCKED` / `NOT_VERIFIED`，不得转为本地重型执行。
+
+## 11. 当前工作与历史归档
+
+- 当前项目状态、已完成批次、未完成事项和准确接续点，以 `docs/architecture/AI_DEVELOPMENT_HANDOFF.md` 和 `docs/architecture/PLATFORM_EVOLUTION_ROADMAP_20261121.md` 为准。
+- 当前用户最新指令优先于本文件的长期默认规则；若冲突，按“安全边界 > 最新用户明确授权 > 本文件 > 历史归档”的顺序处理。
+- 历史 AGENTS 原文归档：`docs/archive/AGENTS_HISTORY_20261129.md`。
+- 原文件 257,813 bytes，SHA256 `8026CD92865DF09EE586587DB0A1FDF6E1A73328E59C47614ACF0F79462F4CAC`。
+- 历史归档只用于追溯，不作为当前有效指令，不在每次会话自动加载。
+- 专项细节（功能矩阵、保留台账、任务安全、转换证据矩阵等）保留在现有 `docs/architecture/`；仅在相关任务按需读取，不自动加载全部。
+
+## 12. 完成标准
+
+一个开发目标只有在以下条件全部满足时才可标记完成：
+
+- 用户要求的实际功能已落地；
+- 必要定向验证通过；
+- 安全合同未被削弱；
+- 失败/阻断/未验证状态如实记录；
+- Git 提交和远端 SHA 明确；
+- 没有把计划、代码核对或文档更新冒充功能交付。
+
+否则保持 `IN_PROGRESS`，继续下一项可执行工作。

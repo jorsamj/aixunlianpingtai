@@ -1,0 +1,271 @@
+from __future__ import annotations
+import platform_core.training_evaluation_service as evaluation_owner
+from platform_core.training_evaluation_service import TrainingEvaluationService
+from platform_core.ai_annotation_service import AiAnnotationService
+
+import json
+from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
+
+
+def test_eligible_mining_material_cursor_crosses_empty_page_without_releasing_frozen_test(tmp_path):
+    from platform_core.material_repository import MaterialRepository
+
+    project = tmp_path / 'project'
+    snapshots = project / 'snapshots'
+    snapshots.mkdir(parents=True)
+    (snapshots / 'source.json').write_text(json.dumps({'test_image_ids': ['first-00'], 'images': [
+        {'image_id': 'first-00', 'content_sha256': 'a' * 64},
+    ]}), encoding='utf-8')
+    materials = MaterialRepository(project)
+    rows = [
+        {'id': f'first-{i:02}', 'object_key': f'fixture/{i}.jpg', 'storage_source_id': 'fixture',
+         'created_at': '2026-01-01', 'content_sha256': 'a' * 64 if i else 'b' * 64}
+        for i in range(10)
+    ]
+    for image_id in ['a', 'b', 'c']:
+        rows.append({'id': f'later-{image_id}', 'object_key': f'fixture/{image_id}.jpg',
+                     'storage_source_id': 'fixture', 'created_at': '2026-01-02',
+                     'content_sha256': 'd' * 64, 'annotated': image_id == 'c'})
+    materials.upsert_many(rows)
+    service = TrainingEvaluationService(SimpleNamespace(
+        _algorithm_version_for_action=lambda *args: None,
+        project_dir=lambda _: project, material_store=lambda _: materials,
+    ))
+    first = service.eligible_hard_sample_materials('p', 'a', 'v', limit=1)
+    assert first['items'] == [] and first['scanned'] == 10 and first['has_more']
+    second = service.eligible_hard_sample_materials('p', 'a', 'v', limit=1, cursor=first['next_cursor'])
+    assert second['items'] == ['later-a'] and second['has_more']
+    assert second['display_items'][0]['content_sha256'] == 'd' * 64
+    third = service.eligible_hard_sample_materials('p', 'a', 'v', limit=1, cursor=second['next_cursor'])
+    assert third['items'] == ['later-b'] and third['has_more']
+    last = service.eligible_hard_sample_materials('p', 'a', 'v', limit=1, cursor=third['next_cursor'])
+    assert last['items'] == [] and not last['has_more'] and last['next_cursor'] is None
+    with pytest.raises(HTTPException) as foreign:
+        service.eligible_hard_sample_materials('p', 'a', 'other', cursor=first['next_cursor'])
+    assert foreign.value.status_code == 422
+
+
+def test_mining_history_pages_task_records_and_requires_exact_frozen_origin(tmp_path):
+    from dataclasses import replace
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskRecord, TaskRepository
+
+    repository = TaskRepository(tmp_path / 'tasks.sqlite3')
+    artifacts = ArtifactStore(tmp_path / 'artifacts')
+
+    def create(task_id, *, project='p', algorithm='a', version='v', created_at='2026-01-01T00:00:00+00:00'):
+        task = TaskRecord.new(task_id, project, TaskKind.AI_ANNOTATION, 'request.json', 'annotation')
+        if version:
+            artifacts.atomic_write_json(task_id, 'request.json', {
+                'mode': 'hard_sample_yolo', 'mining_algorithm_id': algorithm, 'mining_version_id': version,
+                'mining_model_sha256': 'f' * 64,
+            })
+        repository.create(replace(task, created_at=created_at), artifacts=artifacts)
+
+    for i in range(40):
+        create(f'annotation-{i}', version=None, created_at='2026-01-02T00:00:00+00:00')
+    create('hm00000000000000')
+    create('hm00000000000001')
+    create('hm00000000000002', version='another-version')
+    create('hm00000000000003', project='another-project')
+    create('hm00000000000004', version=None)
+    create('hm00000000000005', algorithm='another-algorithm')
+    service = TrainingEvaluationService(SimpleNamespace(
+        _algorithm_version_for_action=lambda *args: None,
+        shared_task_repository=lambda: repository, shared_task_artifacts=lambda: artifacts,
+    ))
+    first = service.hard_sample_mining_history('p', 'a', 'v')
+    assert first['items'] == [] and first['has_more']
+    second = service.hard_sample_mining_history('p', 'a', 'v', first['next_cursor'])
+    assert [row['task_id'] for row in second['items']] == ['hm00000000000001', 'hm00000000000000']
+    assert second['unverified'] == 1 and not second['has_more']
+    assert all(row['model_sha256'] == 'f' * 64 and row['status'] == 'QUEUED' for row in second['items'])
+    with pytest.raises(HTTPException) as wrong_query:
+        service.eligible_hard_sample_materials('p', 'a', 'v', cursor=first['next_cursor'])
+    assert wrong_query.value.status_code == 422
+
+
+def test_p2_reviewed_mining_preview_adoption_reuses_original_candidate_set_and_protects_test(monkeypatch, tmp_path):
+    from platform_core.task_runtime import ArtifactStore, TaskKind, TaskStatus
+    from platform_core.annotation_candidates import CandidateStore, CandidateDecision
+    platform, project, rows, _, _ = _setup(monkeypatch, tmp_path)
+    task_id = 'reviewed-mining'
+    artifacts = ArtifactStore(tmp_path / 'artifacts')
+    request = {'mode': 'hard_sample_yolo', 'image_ids': ['training-a'], 'source_hashes': {'training-a': 'a' * 64},
+        'mining_algorithm_id': 'algo', 'mining_version_id': 'v1', 'mining_model_sha256': 'f' * 64}
+    artifacts.atomic_write_json(task_id, 'request.json', request)
+    store = CandidateStore(artifacts, task_id=task_id)
+    store.initialize(labels=['person'], total_images=1)
+    store.append_items([{'image_id': 'training-a', 'status': 'empty', 'boxes': []}])
+    store.apply_decisions([CandidateDecision('training-a', True)])
+    store.record_commit_summaries([{'image_id': 'training-a', 'box_count': 0, 'labels': [],
+        'annotation_state': 'confirmed_empty', 'annotation_origin': 'ai_confirmed'}])
+    rows[0].update(width=100, height=80)
+    annotation = {'annotation_state': 'confirmed_empty', 'content_digest': 'd' * 64,
+                  'annotation_origin': 'ai_confirmed', 'annotation_scope': ['person'], 'boxes': []}
+    class Annotations:
+        def __init__(self, *args): pass
+        def get_many(self, ids): return {key: dict(annotation) for key in ids}
+    task = SimpleNamespace(kind=TaskKind.AI_ANNOTATION, status=TaskStatus.SUCCEEDED, result_ref='result.json', payload_ref='request.json')
+    version = {'id': 'v1'}
+    monkeypatch.setattr(TrainingEvaluationService, '_advanced_evaluation_context', staticmethod(lambda *a: (version, {'model_sha256': 'f' * 64})))
+    monkeypatch.setattr(AiAnnotationService, '_require_annotation_review_task', staticmethod(lambda *a: task))
+    monkeypatch.setattr(platform, 'shared_task_artifacts', lambda: artifacts)
+    monkeypatch.setattr(evaluation_owner, 'AnnotationRepository', Annotations)
+    action = {'status': 'confirmed', 'action': 'supplement_data', 'action_id': 'e' * 64,
+              'source': {'algorithm_id': 'algo', 'version_id': 'v1'}}
+    monkeypatch.setattr(TrainingEvaluationService, '_supplement_data_action', staticmethod(lambda *a: ({'id': 'algo'}, version, action)))
+    monkeypatch.setattr(platform, 'algorithms_file', lambda _: project / 'algorithms.json')
+    def update(path, algorithm_id, version_id, patch, **kwargs):
+        version.update(patch);return dict(version)
+    monkeypatch.setattr(evaluation_owner, 'update_algorithm_version', update)
+    preview = platform.preview_reviewed_mining('project', 'algo', 'v1', task_id)
+    assert preview['items'][0]['eligible'] is True
+    assert not (project / 'online_feedback.sqlite3').exists()
+    selection = platform.FreezeReviewedMiningReq(confirmed=True, candidates=[{'image_id': 'training-a', 'candidate_digest': preview['items'][0]['candidate_digest']}])
+    first = platform.adopt_reviewed_mining('project', 'algo', 'v1', task_id, selection)
+    second = platform.adopt_reviewed_mining('project', 'algo', 'v1', task_id, selection)
+    assert first['candidate_set']['material_ids'] == ['training-a']
+    assert first['candidate_set']['automatic_execution'] is False and second['idempotent'] is True
+    from platform_core.online_feedback import OnlineFeedbackRepository
+    feedback = OnlineFeedbackRepository(project).get(first['candidate_set']['feedback_ids'][0])
+    assert feedback['payload']['source']['source_channel'] == 'hard_sample_review'
+    annotation['content_digest'] = 'b' * 64
+    with pytest.raises(HTTPException) as changed:
+        platform.adopt_reviewed_mining('project', 'algo', 'v1', task_id, selection)
+    assert changed.value.status_code == 409
+    (project / 'snapshots' / ('c' * 64 + '.json')).write_text(json.dumps({'test_image_ids': ['training-a']}), encoding='utf-8')
+    with pytest.raises(HTTPException) as protected:
+        platform.preview_reviewed_mining('project', 'algo', 'v1', task_id)
+    assert 'FROZEN_TEST' in str(protected.value.detail)
+    task.status = TaskStatus.RUNNING
+    with pytest.raises(HTTPException) as active:
+        platform.preview_reviewed_mining('project', 'algo', 'v1', task_id)
+    assert active.value.status_code == 409
+
+
+def _setup(monkeypatch, tmp_path: Path):
+    import app as platform
+
+    path = tmp_path / "trusted-best.pt"
+    path.write_bytes(b"trusted pretrained weight fixture")
+    project = tmp_path / "project"
+    (project / "snapshots").mkdir(parents=True)
+    (project / "snapshots" / ("c" * 64 + ".json")).write_text(json.dumps({
+        "snapshot_id": "c" * 64,
+        "label_schema": [{"code": "person", "class_id": 0}],
+        "test_image_ids": [], "images": [],
+    }), encoding="utf-8")
+
+    rows = [
+        {"id": "training-a", "content_sha256": "a" * 64,
+         "annotation_state": "unannotated", "box_count": 0},
+        {"id": "training-b", "content_sha256": "b" * 64,
+         "annotation_state": "unannotated", "box_count": 0},
+    ]
+    class Material:
+        def get_many(self, ids):
+            return [dict(row) for row in rows if row["id"] in ids]
+    tasks = {}
+    class Repository:
+        def get(self, task_id):
+            return tasks.get(task_id)
+        def create(self, record):
+            assert record.task_id not in tasks
+            tasks[record.task_id] = record
+            return record
+    payloads = {}
+    class Artifacts:
+        def atomic_write_json(self, task_id, ref, content):
+            payloads[task_id] = dict(content)
+    monkeypatch.setattr(platform, "get_project", lambda _: {"id": "project"})
+    monkeypatch.setattr(platform, "project_dir", lambda _: project)
+    monkeypatch.setattr(platform, "_algorithm_version_for_action",
+                        lambda p, a, v: ({"id": a}, {"id": v, "best_path": str(path),
+                                              "snapshot_id": "c" * 64}))
+    monkeypatch.setattr(platform, "material_store", lambda _: Material())
+    monkeypatch.setattr(AiAnnotationService, "_annotation_label_catalog",
+                        staticmethod(lambda _: [{"code": "person", "class_id": 0}]))
+    monkeypatch.setattr(platform, "shared_task_repository", lambda: Repository())
+    monkeypatch.setattr(platform, "shared_task_artifacts", lambda: Artifacts())
+    monkeypatch.setattr(platform, "_storage_source_fence", lambda: nullcontext())
+    def public_task(record, *, summary=None, **projection_options):
+        result = {
+            "id": record.task_id, "status": record.status.value,
+            "kind": record.kind.value, "required_capabilities": record.required_capabilities,
+        }
+        if summary is not None:
+            result["summary"] = dict(summary)
+        return result
+    monkeypatch.setattr(AiAnnotationService, "public_annotation_task", staticmethod(public_task))
+    return platform, project, rows, tasks, payloads
+
+
+def test_one_durable_annotation_task_is_created_for_existing_training_material(monkeypatch, tmp_path):
+    platform, project, rows, tasks, payloads = _setup(monkeypatch, tmp_path)
+    result = platform.create_hard_sample_mining("project", "algorithm", "v2",
+        platform.HardSampleMiningCreateReq(image_ids=["training-a"], source="existing"))
+    assert result["status"] == "QUEUED"
+    assert result["kind"] == "AI_ANNOTATION"
+    assert result["required_capabilities"] == ("mining.ultralytics",)
+    request = payloads[result["id"]]
+    assert request["mode"] == "hard_sample_yolo"
+    assert request["source_hashes"] == {"training-a": "a" * 64}
+    assert request["labels"] == ["person"]
+    assert request["overwrite"] is False
+    assert request["mining_snapshot_id"] == "c" * 64
+    assert request["mining_snapshot_sha256"]
+    assert request["mining_model_sha256"]
+    assert len(tasks) == 1
+    guarded = platform.HardSampleMiningCreateReq(image_ids=["training-a"], request_key="guarded-mining",
+        expected_model_sha256=request["mining_model_sha256"], expected_source_hashes={"training-a": "b" * 64})
+    with pytest.raises(HTTPException) as drift:
+        platform.create_hard_sample_mining("project", "algorithm", "v2", guarded)
+    assert drift.value.status_code == 409
+    assert "代际" in drift.value.detail
+    assert len(tasks) == 1
+
+
+def test_frozen_test_or_same_bytes_cannot_be_mined(monkeypatch, tmp_path):
+    platform, project, rows, tasks, payloads = _setup(monkeypatch, tmp_path)
+    (project / "snapshots" / ("d" * 64 + ".json")).write_text(json.dumps({
+        "test_image_ids": ["training-b"],
+        "images": [{"image_id": "training-b", "content_sha256": "b" * 64}],
+    }), encoding="utf-8")
+    with pytest.raises(HTTPException) as ex:
+        platform.create_hard_sample_mining("project", "algorithm", "v2",
+            platform.HardSampleMiningCreateReq(image_ids=["training-b"]))
+    assert ex.value.status_code == 409
+    assert not tasks
+    rows[0]["content_sha256"] = "b" * 64
+    with pytest.raises(HTTPException) as ex:
+        platform.create_hard_sample_mining("project", "algorithm", "v2",
+            platform.HardSampleMiningCreateReq(image_ids=["training-a"]))
+    assert ex.value.status_code == 409
+    assert not payloads
+
+
+def test_upload_retry_reuses_existing_task_identity(monkeypatch, tmp_path):
+    platform, project, rows, tasks, payloads = _setup(monkeypatch, tmp_path)
+    a = platform._enqueue_hard_sample_mining(
+        "project", "algorithm", "v2", ["training-a"],
+        source="upload", request_key="upload-123")
+    b = platform._enqueue_hard_sample_mining(
+        "project", "algorithm", "v2", ["training-a"],
+        source="upload", request_key="upload-123")
+    assert a == b
+    assert len(tasks) == 1
+
+
+def test_automatic_mining_never_relabels_already_annotated_material(monkeypatch, tmp_path):
+    platform, project, rows, tasks, payloads = _setup(monkeypatch, tmp_path)
+    rows[0]["annotation_state"] = "annotated"
+    with pytest.raises(HTTPException) as ex:
+        platform._enqueue_hard_sample_mining(
+            "project", "algorithm", "v2", ["training-a"], source="upload")
+    assert ex.value.status_code == 409
+    assert not tasks

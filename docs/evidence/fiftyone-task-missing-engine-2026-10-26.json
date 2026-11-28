@@ -1,0 +1,9 @@
+{
+  "case": "missing_engine",
+  "status": "BLOCKED_BY_ENVIRONMENT",
+  "owned_processes_remaining": 0,
+  "temporary_roots_cleaned": true,
+  "formal_material_gt_unchanged": true,
+  "base_clean_task_passed": true,
+  "scope": "isolated original Worker + actual subprocess fault"
+}

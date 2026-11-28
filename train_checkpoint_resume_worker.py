@@ -38,6 +38,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume-checkpoint-sha256", required=True)
     parser.add_argument("--resume-from-epoch", type=int, required=True)
     parser.add_argument("--epochs", type=int, required=True)
+    parser.add_argument(
+        "--expected-class-names",
+        required=True,
+        help="frozen snapshot class names (ordered) this checkpoint must match",
+    )
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--assigned-device", required=True)
     parser.add_argument("--requested-device", default="auto")
@@ -64,7 +69,76 @@ def _runtime_device(assigned: str, resource_context: dict) -> tuple[str, int | N
     return "0", gpu_index
 
 
+def _ordered_class_names(names) -> list[str]:
+    if isinstance(names, dict):
+        try:
+            return [str(names[index]) for index in range(len(names))]
+        except (KeyError, TypeError, ValueError):
+            return []
+    if isinstance(names, (list, tuple)):
+        return [str(item) for item in names]
+    return []
+
+
+def validate_resume_checkpoint_state(
+    state, expected_class_names, resume_from_epoch,
+) -> dict:
+    """Fail closed unless last.pt is a complete, class-compatible training state.
+
+    A trained-weights file (e.g. best.pt) is not a full checkpoint: resuming
+    from it would silently reset the optimizer schedule. The checkpoint class
+    order must also equal the frozen snapshot schema, otherwise labels would be
+    remapped across classes.
+    """
+    if not isinstance(state, dict) or not state:
+        raise RuntimeError("RESUME_CHECKPOINT_INVALID: last.pt is not a training checkpoint")
+    optimizer = state.get("optimizer")
+    if not isinstance(optimizer, dict) or not optimizer:
+        raise RuntimeError(
+            "RESUME_OPTIMIZER_STATE_MISSING: last.pt carries no optimizer state; "
+            "only trained weights are available and cannot be resumed as a full checkpoint"
+        )
+    model_object = state.get("model")
+    names = getattr(model_object, "names", None)
+    if names is None and isinstance(model_object, dict):
+        names = model_object.get("names")
+    if names is None:
+        train_args = state.get("train_args")
+        if isinstance(train_args, dict):
+            names = train_args.get("names")
+    checkpoint_names = _ordered_class_names(names)
+    if not checkpoint_names:
+        raise RuntimeError(
+            "RESUME_CLASS_NAMES_UNAVAILABLE: last.pt does not expose class names; "
+            "class mapping cannot be verified"
+        )
+    expected = [str(item) for item in expected_class_names]
+    if checkpoint_names != expected:
+        raise RuntimeError(
+            "RESUME_CLASS_MAPPING_MISMATCH: "
+            f"expected={expected}; checkpoint={checkpoint_names}"
+        )
+    try:
+        checkpoint_epoch = int(state.get("epoch"))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(
+            "RESUME_CHECKPOINT_EPOCH_INVALID: last.pt has no usable epoch"
+        ) from error
+    if checkpoint_epoch < 0 or checkpoint_epoch + 1 < int(resume_from_epoch):
+        raise RuntimeError(
+            "RESUME_CHECKPOINT_EPOCH_INVALID: "
+            f"checkpoint_epoch={checkpoint_epoch}; resume_from_epoch={int(resume_from_epoch)}"
+        )
+    return {
+        "class_names": checkpoint_names,
+        "checkpoint_epoch": checkpoint_epoch,
+        "has_optimizer_state": True,
+    }
+
+
 def main(argv=None) -> int:
+    from platform_core.task_runtime.process_start_gate import wait_for_execution_binding
+    wait_for_execution_binding()
     args = _parser().parse_args(argv)
     project_dir = Path(args.project_dir).resolve()
     runs_dir = (project_dir / "runs").resolve()
@@ -81,6 +155,34 @@ def main(argv=None) -> int:
         raise RuntimeError("RESUME_CHECKPOINT_MISSING: last.pt is unavailable")
     if _sha256(checkpoint) != str(args.resume_checkpoint_sha256):
         raise RuntimeError("RESUME_CHECKPOINT_CHANGED: last.pt changed after recovery admission")
+    import json as _json
+
+    try:
+        expected_class_names = _json.loads(str(args.expected_class_names))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(
+            "RESUME_CLASS_SCHEMA_INVALID: expected class names are not valid JSON"
+        ) from error
+    if (
+        not isinstance(expected_class_names, list)
+        or not expected_class_names
+        or any(not str(item).strip() for item in expected_class_names)
+    ):
+        raise RuntimeError(
+            "RESUME_CLASS_SCHEMA_INVALID: expected class names are missing"
+        )
+    import torch
+
+    try:
+        checkpoint_state = torch.load(str(checkpoint), map_location="cpu")
+    except Exception as error:  # corrupted/unreadable checkpoint must not be resumed
+        raise RuntimeError(
+            f"RESUME_CHECKPOINT_UNREADABLE: {type(error).__name__}: {error}"
+        ) from error
+    checkpoint_inspection = validate_resume_checkpoint_state(
+        checkpoint_state, expected_class_names, int(args.resume_from_epoch),
+    )
+    del checkpoint_state
     if not data_yaml.is_file():
         raise RuntimeError("RESUME_DATASET_MISSING: runtime dataset yaml is unavailable")
 
@@ -108,6 +210,10 @@ def main(argv=None) -> int:
         resume_epoch_source="preload_observation",
         resume_checkpoint=str(checkpoint),
         resume_checkpoint_sha256=str(args.resume_checkpoint_sha256),
+        resume_checkpoint_epoch=checkpoint_inspection["checkpoint_epoch"],
+        resume_checkpoint_class_names=checkpoint_inspection["class_names"],
+        resume_checkpoint_has_optimizer=True,
+        class_mapping_verified=True,
         current_epoch=observed_resume_epoch,
         total_epochs=int(args.epochs),
         progress_percent=max(20.0, float(job.get("progress_percent") or 20.0)),
@@ -152,6 +258,14 @@ def main(argv=None) -> int:
             if str(trainer.device) != runtime_device:
                 raise RuntimeError(
                     f"TRAINING_DEVICE_RUNTIME_MISMATCH: expected={runtime_device}; actual={trainer.device}"
+                )
+            loaded_names = _ordered_class_names(
+                getattr(getattr(trainer, "model", None), "names", None)
+            )
+            if loaded_names and loaded_names != [str(item) for item in expected_class_names]:
+                raise RuntimeError(
+                    "RESUME_CLASS_MAPPING_MISMATCH: resumed model class order "
+                    "differs from the frozen snapshot schema"
                 )
             checkpoint_resume_epoch = int(getattr(trainer, "start_epoch", observed_resume_epoch) or observed_resume_epoch)
             if checkpoint_resume_epoch <= 0 or checkpoint_resume_epoch >= int(args.epochs):
@@ -236,6 +350,7 @@ def main(argv=None) -> int:
         # start_epoch and the original run arguments from last.pt. Device is the
         # only runtime override: the durable Scheduler owns the concrete device.
         model.train(resume=True, device=logical_device)
+        base_worker.update_job(job_file, training_segment_finished_at=base_worker.now_iso())
         current = base_worker.read_json(job_file, {})
         base_worker.update_job(
             job_file,

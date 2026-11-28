@@ -7,7 +7,7 @@ async function boot(page) {
 
 async function protectNewPageModal(page, pageName = '数据集') {
   await page.evaluate(name => window.setPage(name), pageName);
-  await expect(page.locator('#title')).toContainText(pageName);
+  await expect(page.locator('#title')).toContainText(pageName==='模型配置'?'AI 辅助配置':pageName);
   await page.evaluate(() => {
     const modal = document.getElementById('modal');
     document.getElementById('modalTitle').textContent = 'R2新页面保护';
@@ -38,7 +38,7 @@ test('stale final M4 model save cannot close or redraw the page selected afterwa
   });
 
   await page.evaluate(() => window.setPage('模型配置'));
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await page.evaluate(() => window.openModelConfigModalV35());
   await page.locator('#mcName').fill('R2视觉模型');
   await page.locator('#mcModel').fill('r2-vlm');
@@ -93,17 +93,19 @@ test('stale clean confirmation cannot close newer UI or start broad project refr
   let broadGetsAfterRelease = 0;
 
   await boot(page);
+  // Exercise the existing clean-confirm owner, without the separate deletion-preview flow.
+  // Deletion preview/active-input protection is covered by material-integrity-governance.
   await page.route(/\/api\/v47\/projects\/[^/]+\/clean-tasks\/clean-r2\/result$/, route => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({result: {items: [{image_id: 'image-r2', filename: 'image-r2.jpg', suggest_delete: true, issues: [{name: '重复图', detail: '测试'}]}]}}),
+    body: JSON.stringify({task: {id: 'clean-r2', status: 'awaiting_confirmation'}, result: {items: [{image_id: 'image-r2', filename: 'image-r2.jpg', suggest_delete: false, issues: [{name: '重复图', detail: '测试'}]}]}}),
   }));
   await page.route(/\/api\/v47\/projects\/[^/]+\/clean-tasks\/clean-r2\/confirm$/, async route => {
     if (route.request().method() !== 'POST') return route.continue();
     interceptedResolve();
     await gate;
     confirmReleased = true;
-    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, deleted: 1, deleted_ids: ['image-r2'], deleted_images: [], processed_ids: []})});
+    await route.fulfill({status: 200, contentType: 'application/json', body: JSON.stringify({ok: true, deleted: 0, deleted_ids: [], deleted_images: [], processed_ids: []})});
   });
   page.on('request', request => {
     if (!confirmReleased || request.method() !== 'GET') return;
@@ -113,15 +115,15 @@ test('stale clean confirmation cannot close newer UI or start broad project refr
 
   await page.evaluate(() => window.setPage('数据集'));
   await page.evaluate(() => window.reviewClean427('clean-r2'));
-  await expect(page.getByRole('button', {name: '确认应用清洗'})).toBeVisible();
-  await page.getByRole('button', {name: '确认应用清洗'}).click();
+  await expect(page.getByRole('button', {name: '确认清洗结果'})).toBeVisible();
+  await page.getByRole('button', {name: '确认清洗结果'}).click();
   await Promise.race([intercepted, new Promise((_, reject) => setTimeout(() => reject(new Error('clean confirm POST was not intercepted')), 8_000))]);
 
   await protectNewPageModal(page, '模型配置');
   release();
   await page.waitForTimeout(900);
 
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await expect(page.locator('#modal'), 'stale clean confirm closed the newer page modal').not.toHaveClass(/hidden/);
   await expect(page.locator('#modalTitle'), 'stale clean confirm replaced the newer page modal').toHaveText('R2新页面保护');
   await expect(page.locator('#actionFenceR2Sentinel'), 'stale clean confirm destroyed the newer page modal body').toHaveText('new-page-r2');
@@ -152,6 +154,9 @@ test('stale v60 AI review completion cannot patch or close UI owned by a newer p
       id: 'ai-r2',
       decisions: new Map([['image-ai-r2', true]]),
       edits: new Map(),
+      labelMapping: new Map(),
+      ownerPage: String(state.page),
+      closed: false,
       seen: new Map(),
       items: [],
       offset: 0,
@@ -165,7 +170,7 @@ test('stale v60 AI review completion cannot patch or close UI owned by a newer p
   release();
   await page.waitForTimeout(700);
 
-  await expect(page.locator('#title')).toContainText('模型配置');
+  await expect(page.locator('#title')).toContainText('AI 辅助配置');
   await expect(page.locator('#modal'), 'stale v60 AI completion closed the newer page modal').not.toHaveClass(/hidden/);
   await expect(page.locator('#modalTitle'), 'stale v60 AI completion replaced the newer page modal').toHaveText('R2新页面保护');
   await expect(page.locator('#actionFenceR2Sentinel'), 'stale v60 AI completion destroyed the newer page modal body').toHaveText('new-page-r2');

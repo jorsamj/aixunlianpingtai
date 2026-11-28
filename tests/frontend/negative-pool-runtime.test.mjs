@@ -1,0 +1,137 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {negativePoolQuery,installNegativePoolRuntime,runNegativePoolBatches} from '../../static/modules/negative-pool-runtime.js';
+
+test('pool query preserves complete category/label/date/status filters for server all-ID selection',()=>{
+ const q=negativePoolQuery({query:'雨天 图片',category_id:['a','b'],label:['person','fire'],joined_days:'7',joined_from:'2026-10-01',joined_to:'2026-10-28',review_status:'unknown'},3);
+ assert.equal(q.get('query'),'雨天 图片');assert.deepEqual(q.getAll('category_id'),['a','b']);assert.deepEqual(q.getAll('label'),['person','fire']);assert.equal(q.get('joined_to'),'2026-10-28');assert.equal(q.get('review_status'),'unknown');assert.equal(q.get('page'),'3');
+});
+
+test('pool uses explicit owner hooks and rejects delayed previous-project responses',async()=>{
+ const previous={window:globalThis.window,document:globalThis.document};
+ let project='p1',resolve;const calls=[];const host={isConnected:true,innerHTML:''};
+ const original=()=>{};
+ globalThis.window={renderDatasets424:original};globalThis.document={getElementById:()=>host,addEventListener:()=>{}};
+ try{
+  const runtime=installNegativePoolRuntime({getState:()=>({page:'数据集'}),api:async url=>{calls.push(url);return url.includes('/categories')?{items:[]}:await new Promise(r=>resolve=r)},pid:()=>project,esc:String,toast:()=>{}});
+  assert.equal(window.renderDatasets424,original,'original owner is never replaced');
+  const pending=runtime.renderPool('materials');await new Promise(r=>setImmediate(r));project='p2';host.innerHTML='new project';resolve({items:[{id:'stale'}],total:1});await pending;
+  assert.equal(host.innerHTML,'new project');assert.equal(runtime.active('materials'),false);assert.equal(calls.length,2);
+ }finally{Object.assign(globalThis,previous)}
+});
+
+test('category dictionary is shared across pool page refreshes without hiding list requests',async()=>{
+ const previous={window:globalThis.window,document:globalThis.document};
+ let categories=0,lists=0;
+ const host={isConnected:true,innerHTML:'',querySelectorAll:()=>[]};
+ globalThis.document={getElementById:()=>host,addEventListener:()=>{}};
+ globalThis.window={renderDatasets424:()=>window.NegativePoolRuntime.renderPool('materials')};
+ try{
+   const runtime=installNegativePoolRuntime({
+     getState:()=>({page:'数据集',labels:[]}),pid:()=> 'p1',esc:String,toast:()=>{},
+     api:async(url,options={})=>{
+       if(url.includes('/categories')){categories++;return {items:[{id:'a',name:'分类A'}]}}
+       lists++;assert.ok(options.signal instanceof AbortSignal);
+       return {items:[],total:0};
+     }
+   });
+   await runtime.open();
+   await runtime.refresh();
+   assert.equal(categories,1);
+   assert.equal(lists,2);
+ }finally{Object.assign(globalThis,previous)}
+});
+
+test('identical pool queries share inflight; leaving owner aborts old read without repainting',async()=>{
+ const previous={window:globalThis.window,document:globalThis.document};
+ let resolve,lists=0,signal;
+ const host={isConnected:true,innerHTML:'',querySelectorAll:()=>[]};
+ globalThis.document={getElementById:()=>host,addEventListener:()=>{}};
+ globalThis.window={renderDatasets424:()=>window.NegativePoolRuntime.renderPool('materials')};
+ try{
+   const runtime=installNegativePoolRuntime({
+     getState:()=>({page:'数据集',labels:[]}),pid:()=> 'p1',esc:String,toast:()=>{},
+     api:(url,options={})=>{
+       if(url.includes('/categories'))return Promise.resolve({items:[]});
+       lists++;signal=options.signal;
+       return lists===1?Promise.resolve({items:[],total:0}):new Promise(r=>{resolve=r});
+     }
+   });
+   await runtime.open();
+   const first=runtime.refresh();
+   const second=runtime.refresh();
+   assert.equal(first,second);
+   await new Promise(r=>setImmediate(r));
+   assert.equal(lists,2);
+   runtime.beforeNavigate('算法列表');
+   assert.equal(signal.aborted,true);
+   host.innerHTML='new page';
+   resolve({items:[{id:'old'}],total:1});
+   await first;
+   assert.equal(host.innerHTML,'new page');
+ }finally{Object.assign(globalThis,previous)}
+});
+
+
+test('material card action returns after async replacement and observer is scoped to page', async()=>{
+ const previous={window:globalThis.window,document:globalThis.document,MutationObserver:globalThis.MutationObserver};
+ let observer;
+ const actions={contains:false, querySelector(){return this.contains?{}:null},
+   insertAdjacentHTML(_side,html){this.contains=html.includes('data-np="join-one"')}};
+ const card={dataset:{materialId:'one'},querySelector:()=>actions};
+ const host={isConnected:true,querySelector:()=>({}),querySelectorAll:()=>[card]};
+ globalThis.window={};
+ globalThis.document={getElementById:()=>host,addEventListener:()=>{}};
+ globalThis.MutationObserver=class{
+   constructor(callback){this.callback=callback;observer=this}
+   observe(){this.watching=true}
+   disconnect(){this.watching=false}
+ };
+ try{
+   const runtime=installNegativePoolRuntime({getState:()=>({page:'数据集'}),pid:()=> 'p',
+     esc:String,toast:()=>{},api:async()=>({items:[]})});
+   runtime.decorateOriginal('materials');
+   assert.equal(actions.contains,true);
+   actions.contains=false;observer.callback();
+   await new Promise(resolve=>queueMicrotask(resolve));
+   assert.equal(actions.contains,true,'async card replacement must not remove pool action');
+   runtime.beforeNavigate('算法列表');
+   assert.equal(observer.watching,false);
+ }finally{Object.assign(globalThis,previous)}
+});
+
+test('algorithm scope is carried in negative pool queries',()=>{
+ assert.equal(negativePoolQuery({algorithm_id:'fire'}).get('algorithm_id'),'fire');
+});
+
+test('pool review freezes current annotation version and source hash',async()=>{
+ const {negativePoolReviewItems}=await import('../../static/modules/negative-pool-runtime.js');
+ const rows=negativePoolReviewItems([{annotation:{image_id:'x',version:7},image:{id:'x',content_sha256:'a'.repeat(64)}}]);
+ assert.deepEqual(rows,[{image_id:'x',expected_version:7,source_content_sha256:'a'.repeat(64)}]);
+ assert.throws(()=>negativePoolReviewItems([{annotation:{version:0},image:{id:'x'}}]),/摘要/);
+});
+
+test('201 members run sequentially, retry only failed batch and retain original scope',async()=>{
+ const calls=[];let fail=true,active=0;
+ const request=async(ids)=>{assert.equal(active++,0);calls.push([...ids]);await new Promise(resolve=>setImmediate(resolve));active--;if(ids.length===1&&fail){const e=Error('missing');e.status=400;throw e}return {added:ids.length,already_present:0}};
+ const result=await runNegativePoolBatches({ids:Array.from({length:201},(_,i)=>String(i)),request});
+ assert.deepEqual(calls.map(x=>x.length),[200,1]);assert.equal(result.batches[1].status,'failed');
+ fail=false;await runNegativePoolBatches({result,request});assert.deepEqual(calls.map(x=>x.length),[200,1,1]);
+ assert.equal(result.batches[0].added,200);assert.equal(result.batches[1].added,1);
+});
+test('timeout retry does not invent original additions and old response has unknown counters',async()=>{
+ let calls=0;const result=await runNegativePoolBatches({ids:['a'],request:async()=>{calls++;throw Error('timeout')}});
+ assert.equal(result.batches[0].status,'unknown');
+ await runNegativePoolBatches({result,request:async()=>{throw Object.assign(Error('GT changed'),{httpStatus:400})}});
+ assert.equal(result.batches[0].status,'unknown','a later rejection cannot prove the first timed-out mutation did not commit');
+ await runNegativePoolBatches({result,request:async()=>({added:0,already_present:1})});
+ assert.equal(result.batches[0].status,'verified');assert.equal(result.batches[0].added,null);
+ const old=await runNegativePoolBatches({ids:['b'],request:async()=>({affected:1})});
+ assert.equal(old.batches[0].status,'succeeded');assert.equal(old.batches[0].added,null);
+});
+test('permanent cancellation stops future chunks and callbacks',async()=>{
+ let stopped=false,requests=0,updates=0;
+ const result=await runNegativePoolBatches({ids:Array.from({length:401},(_,i)=>String(i)),isCurrent:()=>!stopped,onProgress:()=>updates++,request:async()=>{requests++;stopped=true;return {added:200,already_present:0}}});
+ assert.equal(requests,1);assert.equal(result.cancelled,true);assert.equal(result.batches[1].status,'pending');
+ const before=updates;await runNegativePoolBatches({result,request:async()=>{throw Error('must not request')}});assert.equal(updates,before);
+});

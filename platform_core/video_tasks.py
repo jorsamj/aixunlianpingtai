@@ -354,11 +354,19 @@ class VideoFrameHandler:
             project_id=context.task.project_id,
             materials=materials_repository,
         )
-        rows = materials_repository.read().rows
-        by_id = {str(row.get("id")): row for row in rows}
         materials = result.get("materials") or []
         if not materials:
             return None
+        # Idempotency only needs the identities named by the durable result, not
+        # the whole project catalog.  get_many() is bounded by that list (in the
+        # same 500-id batches the other material readers use) and keeps the same
+        # row payload contract for the lookups below.
+        result_ids = [str(item.get("image_id") or "") for item in materials]
+        existing = [image_id for image_id in result_ids if image_id]
+        by_id = {}
+        for offset in range(0, len(existing), 500):
+            for row in materials_repository.get_many(existing[offset:offset + 500]):
+                by_id[str(row.get("id"))] = row
         for item in materials:
             image_id = str(item.get("image_id") or "")
             if image_id not in by_id:

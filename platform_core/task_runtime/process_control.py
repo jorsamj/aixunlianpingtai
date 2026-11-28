@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
+import secrets
 import signal
 import subprocess
 import time
@@ -32,12 +34,32 @@ class ProcessIdentity:
     pid: int
     create_time: float
     command_hash: str
+    group_token: str = ""
 
 
 @dataclass(frozen=True)
 class LaunchedProcess:
     process: subprocess.Popen
     identity: ProcessIdentity
+
+
+def _windows_process_create_time(process: subprocess.Popen) -> float:
+    from ctypes import POINTER, WinDLL, WinError, byref, get_last_error
+    from ctypes.wintypes import BOOL, FILETIME, HANDLE
+
+    kernel = WinDLL("kernel32", use_last_error=True)
+    get_process_times = kernel.GetProcessTimes
+    get_process_times.argtypes = [HANDLE] + [POINTER(FILETIME)] * 4
+    get_process_times.restype = BOOL
+    created, exited, kernel_time, user_time = (FILETIME() for _ in range(4))
+    # Popen owns the original CreateProcess handle until it is destroyed.
+    # Query that object even if the initial PID lookup would see an exited child.
+    if not get_process_times(
+        int(process._handle), byref(created), byref(exited), byref(kernel_time), byref(user_time)
+    ):
+        raise WinError(get_last_error())
+    ticks = (created.dwHighDateTime << 32) | created.dwLowDateTime
+    return (ticks - 116_444_736_000_000_000) / 10_000_000
 
 
 def launch_process(
@@ -57,6 +79,9 @@ def launch_process(
 
     options = dict(popen_options)
     options["shell"] = False
+    group_token = secrets.token_hex(24)
+    child_env = dict(env) if env is not None else dict(os.environ)
+    child_env["DSH_PROCESS_GROUP_TOKEN"] = group_token
     if os.name == "nt":
         options["creationflags"] = int(options.get("creationflags", 0)) | int(
             subprocess.CREATE_NEW_PROCESS_GROUP
@@ -70,14 +95,18 @@ def launch_process(
     process = subprocess.Popen(
         command,
         cwd=None if cwd is None else str(Path(cwd)),
-        env=None if env is None else dict(env),
+        env=dict(child_env),
         **options,
     )
-    observed = psutil.Process(process.pid)
+    create_time = (
+        _windows_process_create_time(process)
+        if os.name == "nt" else psutil.Process(process.pid).create_time()
+    )
     identity = ProcessIdentity(
         pid=process.pid,
-        create_time=observed.create_time(),
+        create_time=create_time,
         command_hash=hash_command(command),
+        group_token=group_token,
     )
     return LaunchedProcess(process, identity)
 
@@ -85,7 +114,14 @@ def launch_process(
 class ProcessController:
     def inspect(self, identity: ProcessIdentity) -> psutil.Process:
         try:
-            process = psutil.Process(int(identity.pid))
+            pid = int(identity.pid)
+            expected_create_time = float(identity.create_time)
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ProcessIdentityMismatchError("process identity has invalid pid/create_time") from error
+        if pid <= 0 or not math.isfinite(expected_create_time) or expected_create_time <= 0:
+            raise ProcessIdentityMismatchError("process identity has invalid pid/create_time")
+        try:
+            process = psutil.Process(pid)
             observed_create_time = process.create_time()
             observed_hash = hash_command(process.cmdline())
         except (psutil.NoSuchProcess, psutil.ZombieProcess) as error:
@@ -93,7 +129,8 @@ class ProcessController:
         except psutil.AccessDenied as error:
             raise PermissionError("process identity cannot be inspected") from error
         if (
-            abs(observed_create_time - float(identity.create_time)) > 0.01
+            not math.isfinite(observed_create_time)
+            or abs(observed_create_time - expected_create_time) > 0.01
             or observed_hash != identity.command_hash
         ):
             raise ProcessIdentityMismatchError("process identity does not match")
@@ -148,18 +185,25 @@ class ProcessController:
         return not cls._posix_group_exists(group_id)
 
     @classmethod
-    def _terminate_posix_group(cls, group_id: int, timeout: float) -> None:
+    def _terminate_posix_group(
+        cls,
+        group_id: int,
+        timeout: float,
+        ownership_token: str | None = None,
+    ) -> None:
         """Terminate the dedicated launch group even after its leader is gone.
 
-        Linux may OOM-kill only the training leader while torch/DataLoader
-        descendants remain alive and are immediately re-parented to PID 1.  At
-        that point psutil parent traversal cannot recover the descendants, but
-        launch_process() has already fenced this execution into a private POSIX
-        session/process group whose id is the original launcher PID.
+        When ownership_token is supplied, membership is re-verified immediately
+        before every signal. The token is launch-origin corroboration, not an
+        unforgeable kernel identity; an unreadable/changed member fails closed.
         """
 
         if os.name == "nt" or not cls._posix_group_exists(group_id):
             return
+        if ownership_token is not None and not cls._group_has_post_launch_members(
+            group_id, 0.0, ownership_token
+        ):
+            raise PermissionError("process group ownership changed before termination")
 
         try:
             # Resume stopped descendants first so SIGTERM can be handled and
@@ -170,6 +214,12 @@ class ProcessController:
         except PermissionError as error:
             raise PermissionError("process group cannot be resumed") from error
 
+        if ownership_token is not None:
+            if not cls._posix_group_exists(group_id):
+                return
+            if not cls._group_has_post_launch_members(group_id, 0.0, ownership_token):
+                raise PermissionError("process group ownership changed before SIGTERM")
+
         try:
             os.killpg(int(group_id), signal.SIGTERM)
         except ProcessLookupError:
@@ -179,6 +229,12 @@ class ProcessController:
 
         if cls._wait_posix_group_exit(group_id, timeout):
             return
+
+        if ownership_token is not None:
+            if not cls._posix_group_exists(group_id):
+                return
+            if not cls._group_has_post_launch_members(group_id, 0.0, ownership_token):
+                raise PermissionError("process group ownership changed before SIGKILL")
 
         try:
             os.killpg(int(group_id), signal.SIGKILL)
@@ -264,15 +320,62 @@ class ProcessController:
             if still_alive:
                 raise PermissionError(f"{label} process termination could not be verified")
 
+    @staticmethod
+    def _process_has_group_token(pid: int, token: str) -> bool:
+        if not token or os.name != "posix" or not os.path.isdir("/proc"):
+            return False
+        try:
+            with open(f"/proc/{int(pid)}/environ", "rb") as handle:
+                values = handle.read().split(b"\0")
+        except (OSError, PermissionError):
+            return False
+        expected = b"DSH_PROCESS_GROUP_TOKEN=" + token.encode("ascii")
+        return expected in values
+
+    @staticmethod
+    def _group_has_post_launch_members(group_id: int, launched_at: float, token: str) -> bool:
+        """Prove leaderless group ownership with the launch-scoped env token."""
+        if os.name != "posix" or not token:
+            return False
+        members = []
+        for process in psutil.process_iter(["pid", "create_time"]):
+            try:
+                if int(os.getpgid(process.pid)) != int(group_id):
+                    continue
+                if float(process.info["create_time"]) + 1.0 < float(launched_at):
+                    return False
+                members.append(int(process.pid))
+            except (ProcessLookupError, psutil.NoSuchProcess):
+                continue
+            except (PermissionError, psutil.AccessDenied) as error:
+                raise PermissionError(
+                    "process group membership cannot be inspected"
+                ) from error
+        # Every remaining group member must carry the exact launch token. An
+        # unrelated process that merely reuses the numeric PGID cannot have it.
+        return bool(members) and all(
+            ProcessController._process_has_group_token(pid, token) for pid in members
+        )
+
     def terminate_tree(self, identity: ProcessIdentity, timeout: float = 5.0) -> None:
         try:
             root = self.inspect(identity)
         except ProcessLookupError:
-            # The launch leader can disappear before cleanup (for example when
-            # Linux OOM-kills the training process).  Because launch_process()
-            # gave the execution its own POSIX group, descendants can still be
-            # reaped precisely even after they have PPID=1.
-            self._terminate_posix_group(identity.pid, timeout)
+            # The launch leader can disappear (for example when Linux OOM-kills
+            # it) while descendants remain in the private launch group. Only
+            # reap that group if its current members were created at/after this
+            # execution; otherwise fail closed rather than kill an unrelated
+            # process group that merely reused the numeric id.
+            if self._posix_group_exists(identity.pid):
+                if not self._group_has_post_launch_members(
+                    identity.pid, identity.create_time, identity.group_token
+                ):
+                    raise PermissionError(
+                        "process group membership predates or cannot prove this execution"
+                    )
+                self._terminate_posix_group(
+                    identity.pid, timeout, ownership_token=identity.group_token
+                )
             return
         processes = self._tree(root)
         descendants = [process for process in processes if process.pid != root.pid]

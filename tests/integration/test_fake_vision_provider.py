@@ -180,10 +180,19 @@ def test_ollama_provider_sends_images_schema_and_non_streaming(fake_vision_serve
 
 
 def test_ollama_unreachable_error_is_actionable():
+    import requests
     from platform_core.providers.base import ProviderRequestError
     from platform_core.providers.ollama_vision import OllamaVisionProvider
 
-    provider = OllamaVisionProvider(base_url="http://127.0.0.1:1", model="local-vlm", timeout=0.2)
+    class OfflineTransport:
+        @staticmethod
+        def post(*_args, **_kwargs):
+            # A closed TCP port may time out rather than refuse on Windows.
+            # Keep this exact error-mapping assertion deterministic; the test
+            # above exercises the real local HTTP request and body contract.
+            raise requests.ConnectionError("isolated unavailable transport")
+    provider = OllamaVisionProvider(base_url="http://127.0.0.1:1", model="local-vlm", timeout=0.2,
+                                    session=OfflineTransport())
     with pytest.raises(ProviderRequestError) as captured:
         provider.annotate(image_bytes=b"image", prompt="prompt", output_schema=CANDIDATE_OUTPUT_SCHEMA)
     assert captured.value.code == "MODEL_SERVICE_UNREACHABLE"

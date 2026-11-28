@@ -1,5 +1,7 @@
 import hashlib
 import io
+import asyncio
+import threading
 from pathlib import Path
 
 from PIL import Image
@@ -9,6 +11,55 @@ def _png_bytes(index: int) -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (96, 72), (index % 255, 80, 160)).save(output, format="PNG")
     return output.getvalue()
+
+
+def test_plain_upload_image_decode_and_batch_commit_never_run_on_event_loop(client, monkeypatch):
+    import app as app_module
+
+    project_id = client.post(
+        "/api/projects", json={"name": "plain-upload-offloop", "labels": []}
+    ).json()["id"]
+    original_add = app_module.add_image_record
+    original_end = app_module._v50_end_image_batch
+    original_manifest = app_module._plain_upload_manifest_sync
+    worker_threads = []
+    manifest_threads = []
+
+    def assert_no_running_event_loop():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        raise AssertionError("synchronous image upload is blocking the ASGI event loop")
+
+    def checked_add(*args, **kwargs):
+        assert_no_running_event_loop()
+        worker_threads.append(threading.get_ident())
+        return original_add(*args, **kwargs)
+
+    def checked_commit(*args, **kwargs):
+        assert_no_running_event_loop()
+        worker_threads.append(threading.get_ident())
+        return original_end(*args, **kwargs)
+
+    def checked_manifest(*args, **kwargs):
+        assert_no_running_event_loop()
+        manifest_threads.append(threading.get_ident())
+        return original_manifest(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "add_image_record", checked_add)
+    monkeypatch.setattr(app_module, "_v50_end_image_batch", checked_commit)
+    monkeypatch.setattr(app_module, "_plain_upload_manifest_sync", checked_manifest)
+    response = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", (f"image-{i}.png", _png_bytes(i), "image/png")) for i in range(3)],
+        data={"upload_request_id": "offloop-manifest-and-commit"},
+    )
+    response.raise_for_status()
+    assert response.json()["uploaded_count"] == 3
+    assert len(worker_threads) == 4
+    assert len(set(worker_threads)) == 1
+    assert len(manifest_threads) == 1
 
 
 def test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch):
@@ -72,7 +123,9 @@ def test_plain_multi_image_upload_uses_batched_sqlite_truth(client, monkeypatch)
     materials = MaterialRepository(app_module.project_dir(project_id))
     rows = materials.read().rows
     assert len(rows) == 12
-    assert materials.current_revision() == 1
+    # One bounded Material identity batch plus one bounded, version-fenced
+    # Annotation projection batch; never one transaction per image.
+    assert materials.current_revision() == 2
     expected_hashes = {hashlib.sha256(payload).hexdigest() for payload in payloads}
     assert {row["content_sha256"] for row in rows} == expected_hashes
 
@@ -99,3 +152,57 @@ def test_plain_upload_keeps_per_file_failure_isolation(client):
     assert body["uploaded_count"] == 2
     assert body["failed_count"] == 1
     assert body["failed"][0]["name"] == "bad.txt"
+
+
+def test_plain_upload_request_id_replays_without_duplicate_materials(client):
+    import app as app_module
+    project_id = client.post("/api/projects", json={"name": "plain-upload-idempotent", "labels": []}).json()["id"]
+    request_id = "upload-replay-001"
+    payloads = [_png_bytes(21), _png_bytes(22)]
+    def send():
+        return client.post(
+            f"/api/projects/{project_id}/images",
+            files=[("files", (f"image-{index}.png", payload, "image/png")) for index, payload in enumerate(payloads)],
+            data={"dataset_id": "default", "storage_source_id": "default_local", "upload_request_id": request_id},
+        )
+    first = send(); first.raise_for_status(); first_body = first.json()
+    assert first_body["replayed"] is False
+    assert first_body["uploaded_count"] == 2
+    second = send(); second.raise_for_status(); second_body = second.json()
+    assert second_body["replayed"] is True
+    assert second_body["uploaded_image_ids"] == first_body["uploaded_image_ids"]
+    assert app_module.material_store(project_id).count() == 2
+    receipt = client.get(f"/api/v55/projects/{project_id}/upload-batches/{request_id}")
+    receipt.raise_for_status(); receipt_body = receipt.json()
+    assert receipt_body["upload_request_status"] == "SUCCEEDED"
+    assert [item["image"]["id"] for item in receipt_body["items"]] == first_body["uploaded_image_ids"]
+
+
+def test_plain_upload_request_id_rejects_manifest_reuse_and_preserves_partial_failure(client):
+    import app as app_module
+    project_id = client.post("/api/projects", json={"name": "plain-upload-manifest-fence", "labels": []}).json()["id"]
+    request_id = "upload-replay-002"
+    first = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("good.png", _png_bytes(31), "image/png")), ("files", ("bad.txt", b"not-an-image", "text/plain"))],
+        data={"dataset_id": "default", "upload_request_id": request_id},
+    )
+    first.raise_for_status(); body = first.json()
+    assert body["uploaded_count"] == 1
+    assert body["failed_count"] == 1
+    replay = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("good.png", _png_bytes(31), "image/png")), ("files", ("bad.txt", b"not-an-image", "text/plain"))],
+        data={"dataset_id": "default", "upload_request_id": request_id},
+    )
+    replay.raise_for_status()
+    assert replay.json()["failed"] == body["failed"]
+    assert app_module.material_store(project_id).count() == 1
+    conflict = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("different.png", _png_bytes(32), "image/png"))],
+        data={"dataset_id": "default", "upload_request_id": request_id},
+    )
+    assert conflict.status_code == 409
+    assert "已用于不同文件" in str(conflict.json().get("detail"))
+    assert app_module.material_store(project_id).count() == 1

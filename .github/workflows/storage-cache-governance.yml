@@ -1,29 +1,57 @@
 name: Storage Cache Governance
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - refactor/frontend-runtime-stabilization
+      - feature/external-algorithm-publishing
     paths:
       - 'platform_core/storage/**'
+      - platform_core/storage_source_*.py
+      - platform_core/u3_*.py
+      - platform_core/*picker*.py
+      - platform_core/training_material_usage.py
+      - platform_core/training_selection_reference.py
+      - platform_core/training_splits.py
+      - platform_core/annotation_repository.py
+      - platform_core/material_repository.py
+      - platform_core/negative_pool.py
+      - platform_core/training_material_business_read.py
+      - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
       - 'static/modules/storage.js'
       - 'static/modules/storage-cache-runtime.js'
       - 'static/index.html'
       - 'tests/unit/storage/**'
+      - 'tests/integration/test_storage_source_postgres.py'
+      - 'tests/integration/test_u3_*.py'
       - 'tests/frontend/storage-*.test.mjs'
       - '.github/workflows/storage-cache-governance.yml'
       - 'docs/STORAGE_CACHE_AND_OBJECT_IMMUTABILITY.md'
   pull_request:
     paths:
       - 'platform_core/storage/**'
+      - platform_core/storage_source_*.py
+      - platform_core/u3_*.py
+      - platform_core/*picker*.py
+      - platform_core/training_material_usage.py
+      - platform_core/training_selection_reference.py
+      - platform_core/training_splits.py
+      - platform_core/annotation_repository.py
+      - platform_core/material_repository.py
+      - platform_core/negative_pool.py
+      - platform_core/training_material_business_read.py
+      - platform_core/storage_configuration_*.py
       - 'platform_core/task_runtime/worker_instances.py'
       - 'task_worker.py'
       - 'static/modules/storage.js'
       - 'static/modules/storage-cache-runtime.js'
       - 'static/index.html'
       - 'tests/unit/storage/**'
+      - 'tests/integration/test_storage_source_postgres.py'
+      - 'tests/integration/test_u3_*.py'
       - 'tests/frontend/storage-*.test.mjs'
       - '.github/workflows/storage-cache-governance.yml'
       - 'docs/STORAGE_CACHE_AND_OBJECT_IMMUTABILITY.md'
@@ -46,20 +74,28 @@ jobs:
       - name: Install focused storage test dependencies
         run: |
           python -m pip install --upgrade pip
+          # psycopg[binary] is required by the storage-source provider unit
+          # contracts: the admission/cutover state machine checks the real
+          # psycopg transaction status enum (idle vs in-transaction), so the
+          # focused job must install the driver instead of skipping those tests.
           python -m pip install --disable-pip-version-check \
             fastapi uvicorn python-multipart pillow pyyaml requests \
             opencv-python-headless onnx onnxruntime onnxslim psutil \
-            keyring filelock boto3 oss2 pytest httpx
+            keyring filelock boto3 oss2 pytest httpx "psycopg[binary]"
 
       - name: Run storage cache and object-store unit guards
         run: >-
           python -m pytest -q
+          tests/unit/storage/test_lifecycle_summary.py
+          tests/unit/storage/test_source_http.py
+          tests/unit/storage/test_material_thumbnails.py
           tests/unit/storage/test_material_cache.py
           tests/unit/storage/test_material_cache_lifecycle.py
           tests/unit/storage/test_material_cache_runtime.py
           tests/unit/storage/test_optional_providers.py
           tests/unit/storage/test_object_store_immutability.py
           tests/unit/storage/test_source_repository.py
+          tests/unit/storage/test_storage_source_provider.py
 
       - name: Run storage frontend guards
         run: >-
@@ -103,7 +139,172 @@ jobs:
           grep -Fq 'overwrite_protected' platform_core/storage/s3.py
           grep -Fq 'test_s3_real_sdk_presign_uses_sigv4_and_signs_conditional_headers' tests/unit/storage/test_object_store_immutability.py
           grep -Fq 'test_oss_real_sdk_presign_accepts_conditional_signed_headers_without_network' tests/unit/storage/test_object_store_immutability.py
-          grep -Fq 'storage-cache-runtime.js?v=422527' static/index.html
+          grep -Fq 'storage-cache-runtime.js?v=20261024-layout' static/index.html
           grep -Fq '外部变更需重新扫描' static/modules/storage-cache-runtime.js
           grep -Fq 'Worker 节点素材缓存' static/modules/storage-cache-runtime.js
-          test "$(tr -d '\r\n' < VERSION.txt)" = '42.24.0'
+          python -m platform_core.build_identity --check-version-file VERSION.txt
+
+  # Real PostgreSQL contracts for the U2 storage-source provider and its fenced
+  # cutover. The focused unit job above deliberately has no server; this job is
+  # the only place where the storage-source migration is executed against a real
+  # PostgreSQL 16, and it fails outright if a contract is skipped.
+  storage-source-postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: changlian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MC_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/changlian_test
+      MC_REQUIRE_POSTGRES: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install U2 PostgreSQL contract dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # requests: importing platform_core.storage.source_repository executes
+          # platform_core/storage/__init__.py, which imports the remote provider
+          # (platform_core/storage/remote.py) that imports requests at module
+          # level. The OSS/S3 SDKs stay lazy, so only requests is needed here.
+          # Pillow/starlette/psutil/PyYAML: the P1 SQLite picker baseline reuses
+          # training_material_picker_api, whose module-level import chain pulls
+          # Pillow, starlette.requests, psutil (through task_runtime) and yaml
+          # (platform_core/training_tasks.py). FastAPI itself stays a lazy import
+          # inside the router factory.
+          python -m pip install --disable-pip-version-check \
+            pytest "psycopg[binary]" filelock requests Pillow starlette psutil PyYAML
+
+      - name: Prove the service container is the real server
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg
+
+          dsn = os.environ["MC_TEST_POSTGRES_DSN"]
+          with psycopg.connect(dsn) as connection:
+              with connection.cursor() as cursor:
+                  cursor.execute("SELECT version()")
+                  version = cursor.fetchone()[0]
+          print(version)
+          assert version.startswith("PostgreSQL 16"), version
+          PY
+
+      # --confcutdir keeps the repository-wide conftest (PIL + FastAPI + app.py)
+      # out of this focused environment: this contract owns its fixtures.
+      - name: U2 storage-source PostgreSQL contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=storage-source-postgres.xml \
+            tests/integration/test_storage_source_postgres.py
+
+      - name: U3 P0 shadow contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=u3-p0-postgres.xml \
+            tests/integration/test_u3_material_gt_postgres.py \
+            tests/integration/test_u3_schema_upgrade_postgres.py
+
+      - name: U3 P1 picker read provider contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=u3-p1-postgres.xml \
+            tests/integration/test_u3_picker_read_postgres.py
+
+      - name: U3 P2 business read contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=u3-p2-postgres.xml \
+            tests/integration/test_u3_picker_business_postgres.py
+
+      - name: U3 P3-B2/B3/B4 incremental and baseline contracts
+        run: |
+          python -m pytest -q -p no:cacheprovider -rs \
+            --confcutdir=tests/integration \
+            --junitxml=u3-p3-b2-postgres.xml \
+            tests/integration/test_u3_incremental_sync_postgres.py
+
+      - name: Refuse a run that skipped a U3 contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          # Each stage must prove its own execution: a combined count could hide a
+          # whole file that never ran (or ran entirely as skip).
+          stages = {
+              "u3-p0-postgres.xml": 50,   # P0 = 57 contracts
+              "u3-p1-postgres.xml": 20,   # P1 = 41 contracts
+              "u3-p2-postgres.xml": 7,    # P2 = 7 business contracts
+              "u3-p3-b2-postgres.xml": 12, # B2/B3/B4 incremental contracts
+          }
+          for name, minimum in stages.items():
+              report = Path(name)
+              if not report.is_file():
+                  raise SystemExit(f"no JUnit report for {name}: the stage did not run")
+              root = ET.parse(report).getroot()
+              suites = root.findall("testsuite") if root.tag == "testsuites" else [root]
+              tests = sum(int(suite.get("tests") or 0) for suite in suites)
+              skipped = sum(int(suite.get("skipped") or 0) for suite in suites)
+              failures = sum(
+                  int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
+                  for suite in suites
+              )
+              print(f"{name}: suites={len(suites)} tests={tests} "
+                    f"skipped={skipped} failures={failures}")
+              if skipped or failures or tests < minimum:
+                  raise SystemExit(f"{name}: a contract was skipped, failed or missing")
+          PY
+
+      - name: Refuse a run that skipped a PostgreSQL contract
+        if: always()
+        run: |
+          python - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path("storage-source-postgres.xml")
+          if not report.is_file():
+              raise SystemExit("no JUnit report: the PostgreSQL contracts did not run")
+          root = ET.parse(report).getroot()
+          suite = root.find("testsuite") if root.tag == "testsuites" else root
+          tests = int(suite.get("tests") or 0)
+          skipped = int(suite.get("skipped") or 0)
+          failures = int(suite.get("failures") or 0) + int(suite.get("errors") or 0)
+          print(f"tests={tests} skipped={skipped} failures={failures}")
+          if skipped or failures:
+              raise SystemExit("a PostgreSQL storage-source contract was skipped or failed")
+          # 10 provider/migration contracts + 3 real SIGKILL recovery contracts +
+          # 5 reverse-cutover/abort contracts.
+          if tests < 18:
+              raise SystemExit(f"expected the full U2 contract set, ran {tests}")
+          PY
+
+      - name: Upload the U2 PostgreSQL contract report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: storage-source-postgres-report
+          path: storage-source-postgres.xml
+          if-no-files-found: warn

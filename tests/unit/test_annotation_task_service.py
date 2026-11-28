@@ -1,11 +1,39 @@
 from dataclasses import replace
 from pathlib import Path
+import sys
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from platform_core.annotation_candidates import CandidateDecision, CandidateStore
-from platform_core.annotation_task_service import _public_error, commit_candidate_decisions, run_ai_annotation
+from platform_core.annotation_task_service import (
+    _prepare_runtime_request,
+    _public_error,
+    _canonical_review_scope,
+    commit_candidate_decisions,
+    load_task_images,
+    run_ai_annotation,
+)
 from platform_core.task_runtime import ArtifactStore, ExecutionFencedError, TaskKind, TaskRecord, TaskStatus
+
+
+def _seed_verified_candidates(store, items):
+    """Direct unit commits use synthetic but explicit source-byte evidence."""
+    store.append_items([
+        {**dict(item), "source_content_sha256": dict(item).get(
+            "source_content_sha256", "a" * 64,
+        )}
+        for item in items
+    ])
+
+
+@pytest.fixture(autouse=True)
+def _unit_candidate_materials(monkeypatch):
+    # Unit tests isolate the formal writer from the app's MaterialRepository.
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_candidate_material_hashes",
+        lambda _project, ids: {str(image_id): "a" * 64 for image_id in ids},
+    )
 
 
 class FakeRepository:
@@ -92,7 +120,38 @@ def test_worker_enters_review_with_partial_generation_summary(tmp_path, monkeypa
     assert context.load_checkpoint()["next_index"] == 2
     assert context.load_checkpoint()["source"] == "candidate_store"
     assert CandidateStore(context.artifacts, task_id="ai-1").summary()["failed"] == 1
-    assert context.repository.heartbeats[-1][2] == 100
+    assert context.repository.heartbeats[-1][2] == 70
+
+
+@pytest.mark.parametrize("mode,success,empty,failed,status", [
+    ("all_valid", 2, 0, 0, TaskStatus.AWAITING_CONFIRMATION),
+    ("one_empty", 1, 1, 0, TaskStatus.AWAITING_CONFIRMATION),
+    ("partial_failed", 1, 0, 1, TaskStatus.AWAITING_CONFIRMATION),
+    ("all_failed", 0, 0, 2, TaskStatus.FAILED),
+])
+def test_worker_batch_result_statistics_and_failure_codes(tmp_path, monkeypatch, mode, success, empty, failed, status):
+    from platform_core.providers.base import ProviderRequestError
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+
+    def infer(_request, image):
+        if mode == "all_failed" or (mode == "partial_failed" and image["id"] == "two"):
+            raise ProviderRequestError("invalid label", code="MODEL_LABEL_NOT_ALLOWED")
+        return {"boxes": [] if mode == "one_empty" and image["id"] == "two" else [{"label": "fire"}]}
+
+    outcome = run_ai_annotation(context, annotate=infer)
+    summary = CandidateStore(context.artifacts, task_id="ai-1").summary()
+    assert (summary["total"], summary["success"], summary["empty"], summary["failed"]) == (2, success, empty, failed)
+    assert outcome.status == status
+    generation = context.artifacts.read_json("ai-1", "generation.json")
+    if failed:
+        assert generation["failure_codes"] == [{"code": "MODEL_LABEL_NOT_ALLOWED", "count": failed}]
+        assert all(CandidateStore(context.artifacts, task_id="ai-1").get(id)["error_code"] == "MODEL_LABEL_NOT_ALLOWED"
+                   for id in (("one", "two") if mode == "all_failed" else ("two",)))
+    else:
+        assert generation["failure_codes"] == []
+    if mode == "all_failed":
+        assert "MODEL_LABEL_NOT_ALLOWED" in outcome.error
 
 
 def test_worker_stops_at_cancel_boundary_without_processing_more_images(tmp_path, monkeypatch):
@@ -109,6 +168,43 @@ def test_worker_stops_at_cancel_boundary_without_processing_more_images(tmp_path
 
     outcome = run_ai_annotation(context, annotate=must_not_run)
     assert outcome.status is TaskStatus.CANCELLED
+
+
+def test_strict_supplement_worker_refuses_changed_source_before_model_inference(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    context.artifacts.atomic_write_json("ai-1", "request.json", {
+        "image_ids": ["one"], "labels": ["fire"], "threshold": 0.45,
+        "review_scope_policy": "per_image_required",
+        "per_image_missing_review_scopes": {"one": ["fire"]},
+        "per_image_annotation_versions": {"one": 1},
+        "per_image_source_hashes": {"one": "a" * 64},
+    })
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [{
+        "id": "one", "source_content_sha256": "b" * 64,
+    }])
+    with pytest.raises(ValueError, match="MATERIAL_CHANGED"):
+        run_ai_annotation(context, annotate=lambda *_: pytest.fail("stale source reached model"))
+    assert not context.artifacts.artifact_path("ai-1", "candidates/manifest.json").exists()
+
+
+def test_strict_supplement_worker_persists_only_this_images_frozen_display_scope(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    context.artifacts.atomic_write_json("ai-1", "request.json", {
+        "image_ids": ["one"], "labels": ["fire", "smoke"], "threshold": 0.45,
+        "review_scope_policy": "per_image_required",
+        "per_image_missing_review_scopes": {"one": ["smoke"]},
+        "per_image_annotation_versions": {"one": 3},
+        "per_image_source_hashes": {"one": "a" * 64},
+    })
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [{
+        "id": "one", "filename": "one.jpg", "source_content_sha256": "a" * 64,
+    }])
+    result = run_ai_annotation(context, annotate=lambda *_: {"boxes": []})
+    assert result.status is TaskStatus.AWAITING_CONFIRMATION
+    candidate = CandidateStore(context.artifacts, task_id="ai-1").get("one")
+    assert candidate["missing_review_scope"] == ["smoke"]
+    assert candidate["review_scope_policy"] == "per_image_required"
+    assert candidate["accepted"] is None
 
 
 def test_candidate_store_ahead_of_checkpoint_skips_completed_provider_call_on_recovery(tmp_path, monkeypatch):
@@ -141,6 +237,179 @@ def test_candidate_store_ahead_of_checkpoint_skips_completed_provider_call_on_re
     assert calls == ["one", "two"]
     assert context.load_checkpoint()["next_index"] == 2
     assert store.summary()["total"] == 2
+
+
+def test_explicit_retry_reprocesses_only_failed_rows_and_preserves_successful_candidates(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+    calls = []
+
+    def first(_request, image):
+        calls.append(image["id"])
+        if image["id"] == "two":
+            raise RuntimeError("single image failed")
+        return {"boxes": [{"label": "fire", "id": "kept-box"}]}
+
+    assert run_ai_annotation(context, annotate=first).status is TaskStatus.AWAITING_CONFIRMATION
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    original = store.get("one")
+    assert [store.get(id)["status"] for id in ("one", "two")] == ["success", "failed"]
+
+    context.task = replace(context.task, attempt=2)
+    context.repository.task = context.task
+    assert run_ai_annotation(context, annotate=lambda _req, image: (
+        calls.append(image["id"]) or {"boxes": []}
+    )).status is TaskStatus.AWAITING_CONFIRMATION
+    assert calls == ["one", "two", "two"]
+    assert store.get("one") == original
+    assert store.get("two")["status"] == "empty"
+    assert store.get("two")["error_history"][0]["error"] == "single image failed"
+    assert store.statistics()["failed"] == 0
+    assert store.statistics()["gt_committed"] == 0
+
+
+def test_wevisone_failed_image_keeps_real_label_shape_and_internal_trace_across_retry(tmp_path, monkeypatch):
+    from platform_core.providers.base import ProviderRequestError
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+
+    def fail_one(_req, image):
+        if image["id"] == "one":
+            return {"boxes": [{"label": "fire", "id": "preserved-box"}]}
+        error = ProviderRequestError("WeVisOne 返回了本次任务范围外的标签", code="MODEL_LABEL_NOT_ALLOWED", status_code=200)
+        error.stage = "response_parse"
+        error.diagnostics = {"provider": "wevisone_vl", "model": "wevisone-vl-2b",
+                             "returned_label": "standing human", "allowed_labels": ["fire"],
+                             "configured_queries": {"fire": "A visible flame"},
+                             "label_match_status": "not_allowed", "parser_source": "structured_boxes",
+                             "zero_box": False, "response_summary": {"structured_box_count": 1},
+                             "backend_instance_id": "gpu0"}
+        raise error
+
+    assert run_ai_annotation(context, annotate=fail_one).status is TaskStatus.AWAITING_CONFIRMATION
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    good_before = store.get("one")
+    bad = store.get("two")
+    assert bad["http_status"] == 200 and bad["request_id"] == ""
+    assert len(bad["request_trace_id"]) == 32 and bad["returned_label"] == "standing human"
+    assert bad["allowed_labels"] == ["fire"] and bad["response_summary"] == {"structured_box_count": 1}
+    assert bad["backend_instance_id"] == "gpu0"
+    assert bad["diagnostics"]["execution"]["platform_request_id"] == bad["request_trace_id"]
+
+    context.task = replace(context.task, attempt=2)
+    context.repository.task = context.task
+    assert run_ai_annotation(context, annotate=lambda _req, _image: {"boxes": []}).status is TaskStatus.AWAITING_CONFIRMATION
+    assert store.get("one") == good_before
+    after = store.get("two")
+    assert after["status"] == "empty" and after["attempt_count"] == 2
+    assert after["error_history"][0]["returned_label"] == "standing human"
+    assert after["error_history"][0]["request_trace_id"] == bad["request_trace_id"]
+
+
+def test_second_failed_retry_retains_both_error_codes_and_never_replays_success(tmp_path, monkeypatch):
+    from platform_core.providers.base import ProviderRequestError
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+    calls = []
+    def first(_req, image):
+        calls.append(image["id"])
+        if image["id"] == "two":
+            raise ProviderRequestError("unmapped", code="MODEL_LABEL_NOT_ALLOWED", status_code=200)
+        return {"boxes": [{"label": "fire"}]}
+    run_ai_annotation(context, annotate=first)
+    context.task = replace(context.task, attempt=2)
+    context.repository.task = context.task
+    def retry(_req, image):
+        calls.append("retry:" + image["id"])
+        raise ProviderRequestError("broken geometry", code="MODEL_COORDINATE_INVALID", status_code=200)
+    run_ai_annotation(context, annotate=retry)
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    assert calls == ["one", "two", "retry:two"]
+    failed = store.get("two")
+    assert failed["status"] == "failed" and failed["attempt_count"] == 2
+    assert failed["error_code"] == "MODEL_COORDINATE_INVALID"
+    assert [row["error_code"] for row in failed["error_history"]] == ["MODEL_LABEL_NOT_ALLOWED"]
+    assert store.get("one")["status"] == "success"
+
+
+def test_service_outage_stops_batch_without_discarding_completed_candidate(tmp_path, monkeypatch):
+    from platform_core.providers.base import ProviderRequestError
+
+    context = FakeContext(tmp_path)
+    ids = [f"image-{index}" for index in range(100)]
+    context.artifacts.atomic_write_json("ai-1", "request.json", {"image_ids": ids, "labels": ["fire"]})
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [
+        {"id": image_id, "source_content_sha256": "a" * 64} for image_id in ids
+    ])
+    calls = []
+
+    def failing(_request, image):
+        calls.append(image["id"])
+        if image["id"] != ids[0]:
+            raise ProviderRequestError("connection refused", code="MODEL_SERVICE_UNREACHABLE")
+        return {"boxes": [{"label": "fire"}]}
+
+    outcome = run_ai_annotation(context, annotate=failing)
+    assert outcome.status is TaskStatus.AWAITING_CONFIRMATION
+    assert len(calls) == 4  # one saved success, three consecutive service errors
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    assert store.summary()["total"] == 4
+    assert store.get(ids[0])["status"] == "success"
+    assert context.artifacts.read_json("ai-1", "generation.json")["remaining"] == 96
+    assert context.artifacts.read_json("ai-1", "generation.json")["stopped_reason"] == "MODEL_SERVICE_UNREACHABLE"
+
+
+def test_model_not_loaded_pauses_after_one_failed_image_with_no_reviewable_results(tmp_path, monkeypatch):
+    from platform_core.providers.base import ProviderRequestError
+
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+    calls = []
+
+    def unavailable(_request, image):
+        calls.append(image["id"])
+        raise ProviderRequestError("model loading", code="MODEL_NOT_LOADED")
+
+    result = run_ai_annotation(context, annotate=unavailable)
+    assert result.status is TaskStatus.BLOCKED_BY_ENVIRONMENT
+    assert calls == ["one"]
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    assert store.summary()["failed"] == 1
+    assert store.summary()["total"] == 1
+    assert store.get("two") is None
+
+
+def test_cancellation_mid_task_preserves_first_completed_image_without_saving_late_result(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+
+    def annotate(_request, image):
+        if image["id"] == "two":
+            context._cancelled = True
+        return {"boxes": [{"label": "fire", "id": image["id"]}]}
+
+    outcome = run_ai_annotation(context, annotate=annotate)
+    assert outcome.status is TaskStatus.CANCELLED
+    store = CandidateStore(context.artifacts, task_id="ai-1")
+    assert store.get("one")["status"] == "success"
+    assert store.get("two") is None
+    assert store.statistics()["total"] == 1
+    assert store.statistics()["gt_committed"] == 0
+
+
+def test_retry_refuses_changed_source_instead_of_reusing_previous_geometry(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    _install_two_images(context, monkeypatch)
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [
+        {"id": id, "source_content_sha256": "a" * 64} for id in ("one", "two")
+    ])
+    run_ai_annotation(context, annotate=lambda *_: {"boxes": []})
+    context.task = replace(context.task, attempt=2)
+    monkeypatch.setattr("platform_core.annotation_task_service.load_task_images", lambda *_: [
+        {"id": id, "source_content_sha256": "b" * 64} for id in ("one", "two")
+    ])
+    with pytest.raises(ValueError, match="AI_ANNOTATION_SOURCE_CHANGED"):
+        run_ai_annotation(context, annotate=lambda *_: pytest.fail("changed material reached inference"))
 
 
 def test_provider_result_cannot_commit_after_execution_is_fenced(tmp_path, monkeypatch):
@@ -190,7 +459,7 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     artifacts = ArtifactStore(tmp_path)
     store = CandidateStore(artifacts, task_id="commit-1", page_size=50)
     store.initialize(labels=["fire"], total_images=1)
-    store.append_items([{
+    _seed_verified_candidates(store, [{
         "image_id": "image-1", "status": "success",
         "boxes": [{"id": "candidate-1", "class_id": 0, "label": "fire",
                    "x1": 1, "y1": 1, "x2": 20, "y2": 20}],
@@ -198,20 +467,488 @@ def test_commit_replay_does_not_duplicate_candidate_boxes(tmp_path, monkeypatch)
     store.apply_decisions([CandidateDecision(image_id="image-1", accepted=True)])
     written = []
     monkeypatch.setattr(
-        "platform_core.annotation_task_service.read_formal_annotation",
-        lambda _project, _image: {"boxes": list(written)},
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, image_ids: {
+            str(image_id): {"boxes": list(written)} for image_id in image_ids
+        },
     )
+    def write_many(_project, rows):
+        rows = list(rows)
+        assert len(rows) == 1
+        written[:] = list(rows[0].get("boxes") or [])
+        return [{**rows[0], "version": 7, "content_digest": "a" * 64}]
     monkeypatch.setattr(
-        "platform_core.annotation_task_service.write_formal_annotation",
-        lambda _project, _image, boxes: written.__setitem__(slice(None), boxes),
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
     )
     first = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
     second = commit_candidate_decisions("project-1", "commit-1", store, overwrite=False)
     assert first["boxes_added"] == 1
-    assert first["image_summaries"] == [{"image_id": "image-1", "box_count": 1, "labels": ["fire"]}]
+    assert first["image_summaries"] == [{
+        "image_id": "image-1", "box_count": 1, "labels": ["fire"],
+        "annotation_state": "annotated", "annotation_origin": "ai_confirmed",
+    }]
     assert second["boxes_added"] == 0
     assert [box["candidate_id"] for box in written] == ["candidate-1"]
     assert written[0]["source_task_id"] == "commit-1"
+    journal = store.get_commit_summaries(["image-1"])["image-1"]
+    assert journal["gt_write_performed"] is True
+    assert journal["gt_snapshot_version"] == 7
+    assert journal["gt_snapshot_digest"] == "a" * 64
+
+
+
+def test_ai_review_commit_preserves_bounded_annotation_scope(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-scope", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "image-1",
+        "status": "empty",
+        "boxes": [],
+    }])
+    store.apply_decisions([
+        CandidateDecision(image_id="image-1", accepted=True),
+    ])
+
+    captured = []
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, image_ids: {
+            str(image_id): {
+                "version": 3,
+                "boxes": [],
+                "annotation_scope": ["smoke"],
+            }
+            for image_id in image_ids
+        },
+    )
+
+    def write_many(_project, rows):
+        captured.extend(dict(row) for row in rows)
+        return rows
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1",
+        "commit-scope",
+        store,
+        overwrite=False,
+        review_scope=["fire"],
+    )
+
+    assert result["boxes_added"] == 0
+    assert len(captured) == 1
+    assert captured[0]["annotation_state"] == "confirmed_empty"
+    assert captured[0]["annotation_scope"] == ["fire", "smoke"]
+    assert captured[0]["expected_version"] == 3
+
+
+@pytest.mark.parametrize("old_scope,expected_writes", [
+    (["smoke"], 1),
+    (["fire", "smoke"], 0),
+])
+def test_ai_review_empty_candidate_updates_existing_positive_gt_scope_only_when_needed(
+    tmp_path, monkeypatch, old_scope, expected_writes,
+):
+    """Accepted empty AI review must not silently lose newly reviewed labels.
+
+    A historical positive GT already has boxes; no new AI boxes are needed to
+    certify a *human-reviewed* missing category. Existing boxes stay untouched.
+    """
+    task_id = "positive-scope-" + str(expected_writes)
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "existing-positive", "status": "empty", "boxes": [],
+    }])
+    store.apply_decisions([CandidateDecision(image_id="existing-positive", accepted=True)])
+    original_boxes = [{
+        "id": "old-smoke", "label": "smoke", "class_id": 1,
+        "x1": 1, "y1": 2, "x2": 10, "y2": 12, "source": "manual",
+    }]
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"existing-positive": {
+            "version": 8, "boxes": original_boxes,
+            "annotation_scope": old_scope, "annotation_state": "annotated",
+        }},
+    )
+    writes = []
+    def capture(_project, rows):
+        writes.extend(rows)
+        return [{**row, "version": 9, "content_digest": "b" * 64} for row in rows]
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations", capture,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1", task_id, store, overwrite=False, review_scope=["fire"],
+    )
+
+    assert result["boxes_added"] == 0
+    assert len(writes) == expected_writes
+    if writes:
+        assert writes[0]["boxes"] == original_boxes
+        assert writes[0]["annotation_state"] == "annotated"
+        assert writes[0]["annotation_scope"] == ["fire", "smoke"]
+        assert writes[0]["expected_version"] == 8
+    journal = store.get_commit_summaries(["existing-positive"])["existing-positive"]
+    assert journal["gt_write_performed"] is bool(expected_writes)
+
+
+def test_per_image_supplemental_review_does_not_certify_other_images_labels(tmp_path, monkeypatch):
+    task_id = "exact-per-image-review"
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["fire", "smoke"], total_images=2)
+    _seed_verified_candidates(store, [
+        {"image_id": "needs-fire", "status": "empty", "boxes": []},
+        {"image_id": "needs-smoke", "status": "empty", "boxes": []},
+    ])
+    store.apply_decisions([
+        CandidateDecision("needs-fire", True, review_scope=["fire"]),
+        CandidateDecision("needs-smoke", True, review_scope=["smoke"]),
+    ])
+    original = [{"id": "human", "label": "person", "source": "manual"}]
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, ids: {image_id: {
+            "version": 4, "boxes": original, "annotation_scope": ["person"],
+        } for image_id in ids},
+    )
+    written = []
+    def capture(_project, rows):
+        written.extend(rows)
+        return [{**row, "version": 5, "content_digest": "d" * 64} for row in rows]
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations", capture)
+
+    result = commit_candidate_decisions(
+        "project-1", task_id, store, overwrite=False, review_scope=["fire", "smoke"],
+        require_per_image_scope=True,
+    )
+    assert result["applied_images"] == 2
+    assert {row["image_id"]: row["annotation_scope"] for row in written} == {
+        "needs-fire": ["fire", "person"], "needs-smoke": ["person", "smoke"],
+    }
+    assert all(row["boxes"] == original and row["expected_version"] == 4 for row in written)
+    journal = store.get_commit_summaries(["needs-fire", "needs-smoke"])
+    assert journal["needs-fire"]["review_scope"] == ["fire"]
+    assert journal["needs-smoke"]["review_scope"] == ["smoke"]
+    assert all(row["review_scope_source"] == "explicit_per_image" for row in journal.values())
+
+
+def test_supplemental_review_commit_rejects_gt_changed_after_creation(tmp_path, monkeypatch):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="supplement-stale-gt")
+    store.initialize(labels=["fire", "smoke"], total_images=1)
+    _seed_verified_candidates(store, [{"image_id": "one", "status": "empty", "boxes": []}])
+    store.apply_decisions([CandidateDecision("one", True, review_scope=["smoke"])])
+    monkeypatch.setattr("platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"one": {
+            "version": 5, "annotation_scope": ["fire"],
+            "boxes": [{"label": "fire", "source": "manual"}],
+        }})
+    writes = []
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: writes.extend(rows) or rows)
+    with pytest.raises(ValueError, match="GT_CHANGED"):
+        commit_candidate_decisions(
+            "project-1", "supplement-stale-gt", store, overwrite=False,
+            review_scope=["fire", "smoke"], require_per_image_scope=True,
+            frozen_missing_review_scopes={"one": ["smoke"]},
+            frozen_annotation_versions={"one": 4},
+        )
+    assert writes == []
+    assert store.get_commit_summaries(["one"]) == {}
+
+
+def test_supplemental_commit_refuses_unavailable_source_even_when_hash_unchanged(tmp_path, monkeypatch):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="supplement-deleted-material")
+    store.initialize(labels=["smoke"], total_images=1)
+    _seed_verified_candidates(store, [{"image_id": "one", "status": "empty", "boxes": []}])
+    store.apply_decisions([CandidateDecision("one", True, review_scope=["smoke"])])
+    # The recovery CI intentionally omits FastAPI. This unit only needs the
+    # late-bound material repository, not the application HTTP module.
+    fake_app = ModuleType("app")
+    fake_app.material_store = lambda _project: type("Materials", (), {
+        "get_many": lambda self, ids: [
+            {"id": image_id, "content_sha256": "a" * 64, "source_available": False}
+            for image_id in ids
+        ],
+    })()
+    monkeypatch.setitem(sys.modules, "app", fake_app)
+    writes = []
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: writes.extend(rows) or rows)
+    with pytest.raises(ValueError, match="MATERIAL_CHANGED"):
+        commit_candidate_decisions(
+            "project-1", "supplement-deleted-material", store, overwrite=False,
+            review_scope=["smoke"], require_per_image_scope=True,
+            frozen_missing_review_scopes={"one": ["smoke"]},
+            frozen_annotation_versions={"one": 0},
+            frozen_material_hashes={"one": "a" * 64},
+        )
+    assert writes == []
+
+
+@pytest.mark.parametrize("scope", [None, ["person"], ["fire", "smoke"]])
+def test_strict_per_image_review_requires_explicit_subset_before_gt_write(tmp_path, monkeypatch, scope):
+    store = CandidateStore(ArtifactStore(tmp_path), task_id="scope-refusal")
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{"image_id": "image", "status": "empty", "boxes": []}])
+    store.apply_decisions([CandidateDecision("image", True, review_scope=scope)])
+    writes = []
+    monkeypatch.setattr("platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"image": {"version": 1, "boxes": [], "annotation_scope": []}})
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: writes.extend(rows) or rows)
+    with pytest.raises(ValueError, match="review scope"):
+        commit_candidate_decisions("project-1", "scope-refusal", store, overwrite=False,
+            review_scope=["fire"], require_per_image_scope=True)
+    assert writes == []
+
+
+def test_per_image_overwrite_can_only_replace_the_one_explicitly_reviewed_label(tmp_path, monkeypatch):
+    task_id = "per-image-overwrite"
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["fire", "smoke"], total_images=1)
+    _seed_verified_candidates(store, [{"image_id": "sample", "status": "empty", "boxes": []}])
+    store.apply_decisions([CandidateDecision("sample", True, review_scope=["fire"])])
+    other = {"id": "smoke-original", "label": "smoke", "source": "manual"}
+    monkeypatch.setattr("platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"sample": {"version": 6, "boxes": [
+            {"id": "fire-original", "label": "fire", "source": "manual"}, other,
+        ], "annotation_scope": ["fire", "smoke"]}})
+    written = []
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: written.extend(rows) or rows)
+    commit_candidate_decisions("project-1", task_id, store, overwrite=True,
+        review_scope=["fire", "smoke"], require_per_image_scope=True)
+    assert len(written) == 1
+    assert written[0]["boxes"] == [other]
+    assert written[0]["expected_version"] == 6
+
+
+def test_per_image_review_refuses_candidate_boxes_outside_attested_scope(tmp_path, monkeypatch):
+    task_id = "per-image-unreviewed-box"
+    store = CandidateStore(ArtifactStore(tmp_path), task_id=task_id)
+    store.initialize(labels=["fire", "smoke"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "one", "status": "success", "boxes": [
+            {"id": "ai-smoke", "label": "smoke", "class_id": 1},
+        ],
+    }])
+    store.apply_decisions([CandidateDecision("one", True, review_scope=["fire"])])
+    monkeypatch.setattr("platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _ids: {"one": {"version": 2, "boxes": [], "annotation_scope": []}})
+    writes = []
+    monkeypatch.setattr("platform_core.annotation_task_service.write_formal_annotations",
+        lambda _project, rows: writes.extend(rows) or rows)
+    with pytest.raises(ValueError, match="outside.*review scope"):
+        commit_candidate_decisions("project-1", task_id, store, overwrite=False,
+            review_scope=["fire", "smoke"], require_per_image_scope=True)
+    assert writes == []
+
+
+def test_ai_review_overwrite_replaces_review_scope_even_when_final_class_is_empty(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-overwrite-empty", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "image-1",
+        "status": "empty",
+        "boxes": [],
+    }])
+    store.apply_decisions([
+        CandidateDecision(image_id="image-1", accepted=True),
+    ])
+
+    captured = []
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, _image_ids: {
+            "image-1": {
+                "version": 7,
+                "annotation_scope": ["fire", "smoke"],
+                "boxes": [
+                    {
+                        "id": "old-fire",
+                        "class_id": 0,
+                        "label": "fire",
+                        "x1": 1,
+                        "y1": 1,
+                        "x2": 20,
+                        "y2": 20,
+                        "source": "manual",
+                    },
+                    {
+                        "id": "old-smoke",
+                        "class_id": 1,
+                        "label": "smoke",
+                        "x1": 30,
+                        "y1": 30,
+                        "x2": 60,
+                        "y2": 60,
+                        "source": "manual",
+                    },
+                ],
+            }
+        },
+    )
+
+    def write_many(_project, rows):
+        captured.extend(dict(row) for row in rows)
+        return rows
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1",
+        "commit-overwrite-empty",
+        store,
+        overwrite=True,
+        review_scope=["fire"],
+    )
+
+    assert result["boxes_added"] == 0
+    assert len(captured) == 1
+    assert captured[0]["expected_version"] == 7
+    assert captured[0]["annotation_state"] == "annotated"
+    assert captured[0]["annotation_scope"] == ["fire", "smoke"]
+    assert [box["label"] for box in captured[0]["boxes"]] == ["smoke"]
+
+
+def test_ai_review_scope_is_canonicalized_and_fail_closed():
+    assert _canonical_review_scope(
+        ["old-fire", "smoke", "old-fire"],
+        {"old-fire": "fire"},
+        {"fire": 4, "smoke": 7},
+    ) == ["fire", "smoke"]
+
+    with pytest.raises(ValueError, match="scope label is unavailable"):
+        _canonical_review_scope(
+            ["retired-label"],
+            {},
+            {"fire": 4},
+        )
+
+
+def test_cancel_arriving_after_formal_write_cannot_split_commit_journal(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-cancel-boundary", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "image-1",
+        "status": "success",
+        "boxes": [{
+            "id": "candidate-1", "class_id": 0, "label": "fire",
+            "x1": 1, "y1": 1, "x2": 20, "y2": 20,
+        }],
+    }])
+    store.apply_decisions([CandidateDecision(image_id="image-1", accepted=True)])
+
+    cancelled = False
+    formal = {}
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, image_ids: {
+            str(image_id): {"boxes": list(formal.get(str(image_id), []))}
+            for image_id in image_ids
+        },
+    )
+
+    def write_many(_project, rows):
+        nonlocal cancelled
+        rows = [dict(row) for row in rows]
+        for row in rows:
+            formal[str(row["image_id"])] = list(row.get("boxes") or [])
+        # Simulate a user cancellation racing immediately after the formal GT
+        # transaction commits but before CandidateStore journaling starts.
+        cancelled = True
+        return rows
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1",
+        "commit-cancel-boundary",
+        store,
+        overwrite=False,
+        cancelled=lambda: cancelled,
+    )
+
+    assert result["boxes_added"] == 1
+    assert store.get_commit_summaries(["image-1"])["image-1"]["box_count"] == 1
+    assert formal["image-1"][0]["source_task_id"] == "commit-cancel-boundary"
+
+
+def test_commit_candidate_decisions_carries_formal_version_cas(tmp_path, monkeypatch):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="commit-cas", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "image-1",
+        "status": "success",
+        "boxes": [{
+            "id": "candidate-1", "class_id": 0, "label": "fire",
+            "x1": 1, "y1": 1, "x2": 20, "y2": 20,
+        }],
+    }])
+    store.apply_decisions([CandidateDecision(image_id="image-1", accepted=True)])
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations",
+        lambda _project, image_ids: {
+            str(image_id): {"version": 7, "boxes": []} for image_id in image_ids
+        },
+    )
+
+    def write_many(_project, rows):
+        rows = [dict(row) for row in rows]
+        assert rows[0]["expected_version"] == 7
+        assert rows[0]["source_content_sha256"] == "a" * 64
+        return rows
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        write_many,
+    )
+
+    result = commit_candidate_decisions(
+        "project-1", "commit-cas", store, overwrite=False,
+    )
+    assert result["boxes_added"] == 1
+
+def test_candidate_label_revalidation_is_fail_closed_even_without_explicit_mapping(tmp_path):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="catalog-revalidate", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "image-1",
+        "status": "success",
+        "boxes": [{"id": "box-1", "class_id": 0, "label": "fire",
+                   "x1": 1, "y1": 1, "x2": 20, "y2": 20}],
+    }])
+
+    # An unchanged label name may receive a different project class_id after
+    # catalog maintenance. Review commit must repair the canonical identity.
+    store.remap_labels({}, {"fire": 4})
+    assert store.get("image-1")["boxes"][0]["class_id"] == 4
+
+    # If the previously confirmed label is no longer active, do not silently
+    # write stale candidate truth into AnnotationRepository.
+    with pytest.raises(ValueError, match="candidate label is unavailable"):
+        store.remap_labels({}, {"smoke": 1})
 
 
 def test_public_worker_error_redacts_common_secret_shapes():
@@ -221,3 +958,275 @@ def test_public_worker_error_redacts_common_secret_shapes():
     assert "very-secret" not in public
     assert "sk-12345678901234567890" not in public
     assert "[REDACTED]" in public
+
+
+@pytest.mark.parametrize("image_count", [1_000, 10_000, 20_000, 21_163])
+def test_load_task_images_uses_bounded_indexed_material_lookup(tmp_path, monkeypatch, image_count):
+    image_ids = [f"image-{index:05d}" for index in range(image_count)]
+
+    class FakeMaterials:
+        def __init__(self):
+            self.calls = []
+
+        def get_many(self, ids):
+            batch = list(ids)
+            self.calls.append(batch)
+            assert len(batch) <= 500
+            return [
+                {"id": image_id, "filename": f"{image_id}.jpg", "width": 64, "height": 64}
+                for image_id in batch
+            ]
+
+    class FakeManager:
+        def materialize(self, row):
+            return SimpleNamespace(path=tmp_path / f"{row['id']}.jpg")
+
+    materials = FakeMaterials()
+    fake_app = ModuleType("app")
+    fake_app.material_store = lambda _project_id: materials
+    fake_app.storage_manager = lambda _project_id: FakeManager()
+    fake_app.load_images = (
+        lambda *_args, **_kwargs: pytest.fail(
+            "AI task image resolution must not scan the whole material library"
+        )
+    )
+    # The focused worker contract deliberately does not install FastAPI. Inject
+    # only the late-bound app dependencies used while executing a claimed task,
+    # so worker recovery tests stay independent from the web application stack.
+    monkeypatch.setitem(sys.modules, "app", fake_app)
+
+    rows = load_task_images("project-1", image_ids)
+
+    assert len(materials.calls) == (image_count + 499) // 500
+    assert sum(len(batch) for batch in materials.calls) == image_count
+    assert all(1 <= len(batch) <= 500 for batch in materials.calls)
+    assert [row["id"] for row in rows] == image_ids
+    assert all(str(row["path"]).endswith(f"{row['id']}.jpg") for row in rows)
+
+
+@pytest.mark.parametrize("total", [1_000, 10_000, 20_000, 21_163])
+def test_commit_candidate_decisions_batches_formal_and_journal_io(tmp_path, monkeypatch, total):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id=f"commit-scale-{total}", page_size=50)
+    store.initialize(labels=["fire"], total_images=total)
+    _seed_verified_candidates(store, [
+        {
+            "image_id": f"image-{index:05d}",
+            "status": "success",
+            "boxes": [{
+                "id": f"candidate-{index:05d}",
+                "class_id": 0,
+                "label": "fire",
+                "x1": 1, "y1": 1, "x2": 20, "y2": 20,
+            }],
+        }
+        for index in range(total)
+    ])
+    store.decide_unmentioned(True)
+
+    formal = {}
+    formal_reads = []
+    formal_writes = []
+    journal_reads = []
+    journal_writes = []
+
+    def read_many(_project, image_ids):
+        ids = list(image_ids)
+        formal_reads.append(ids)
+        assert len(ids) <= 200
+        return {image_id: {"boxes": list(formal.get(image_id, []))} for image_id in ids}
+
+    def write_many(_project, rows):
+        batch = [dict(row) for row in rows]
+        formal_writes.append(batch)
+        assert len(batch) <= 200
+        for row in batch:
+            formal[str(row["image_id"])] = list(row.get("boxes") or [])
+        return batch
+
+    real_get_commits = store.get_commit_summaries
+    real_record_commits = store.record_commit_summaries
+
+    def get_commits(ids):
+        batch = list(ids)
+        journal_reads.append(batch)
+        assert len(batch) <= 200
+        return real_get_commits(batch)
+
+    def record_commits(rows, **kwargs):
+        batch = [dict(row) for row in rows]
+        journal_writes.append(batch)
+        assert len(batch) <= 200
+        return real_record_commits(batch, **kwargs)
+
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_formal_annotations", read_many,
+    )
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations", write_many,
+    )
+    monkeypatch.setattr(store, "get_commit_summaries", get_commits)
+    monkeypatch.setattr(store, "record_commit_summaries", record_commits)
+
+    result = commit_candidate_decisions(
+        "project-1", f"commit-scale-{total}", store, overwrite=False,
+    )
+
+    expected = [200] * (total // 200)
+    if total % 200:
+        expected.append(total % 200)
+    assert [len(batch) for batch in journal_reads] == expected
+    assert [len(batch) for batch in formal_reads] == expected
+    assert [len(batch) for batch in formal_writes] == expected
+    assert [len(batch) for batch in journal_writes] == expected
+    assert result["applied_images"] == total
+    assert result["boxes_added"] == total
+    assert len(result["image_summaries"]) == min(total, 100)
+
+    formal_reads.clear()
+    formal_writes.clear()
+    journal_reads.clear()
+    journal_writes.clear()
+    replay = commit_candidate_decisions(
+        "project-1", f"commit-scale-{total}", store, overwrite=False,
+    )
+    assert [len(batch) for batch in journal_reads] == expected
+    assert formal_reads == []
+    assert formal_writes == []
+    assert journal_writes == []
+    assert replay["applied_images"] == total
+    assert replay["boxes_added"] == 0
+
+def test_generated_candidate_freezes_image_display_dimensions(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    context.artifacts.atomic_write_json("ai-1", "request.json", {
+        "image_ids": ["one"],
+        "labels": ["fire"],
+        "threshold": 0.45,
+        "model_config_id": "model-1",
+        "overwrite": False,
+    })
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.load_task_images",
+        lambda *_: [{
+            "id": "one",
+            "filename": "one.jpg",
+            "url": "/materials/one/content",
+            "width": 1280,
+            "height": 720,
+        }],
+    )
+
+    outcome = run_ai_annotation(
+        context,
+        annotate=lambda _request, _image: {"boxes": []},
+    )
+    assert outcome.status is TaskStatus.AWAITING_CONFIRMATION
+    item = CandidateStore(context.artifacts, task_id="ai-1").get("one")
+    assert item["filename"] == "one.jpg"
+    assert item["url"] == "/materials/one/content"
+    assert item["width"] == 1280
+    assert item["height"] == 720
+
+def test_ai_generation_uses_reusable_candidate_write_session():
+    import inspect
+
+    source = inspect.getsource(run_ai_annotation)
+    assert "with store.write_session(" in source
+    assert "append_candidate([item])" in source
+    assert "store.append_items(" not in source
+
+
+
+def test_worker_runtime_request_uses_worker_safe_annotation_runtime_owner():
+    import inspect
+
+    source = inspect.getsource(_prepare_runtime_request)
+    assert "from .annotation_runtime import prepare_request" in source
+    assert "prepare_request(data_dir, project_id, request, runtime=True)" in source
+    assert "_annotation_runtime_provider" not in source
+
+
+@pytest.mark.parametrize("source_hash,current_hash", [
+    ("b" * 64, "a" * 64),  # H1 candidate / H2 current image.
+    ("", "a" * 64),        # Legacy candidate with no source evidence.
+    ("a" * 64, ""),        # Material deleted before human confirmation.
+])
+def test_candidate_commit_fails_closed_on_stale_content(
+    tmp_path, monkeypatch, source_hash, current_hash,
+):
+    artifacts = ArtifactStore(tmp_path)
+    store = CandidateStore(artifacts, task_id="stale-candidate", page_size=50)
+    store.initialize(labels=["fire"], total_images=1)
+    _seed_verified_candidates(store, [{
+        "image_id": "image-1", "status": "success",
+        "source_content_sha256": source_hash,
+        "boxes": [{"id": "box-1", "label": "fire", "class_id": 0}],
+    }])
+    store.apply_decisions([CandidateDecision(image_id="image-1", accepted=True)])
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.read_candidate_material_hashes",
+        lambda _project, _ids: (
+            {"image-1": current_hash} if current_hash else {}
+        ),
+    )
+    def forbidden_writer(*_args, **_kwargs):
+        pytest.fail("stale AI candidates must never write formal Ground Truth")
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.write_formal_annotations",
+        forbidden_writer,
+    )
+    with pytest.raises(ValueError, match="AI_CANDIDATE_SOURCE_CHANGED"):
+        commit_candidate_decisions("project-1", "stale-candidate", store, overwrite=False)
+    assert store.get_commit_summaries(["image-1"]) == {}
+
+
+def test_generated_candidate_freezes_verified_source_hash(tmp_path, monkeypatch):
+    context = FakeContext(tmp_path)
+    context.artifacts.atomic_write_json("ai-1", "request.json", {
+        "image_ids": ["one"], "labels": ["fire"],
+        "model_config_id": "model-1",
+    })
+    monkeypatch.setattr(
+        "platform_core.annotation_task_service.load_task_images",
+        lambda *_: [{
+            "id": "one", "filename": "one.jpg", "width": 100, "height": 100,
+            "path": "one.jpg", "source_content_sha256": "f" * 64,
+        }],
+    )
+    outcome = run_ai_annotation(
+        context, annotate=lambda _request, _image: {"boxes": []},
+    )
+    assert outcome.status is TaskStatus.AWAITING_CONFIRMATION
+    assert CandidateStore(context.artifacts, task_id="ai-1").get("one")[
+        "source_content_sha256"
+    ] == "f" * 64
+
+
+def test_selected_retry_only_processes_requested_failed_image(tmp_path, monkeypatch):
+    context=FakeContext(tmp_path)
+    _install_two_images(context,monkeypatch)
+    def fail(_request,image): raise RuntimeError('isolated failure')
+    assert run_ai_annotation(context,annotate=fail).status is TaskStatus.FAILED
+    context.artifacts.atomic_write_json('ai-1','generation/retry-selection.json',{'image_ids':['two']})
+    context.task=replace(context.task,attempt=2);context.repository.task=context.task
+    calls=[]
+    run_ai_annotation(context,annotate=lambda req,image: calls.append(image['id']) or {'boxes':[]})
+    assert calls==['two']
+    store=CandidateStore(context.artifacts,task_id='ai-1')
+    assert store.get('one')['status']=='failed'
+    assert store.get('two')['status']=='empty'
+
+
+def test_failed_retry_preserves_saved_human_decision_and_draft(tmp_path, monkeypatch):
+    context=FakeContext(tmp_path);_install_two_images(context,monkeypatch)
+    def first(req,image):
+        if image['id']=='two':raise RuntimeError('isolated failure')
+        return {'boxes':[]}
+    run_ai_annotation(context,annotate=first)
+    store=CandidateStore(context.artifacts,task_id='ai-1')
+    store.save_draft('one',[],expected_revision=0,actor='reviewer',request_id='draft')
+    store.apply_decisions([CandidateDecision('one',True)])
+    before=store.get('one');context.task=replace(context.task,attempt=2);context.repository.task=context.task
+    calls=[];run_ai_annotation(context,annotate=lambda req,image:calls.append(image['id']) or {'boxes':[]})
+    assert calls==['two'];assert store.get('one')==before

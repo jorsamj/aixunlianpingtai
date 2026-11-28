@@ -3,12 +3,14 @@ from __future__ import annotations
 import socket
 import threading
 import time
+import hashlib
 from io import BytesIO
 
 import requests
+import pytest
 import uvicorn
 
-from platform_core.storage import RemoteStorageProvider
+from platform_core.storage import MaterialCache, RemoteStorageProvider, StorageError
 from remote_material_server import create_app
 
 
@@ -78,6 +80,104 @@ def test_remote_server_rejects_bad_credentials_over_real_http(tmp_path):
             time.sleep(0.02)
         assert health.ok is False
         assert "401" in health.message
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_remote_open_reader_is_streaming_and_closes(tmp_path):
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(
+        create_app(tmp_path / "remote-root", api_key="test-token"),
+        host="127.0.0.1", port=port, log_level="warning",
+    ))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            try:
+                if requests.get(f"{base_url}/api/material-storage/v1/health",
+                                headers={"X-API-Key": "test-token"}, timeout=0.2).ok:
+                    break
+            except requests.RequestException:
+                time.sleep(0.02)
+        provider = RemoteStorageProvider(
+            "remote-a", {"base_url": base_url, "namespace": "factory-a", "timeout_seconds": 3},
+            {"token": "test-token"},
+        )
+        content = b"stream-" + b"x" * 2_000_000
+        provider.upload("incoming/stream.bin", BytesIO(content), content_type="application/octet-stream")
+        reader = provider.open_reader("incoming/stream.bin")
+        try:
+            assert not isinstance(reader, BytesIO)
+            assert getattr(reader._raw, "decode_content", False) is True
+            first = reader.read(16)
+            buffer = bytearray(16)
+            count = reader.readinto(buffer)
+            assert count == 16
+            rest = reader.read()
+            assert first + bytes(buffer) + rest == content
+        finally:
+            reader.close()
+        assert reader.closed
+        with pytest.raises(ValueError):
+            reader.read(1)
+        with pytest.raises(StorageError):
+            provider.open_reader("incoming/missing.bin")
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+def test_cache_cold_materialize_skips_redundant_remote_metadata_request(tmp_path):
+    port = free_port()
+    application = create_app(tmp_path / "remote-root", api_key="test-token")
+    counts = {"content": 0, "meta": 0}
+
+    @application.middleware("http")
+    async def count_requests(request, call_next):
+        path = request.url.path
+        if path.endswith("/objects/content"):
+            counts["content"] += 1
+        elif path.endswith("/objects/meta"):
+            counts["meta"] += 1
+        return await call_next(request)
+
+    server = uvicorn.Server(uvicorn.Config(
+        application, host="127.0.0.1", port=port, log_level="warning",
+    ))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            try:
+                if requests.get(f"{base_url}/api/material-storage/v1/health",
+                                headers={"X-API-Key": "test-token"}, timeout=0.2).ok:
+                    break
+            except requests.RequestException:
+                time.sleep(0.02)
+        provider = RemoteStorageProvider(
+            "remote-a", {"base_url": base_url, "namespace": "factory-a", "timeout_seconds": 3},
+            {"token": "test-token"},
+        )
+        content = b"cold-cache-content"
+        provider.upload("incoming/cache.jpg", BytesIO(content), content_type="image/jpeg")
+        counts["content"] = counts["meta"] = 0
+        cache = MaterialCache(tmp_path / "cache")
+        expected = hashlib.sha256(content).hexdigest()
+        first = cache.materialize(provider, "incoming/cache.jpg", expected_sha256=expected, suffix=".jpg")
+        assert first.cache_hit is False
+        assert counts == {"content": 1, "meta": 0}
+        second = cache.materialize(provider, "incoming/cache.jpg", expected_sha256=expected, suffix=".jpg")
+        assert second.cache_hit is True
+        assert counts == {"content": 1, "meta": 0}
+
+        destination = tmp_path / "direct-download.jpg"
+        provider.download("incoming/cache.jpg", destination)
+        assert destination.read_bytes() == content
+        assert counts["meta"] == 1
     finally:
         server.should_exit = True
         thread.join(timeout=5)

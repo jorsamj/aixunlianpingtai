@@ -69,10 +69,14 @@ class OSSStorageProvider:
         try: return self.bucket.get_object(self._key(object_key))
         except Exception as error: self._error("read", error)
 
-    def download(self, object_key, destination):
+    def download(self, object_key, destination, *, include_metadata=True):
         target = Path(destination); target.parent.mkdir(parents=True, exist_ok=True)
-        try: self.bucket.get_object_to_file(self._key(object_key), str(target)); return self.stat(object_key)
+        try: self.bucket.get_object_to_file(self._key(object_key), str(target))
         except Exception as error: target.unlink(missing_ok=True); self._error("download", error)
+        if include_metadata:
+            try: return self.stat(object_key)
+            except Exception as error: target.unlink(missing_ok=True); self._error("download", error)
+        return ObjectMetadata(key=object_key, size_bytes=target.stat().st_size)
 
     def upload(self, object_key, source, *, content_type="application/octet-stream", metadata=None):
         stream = Path(source).open("rb") if isinstance(source, (str, Path)) else source; close = isinstance(source, (str, Path))
@@ -115,10 +119,27 @@ class OSSStorageProvider:
         try: return self.bucket.sign_url("GET", self._key(object_key), max(1,min(3600,int(expires_seconds))))
         except Exception as error: self._error("presign", error)
 
-    def generate_upload_contract(self, object_key, *, expires_seconds=900, content_type="application/octet-stream"):
-        """Return the signed PUT URL together with every header the client must send."""
+    def generate_upload_contract(
+        self,
+        object_key,
+        *,
+        expires_seconds=900,
+        content_type="application/octet-stream",
+        metadata=None,
+        size_bytes=None,
+    ):
+        """Return a signed PUT contract with optional immutable content evidence."""
         expires = max(1, min(3600, int(expires_seconds)))
-        headers = {"Content-Type": content_type}
+        normalized_metadata = {str(key): str(value) for key, value in dict(metadata or {}).items()}
+        headers = {
+            "Content-Type": content_type,
+            **{f"x-oss-meta-{key}": value for key, value in normalized_metadata.items()},
+        }
+        if size_bytes is not None:
+            expected_size = int(size_bytes)
+            if expected_size <= 0:
+                raise ValueError("size_bytes must be positive")
+            headers["Content-Length"] = str(expected_size)
         if self.protect_existing_objects:
             headers["x-oss-forbid-overwrite"] = "true"
         try:
@@ -141,4 +162,5 @@ class OSSStorageProvider:
         )
         return str(contract.get("url") or "") or None
 
-    def materialize_to_local(self, object_key, destination): return self.download(object_key,destination)
+    def materialize_to_local(self, object_key, destination):
+        return self.download(object_key, destination, include_metadata=False)

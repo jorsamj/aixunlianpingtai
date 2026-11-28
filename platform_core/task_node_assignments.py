@@ -1,0 +1,1792 @@
+"""Durable central task-to-node assignment truth.
+
+Assignments are control-plane truth, not a second task state machine. An active
+assignment fences legacy Workers from self-claiming that queued task. The HTTP
+Agent executor will later turn a claimed assignment into the one real task
+execution lease without requiring remote SQLite/NFS access.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import secrets
+import sqlite3
+from contextlib import closing
+from threading import Lock
+from datetime import datetime, timedelta, timezone
+from typing import Any, Mapping
+
+from .service_nodes import HEARTBEAT_TTL_SECONDS, ServiceNodeRepository
+from .training_devices import normalize_training_device
+from .task_runtime import TaskKind
+from .task_runtime.fenced_repository import FencedTaskRepository
+from .task_runtime.models import TaskStatus, utc_now
+from .task_runtime.repository import _from_row, admission_preparer
+
+
+ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED", "RELEASED")
+ACTIVE_ASSIGNMENT_STATES = ("ASSIGNED", "CLAIMED")
+DEFAULT_ASSIGNMENT_LEASE_SECONDS = 30
+# Private return marker: preflight eligibility went stale while another Agent
+# reserved the last execution slot. Do not keep scanning queued JSON metadata.
+_AGENT_CAPACITY_EXHAUSTED = object()
+# Non-authoritative cursor for payload-only legacy tasks. Node/lease state is
+# always checked in SQLite; process restarts safely start the scan from front.
+_AGENT_LEGACY_SCAN_LOCK = Lock()
+_AGENT_LEGACY_SCAN_CURSORS = {}
+
+REMOTE_EXECUTION_CONTRACT_VERSION = 1
+SUPPORTED_REMOTE_EXECUTION_TRANSPORTS = (
+    "object-storage-v1",
+    "agent-artifact-v1",
+)
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS task_node_assignments (
+    task_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    node_id TEXT NOT NULL,
+    capability TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('ASSIGNED','CLAIMED','RELEASED')),
+    assigned_at TEXT NOT NULL,
+    claimed_at TEXT,
+    updated_at TEXT NOT NULL,
+    lease_token TEXT,
+    lease_expires_at TEXT,
+    released_at TEXT,
+    release_reason TEXT NOT NULL DEFAULT '',
+    resolved_execution_config TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY(task_id,generation)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_task_node_assignment_active
+    ON task_node_assignments(task_id)
+    WHERE state IN ('ASSIGNED','CLAIMED');
+CREATE INDEX IF NOT EXISTS idx_task_node_assignment_node
+    ON task_node_assignments(node_id,state,assigned_at,task_id);
+CREATE TABLE IF NOT EXISTS task_preemptions (
+    incoming_task_id TEXT NOT NULL,
+    victim_task_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('WAITING_CANCEL','RESUMED','ABANDONED')),
+    created_at TEXT NOT NULL,
+    resumed_at TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY(incoming_task_id,victim_task_id)
+);
+CREATE INDEX IF NOT EXISTS idx_task_preemptions_state
+    ON task_preemptions(state,incoming_task_id,victim_task_id);
+"""
+
+
+class NodeAssignmentError(RuntimeError):
+    def __init__(self, code: str, message: str, status_code: int = 409):
+        self.code = str(code)
+        self.status_code = int(status_code)
+        super().__init__(str(message))
+
+
+def ensure_task_node_assignment_schema(database) -> None:
+    database.executescript(_SCHEMA)
+
+
+def _loads(value: object, fallback):
+    try:
+        return json.loads(str(value or ""))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _dumps(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _utc(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _public(row) -> dict[str, Any]:
+    return {
+        "task_id": str(row["task_id"]),
+        "generation": int(row["generation"]),
+        "node_id": str(row["node_id"]),
+        "capability": str(row["capability"]),
+        "state": str(row["state"]),
+        "assigned_at": str(row["assigned_at"]),
+        "claimed_at": row["claimed_at"],
+        "updated_at": str(row["updated_at"]),
+        "lease_expires_at": row["lease_expires_at"],
+        "released_at": row["released_at"],
+        "release_reason": str(row["release_reason"] or ""),
+        "resolved_execution_config": _loads(row["resolved_execution_config"], {}),
+    }
+
+
+def task_node_capability(task, artifacts) -> str | None:
+    if task.kind is TaskKind.MATERIAL_IMPORT and task.accepted is True:
+        # Confirmation hands formal repository projection back to the existing
+        # local Storage Worker; never send accepted material tasks to an Agent.
+        return None
+    # Do not treat the service-node UI capability catalogue as a runnable
+    # remote TaskKind contract. These three TaskKinds remain with their
+    # existing local Worker handlers until a matching portable Agent runner
+    # is implemented and tested.
+    fixed = {
+        TaskKind.MATERIAL_IMPORT: "material-import",
+        TaskKind.TRAINING: "training",
+        TaskKind.MODEL_INSTALL: "model-upload",
+    }
+    if task.kind in fixed:
+        return fixed[task.kind]
+    if task.kind is TaskKind.DEPLOYMENT_TEST:
+        if "deployment.input.pending" in task.required_capabilities:
+            return None
+        try:
+            payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        except (OSError, TypeError, ValueError):
+            payload = {}
+        if isinstance(payload, Mapping):
+            mode = str(payload.get("execution_mode") or "").strip().lower()
+            runtime_format = str(payload.get("runtime_format") or "").strip().lower()
+            if mode == "agent" and runtime_format == "rknn":
+                return "deployment-test.rknn"
+        return "deployment-test"
+    if task.kind is TaskKind.MODEL_CONVERSION:
+        try:
+            payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        except (OSError, TypeError, ValueError):
+            payload = {}
+        if isinstance(payload, Mapping):
+            mode = str(payload.get("execution_mode") or "local").strip().lower()
+            target = str(payload.get("target") or "").strip().lower()
+            if not target:
+                remote = payload.get("remote_execution")
+                conversion = remote.get("conversion") if isinstance(remote, Mapping) else None
+                if isinstance(conversion, Mapping):
+                    target = str(conversion.get("target") or "").strip().lower()
+            if mode == "agent" and target in {"rockchip", "rknn"}:
+                return "conversion.rknn"
+        return "conversion"
+    if task.kind is TaskKind.MATERIAL_BATCH:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        operation = str(payload.get("operation") or "").strip().upper() if isinstance(payload, Mapping) else ""
+        # Only CLEAN with an explicit Agent execution intent has a portable
+        # MaterialBatch runner today. All other operations (including audits,
+        # annotation review and formal GT remapping) belong to the canonical
+        # local materials Worker, not the material-import Agent runner.
+        if (
+            operation == "CLEAN"
+            and str(payload.get("execution_mode") or "").strip().lower() == "agent"
+        ):
+            return "cleaning"
+        return None
+    # Resource discovery remains local control-plane work for now.
+    return None
+
+
+def task_remote_execution_contract(task, artifacts) -> dict[str, Any] | None:
+    """Return sanitized metadata only for an explicitly portable task contract.
+
+    Legacy task payloads contain control-plane absolute paths and must never be
+    inferred as remote-safe. A remote Agent becomes eligible only after the task
+    producer publishes this versioned contract deliberately.
+    """
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("remote_execution")
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        version = int(raw.get("version") or 0)
+    except (TypeError, ValueError):
+        return None
+    task_kind = str(raw.get("task_kind") or "").strip()
+    transport = str(raw.get("transport") or "").strip().lower()
+    if (
+        version != REMOTE_EXECUTION_CONTRACT_VERSION
+        or task_kind != task.kind.value
+        or transport not in SUPPORTED_REMOTE_EXECUTION_TRANSPORTS
+    ):
+        return None
+    # Never copy task-provided credentials, URLs, paths or arbitrary nested
+    # data into scheduler truth. Transport-specific manifests are validated by
+    # the task-kind runner later; scheduling needs only this allow-list metadata.
+    return {
+        "version": version,
+        "task_kind": task_kind,
+        "transport": transport,
+    }
+
+
+def task_node_connection_mode(task, artifacts) -> str | None:
+    """Return an explicit node connection-mode requirement when product intent demands it."""
+    if task.kind not in {
+        TaskKind.TRAINING,
+        TaskKind.MODEL_CONVERSION,
+        TaskKind.MATERIAL_IMPORT,
+        TaskKind.MATERIAL_BATCH,
+        TaskKind.DEPLOYMENT_TEST,
+        TaskKind.MODEL_INSTALL,
+    }:
+        return None
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return None
+    if not isinstance(payload, Mapping):
+        return None
+    if task.kind is TaskKind.TRAINING:
+        if str(payload.get("target") or "local").strip().lower() == "remote":
+            return "agent"
+        return None
+    if task.kind is TaskKind.MATERIAL_BATCH:
+        if str(payload.get("operation") or "").strip().upper() != "CLEAN":
+            return None
+        mode = str(payload.get("execution_mode") or "local").strip().lower()
+        return "agent" if mode == "agent" else "local"
+    if task.kind is TaskKind.DEPLOYMENT_TEST:
+        mode = str(payload.get("execution_mode") or "").strip().lower()
+        return "agent" if mode == "agent" else None
+    # Conversion/material import remain local unless the producer explicitly
+    # publishes an Agent execution mode. A portable contract alone never changes
+    # product intent or silently migrates a local task to a remote node.
+    mode = str(payload.get("execution_mode") or "local").strip().lower()
+    return "agent" if mode == "agent" else "local"
+
+
+def _online_nodes(
+    database,
+    capability: str,
+    *,
+    now: datetime,
+    ttl_seconds: int,
+    remote_contract: Mapping[str, Any] | None,
+    required_connection_mode: str | None = None,
+):
+    rows = database.execute(
+        "SELECT * FROM service_nodes WHERE enabled=1 AND last_heartbeat_at IS NOT NULL"
+    ).fetchall()
+    result = []
+    for row in rows:
+        heartbeat = _utc(row["last_heartbeat_at"])
+        if heartbeat is None or not -5 <= (now - heartbeat).total_seconds() <= ttl_seconds:
+            continue
+        allowed = set(_loads(row["allowed_capabilities"], []))
+        reported = set(_loads(row["reported_capabilities"], []))
+        if capability not in allowed or capability not in reported:
+            continue
+        connection_mode = str(row["connection_mode"] or "").strip().lower()
+        if required_connection_mode and connection_mode != required_connection_mode:
+            continue
+        if connection_mode == "agent" and remote_contract is None:
+            # Fail closed: existing task payloads commonly contain absolute
+            # control-plane paths. Never turn those into a fake remote job.
+            continue
+        result.append(row)
+    return result
+
+
+def _gpu_rank_value(item: Mapping[str, Any]) -> float:
+    free = float(item.get("memory_free_bytes") or 0)
+    total = float(item.get("memory_total_bytes") or 0)
+    utilization = max(0.0, min(100.0, float(item.get("utilization_percent") or 0)))
+    # Treat utilization as real contention, not just display telemetry. A GPU
+    # with slightly less free VRAM but very low utilization should beat a busy
+    # card when both have enough memory.
+    utilization_penalty = total * (utilization / 100.0) * 0.35
+    return free - utilization_penalty
+
+
+def _score_node(
+    row,
+    capability: str,
+    active: int,
+    *,
+    selected_gpu: Mapping[str, Any] | None = None,
+) -> tuple[float, str]:
+    resources = _loads(row["resource_json"], {})
+    memory = resources.get("memory", {}) if isinstance(resources, Mapping) else {}
+    disk = resources.get("disk", {}) if isinstance(resources, Mapping) else {}
+    cpu = resources.get("cpu", {}) if isinstance(resources, Mapping) else {}
+    gpu = resources.get("gpu", {}) if isinstance(resources, Mapping) else {}
+    memory_free = float((memory or {}).get("available_bytes") or 0)
+    disk_free = float((disk or {}).get("free_bytes") or 0)
+    cores = float((cpu or {}).get("logical_cores") or 0)
+    gpus = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
+    gpus = [item for item in (gpus if isinstance(gpus, list) else []) if isinstance(item, Mapping)]
+    best_gpu_score = (
+        _gpu_rank_value(selected_gpu)
+        if isinstance(selected_gpu, Mapping)
+        else max((_gpu_rank_value(item) for item in gpus), default=0.0)
+    )
+    # One active assignment is treated roughly like 10 GiB of GPU headroom.
+    # This strongly favors idle nodes, but real free VRAM/utilization can still
+    # win when an "idle" node is nearly full or otherwise unsuitable.
+    penalty = float(active) * 10.0 * 1024**3 * 1000.0
+    score = (
+        best_gpu_score * 1000.0 + memory_free * 10.0 + cores * 1e9 - penalty
+        if capability == "training"
+        else memory_free * 10.0 + disk_free + cores * 1e9 - penalty
+    )
+    return score, str(row["node_id"])
+
+
+_MIN_TRAINING_GPU_FREE_BYTES = 1024**3
+_MIN_TRAINING_GPU_FREE_RATIO = 0.10
+_MAX_TRAINING_GPU_UTILIZATION_PERCENT = 85.0
+
+
+def _gpu_is_training_candidate(item: Mapping[str, Any]) -> bool:
+    try:
+        free = max(0, int(item.get("memory_free_bytes") or 0))
+        total = max(0, int(item.get("memory_total_bytes") or 0))
+        utilization_value = item.get("utilization_percent")
+        utilization = (
+            float(utilization_value)
+            if utilization_value is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        return False
+    minimum_free = max(
+        _MIN_TRAINING_GPU_FREE_BYTES,
+        int(total * _MIN_TRAINING_GPU_FREE_RATIO) if total > 0 else 0,
+    )
+    if free < minimum_free:
+        return False
+    if utilization is not None and utilization >= _MAX_TRAINING_GPU_UTILIZATION_PERCENT:
+        return False
+    return True
+
+
+def _ensure_resource_holds(database) -> None:
+    row = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_resource_holds'"
+    ).fetchone()
+    if row is None:
+        raise RuntimeError("execution_resource_holds schema is not initialized")
+
+
+def _node_active_work_count(database, node_id: str) -> int:
+    """Count distinct task identities occupying one authorized execution slot."""
+    node = str(node_id)
+    _ensure_resource_holds(database)
+    occupied = {
+        str(row[0]) for row in database.execute(
+            "SELECT task_id FROM task_node_assignments WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')",
+            (node,),
+        )
+    }
+    occupied.update(str(row[0]) for row in database.execute(
+        """
+        SELECT task.task_id
+          FROM tasks task
+         WHERE task.status IN ('RUNNING','CANCEL_REQUESTED')
+           AND (
+                task.worker_id=?
+                OR task.worker_id IN (
+                    SELECT worker_id FROM worker_instances WHERE node_id=?
+                )
+           )
+        """,
+        (f"agent:{node}", node),
+    ))
+    occupied.update(str(row[0]) for row in database.execute(
+        "SELECT task_id FROM execution_resource_holds WHERE node_id=? AND state<>'RELEASED'",
+        (node,),
+    ))
+    return len(occupied)
+
+
+_MULTI_SLOT_CAPABILITY = "execution-slots:2"
+
+
+def _agent_execution_slots(node) -> int:
+    allowed = set(_loads(node["allowed_capabilities"], []))
+    reported = set(_loads(node["reported_capabilities"], []))
+    return 2 if _MULTI_SLOT_CAPABILITY in allowed and _MULTI_SLOT_CAPABILITY in reported else 1
+
+
+def _has_idle_agent_slot(database, *, now: datetime, ttl_seconds: int) -> bool:
+    """Check live Agent executor capacity under the canonical writer lock.
+
+    A preflight snapshot may be stale after concurrent Agent claims. This
+    check avoids doing expensive payload IO and additional writer transactions
+    when no node can execute the next automatic assignment. It never grants a
+    lease or replaces the existing task/node/capability validation.
+    """
+    nodes = database.execute(
+        """SELECT node_id,last_heartbeat_at,allowed_capabilities,reported_capabilities
+           FROM service_nodes
+          WHERE enabled=1 AND connection_mode='agent'
+            AND last_heartbeat_at IS NOT NULL"""
+    ).fetchall()
+    for node in nodes:
+        heartbeat = _utc(node["last_heartbeat_at"])
+        if heartbeat is None or (now - heartbeat).total_seconds() > ttl_seconds:
+            continue
+        allowed = set(_loads(node["allowed_capabilities"], []))
+        reported = set(_loads(node["reported_capabilities"], []))
+        if not allowed.intersection(reported):
+            continue
+        if _node_active_work_count(database, str(node["node_id"])) < _agent_execution_slots(node):
+            return True
+    return False
+
+
+def _assigned_gpu_ids(database, node_id: str) -> set[str]:
+    assigned: set[str] = set()
+    for _task_id, resolved in _active_assignment_configs(database, str(node_id)):
+        if not isinstance(resolved, Mapping):
+            continue
+        selected = resolved.get("selected_gpu")
+        selected = selected if isinstance(selected, Mapping) else {}
+        device = str(selected.get("id") or resolved.get("selected_device") or "").strip()
+        uuid = str(selected.get("uuid") or "").strip()
+        if device.startswith("cuda:"):
+            assigned.add(device)
+        if uuid:
+            assigned.add(uuid)
+    try:
+        _ensure_resource_holds(database)
+        for row in database.execute(
+            "SELECT gpu_uuid FROM execution_resource_holds WHERE node_id=? AND state<>'RELEASED'",
+            (str(node_id),),
+        ):
+            value = str(row[0] or "")
+            if value:
+                assigned.add(value)
+    except sqlite3.OperationalError:
+        raise
+    return assigned
+
+
+
+def task_scheduling(task, artifacts) -> dict[str, Any]:
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return {}
+    scheduling = payload.get("scheduling") if isinstance(payload, Mapping) else None
+    return dict(scheduling) if isinstance(scheduling, Mapping) else {}
+
+
+def task_requested_node_id(task, artifacts) -> str:
+    scheduling = task_scheduling(task, artifacts)
+    if str(scheduling.get("mode") or "auto").strip().lower() != "node":
+        return ""
+    return str(scheduling.get("node_id") or "").strip()
+
+
+def task_preemptible(task, artifacts) -> bool:
+    """Only work with a proven stop-and-resume contract may be displaced.
+
+    Remote TRAINING is intentionally excluded here. The current Agent control
+    protocol observes cancellation but does not expose a pause-and-release
+    handshake, so cancelling a training task would be a restart, not a pause.
+    """
+    if task.kind is TaskKind.MATERIAL_BATCH:
+        try:
+            payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+        except (OSError, TypeError, ValueError):
+            return False
+        return (
+            isinstance(payload, Mapping)
+            and str(payload.get("operation") or "").strip().upper() == "CLEAN"
+        )
+    return False
+
+
+def _resume_ready_preemptions_in(database, now: str) -> int:
+    table = database.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_preemptions'"
+    ).fetchone()
+    if table is None:
+        return 0
+    terminal = {
+        TaskStatus.PARTIAL_SUCCESS.value,
+        TaskStatus.SUCCEEDED.value,
+        TaskStatus.CANCELLED.value,
+        TaskStatus.FAILED.value,
+        TaskStatus.BLOCKED_BY_ENVIRONMENT.value,
+        TaskStatus.BLOCKED_BY_HARDWARE.value,
+    }
+    rows = database.execute(
+        """
+        SELECT p.incoming_task_id,p.victim_task_id,
+               incoming.status AS incoming_status,
+               victim.status AS victim_status
+          FROM task_preemptions p
+          JOIN tasks incoming ON incoming.task_id=p.incoming_task_id
+          JOIN tasks victim ON victim.task_id=p.victim_task_id
+         WHERE p.state='WAITING_CANCEL'
+         ORDER BY p.created_at,p.incoming_task_id,p.victim_task_id
+        """
+    ).fetchall()
+    resumed = 0
+    for row in rows:
+        if str(row["incoming_status"]) not in terminal:
+            continue
+        victim_status = str(row["victim_status"])
+        if victim_status == TaskStatus.CANCELLED.value:
+            changed = database.execute(
+                """
+                UPDATE tasks
+                   SET status='QUEUED',stage='queued',progress=0,current_item=NULL,
+                       retry_of=task_id,error=NULL,accepted=NULL,result_ref=NULL,
+                       worker_id=NULL,lease_token=NULL,lease_expires_at=NULL,
+                       process_pid=NULL,process_create_time=NULL,process_command_hash=NULL,
+                       finished_at=NULL,updated_at=?
+                 WHERE task_id=? AND status='CANCELLED'
+                """,
+                (now, str(row["victim_task_id"])),
+            ).rowcount
+            if changed == 1:
+                database.execute(
+                    """
+                    UPDATE task_preemptions
+                       SET state='RESUMED',resumed_at=?,detail='automatically requeued after preemptor finished'
+                     WHERE incoming_task_id=? AND victim_task_id=? AND state='WAITING_CANCEL'
+                    """,
+                    (now, str(row["incoming_task_id"]), str(row["victim_task_id"])),
+                )
+                resumed += 1
+        elif victim_status in terminal:
+            database.execute(
+                """
+                UPDATE task_preemptions
+                   SET state='ABANDONED',resumed_at=?,detail=?
+                 WHERE incoming_task_id=? AND victim_task_id=? AND state='WAITING_CANCEL'
+                """,
+                (
+                    now,
+                    f"victim finished as {victim_status}; automatic retry suppressed",
+                    str(row["incoming_task_id"]),
+                    str(row["victim_task_id"]),
+                ),
+            )
+    return resumed
+
+
+def _requested_training_device(task, artifacts) -> str:
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return "__invalid__"
+    if not isinstance(payload, Mapping):
+        return "__invalid__"
+    try:
+        return normalize_training_device(
+            payload.get("requested_device") or payload.get("device") or "auto"
+        )
+    except ValueError:
+        # Corrupt/legacy unknown values must never be silently converted into an
+        # automatic GPU choice. Leave the task queued for explicit repair.
+        return "__invalid__"
+
+
+def _selected_gpu(
+    row,
+    *,
+    assigned_gpu_ids: set[str] | None = None,
+    requested_device: str = "auto",
+) -> dict[str, Any] | None:
+    resources = _loads(row["resource_json"], {})
+    gpu = resources.get("gpu", {}) if isinstance(resources, Mapping) else {}
+    items = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
+    assigned = set(assigned_gpu_ids or ())
+    requested = str(requested_device or "auto").strip().lower()
+    items = [
+        item for item in items or []
+        if isinstance(item, Mapping)
+        and str(item.get("uuid") or item.get("id") or f"cuda:{item.get('index', 0)}") not in assigned
+        and str(item.get("id") or f"cuda:{item.get('index', 0)}") not in assigned
+        and _gpu_is_training_candidate(item)
+        and (
+            requested == "auto"
+            or (
+                requested.startswith("cuda:")
+                and str(item.get("id") or f"cuda:{item.get('index', 0)}") == requested
+            )
+        )
+    ]
+    if not items:
+        return None
+    best = max(items, key=_gpu_rank_value)
+    return {
+        "id": str(best.get("id") or f"cuda:{best.get('index', 0)}"),
+        "identity": str(best.get("uuid") or best.get("id") or f"cuda:{best.get('index', 0)}"),
+        "index": int(best.get("index") or 0),
+        "uuid": best.get("uuid"),
+        "name": best.get("name"),
+        "memory_free_bytes": int(best.get("memory_free_bytes") or 0),
+        "memory_total_bytes": int(best.get("memory_total_bytes") or 0),
+        "utilization_percent": (
+            int(best.get("utilization_percent"))
+            if best.get("utilization_percent") is not None
+            else None
+        ),
+    }
+
+
+_INVALID_RESOURCE_REQUIREMENTS = object()
+_RESOURCE_REQUIREMENT_KEYS = {
+    "gpu_count", "gpu_uuids", "min_gpu_memory_bytes",
+    "cpu_cores", "ram_bytes", "scratch_bytes", "storage_source_ids",
+}
+
+
+def _payload_digest(payload: Mapping[str, Any]) -> str:
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _positive_int(value, *, minimum=1):
+    # Resource fields are machine-generated integers. Do not truncate a float
+    # (1.8 -> 1) or accept numeric strings; that would silently weaken a budget.
+    if type(value) is not int or value < minimum:
+        raise ValueError
+    return value
+
+
+def _positive_number(value):
+    if isinstance(value, bool) or type(value) not in (int, float):
+        raise ValueError
+    number = float(value)
+    if not number > 0 or not math.isfinite(number):
+        raise ValueError
+    return number
+
+
+def _task_resource_requirements(task, artifacts, capability: str | None):
+    """Opt-in resource requirements; absent means legacy behavior.
+
+    A present but malformed contract is returned as a sentinel so the task can
+    stay QUEUED instead of silently degrading its resource request.
+    """
+    if capability is None:
+        return None
+    try:
+        payload = artifacts.read_json(task.task_id, task.payload_ref, default={})
+    except (OSError, TypeError, ValueError):
+        return _INVALID_RESOURCE_REQUIREMENTS
+    if not isinstance(payload, Mapping) or "resource_requirements" not in payload:
+        return None
+    raw = payload.get("resource_requirements")
+    if raw is None:
+        # An explicit null is not a legacy "no requirement" signal; it is an
+        # incomplete opt-in contract and must not silently degrade to legacy.
+        return _INVALID_RESOURCE_REQUIREMENTS
+    if not isinstance(raw, Mapping) or set(raw) - _RESOURCE_REQUIREMENT_KEYS:
+        return _INVALID_RESOURCE_REQUIREMENTS
+    try:
+        gpu_count = raw.get("gpu_count", 1 if capability == "training" else 0)
+        gpu_count = _positive_int(gpu_count, minimum=0)
+        if capability == "training" and gpu_count != 1:
+            return _INVALID_RESOURCE_REQUIREMENTS
+        if capability != "training" and gpu_count:
+            return _INVALID_RESOURCE_REQUIREMENTS
+        requirements: dict[str, Any] = {"gpu_count": gpu_count}
+        if "gpu_uuids" in raw:
+            values = raw.get("gpu_uuids")
+            if not isinstance(values, (list, tuple)):
+                raise ValueError
+            parsed = []
+            for value in values:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError
+                parsed.append(value.strip())
+            if len(parsed) != len(set(parsed)):
+                raise ValueError
+            requirements["gpu_uuids"] = parsed
+            if capability != "training":
+                raise ValueError
+        if "min_gpu_memory_bytes" in raw:
+            requirements["min_gpu_memory_bytes"] = _positive_int(
+                raw.get("min_gpu_memory_bytes"), minimum=0,
+            )
+            if capability != "training":
+                raise ValueError
+        for name in ("cpu_cores", "ram_bytes", "scratch_bytes"):
+            if name in raw:
+                requirements[name] = (
+                    _positive_number(raw[name]) if name == "cpu_cores"
+                    else _positive_int(raw[name], minimum=1)
+                )
+        if "storage_source_ids" in raw:
+            values = raw.get("storage_source_ids")
+            if not isinstance(values, (list, tuple)):
+                raise ValueError
+            parsed = []
+            for value in values:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError
+                parsed.append(value.strip())
+            if len(parsed) != len(set(parsed)):
+                raise ValueError
+            requirements["storage_source_ids"] = parsed
+        return requirements
+    except (TypeError, ValueError, OverflowError):
+        return _INVALID_RESOURCE_REQUIREMENTS
+
+
+def _active_assignment_configs(database, node_id: str) -> list[tuple[str, Mapping[str, Any]]]:
+    rows = database.execute(
+        """
+        SELECT a.task_id,a.generation,a.state,a.release_reason,a.resolved_execution_config,
+               t.status AS task_status,t.attempt AS task_attempt
+          FROM task_node_assignments AS a
+          LEFT JOIN tasks AS t ON t.task_id=a.task_id
+         WHERE a.node_id=?
+           AND (
+               a.state IN ('ASSIGNED','CLAIMED')
+               OR (
+                   t.status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND t.worker_id=?
+                   AND (
+                       a.state IN ('ASSIGNED','CLAIMED')
+                       OR (
+                           a.state='RELEASED'
+                           AND a.release_reason='execution_started'
+                           AND json_extract(a.resolved_execution_config, '$.execution_attempt') = t.attempt
+                       )
+                   )
+               )
+           )
+         ORDER BY a.task_id,a.generation DESC
+        """,
+        (str(node_id), f"agent:{node_id}"),
+    ).fetchall()
+    result: list[tuple[str, Mapping[str, Any]]] = []
+    seen: set[str] = set()
+    for row in rows:
+        task_id = str(row["task_id"])
+        if task_id in seen:
+            continue
+        seen.add(task_id)
+        result.append((task_id, _loads(row["resolved_execution_config"], {})))
+    return result
+
+
+def _reported_storage_ids(resources: Mapping[str, Any]) -> set[str]:
+    storage = resources.get("storage") if isinstance(resources, Mapping) else None
+    values = storage.get("source_ids") if isinstance(storage, Mapping) else None
+    if values is None:
+        values = resources.get("storage_source_ids") if isinstance(resources, Mapping) else None
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, (list, tuple)):
+        return set()
+    return {str(value) for value in values if str(value)}
+
+
+def _node_capacity_signature(node):
+    resources = _loads(node["resource_json"], {})
+    resources = resources if isinstance(resources, Mapping) else {}
+    memory = resources.get("memory") if isinstance(resources.get("memory"), Mapping) else {}
+    gpu = resources.get("gpu") if isinstance(resources.get("gpu"), Mapping) else {}
+    items = gpu.get("gpus") if isinstance(gpu.get("gpus"), list) else []
+    return {
+        "build_id": str(node["build_id"] or ""),
+        "ram": memory.get("effective_total_bytes", memory.get("total_bytes")),
+        "gpus": sorted([str(item.get("uuid") or ""), str(item.get("memory_total_bytes"))]
+                       for item in items if isinstance(item, Mapping)),
+    }
+
+
+def _capacity_wait(required, total, available, reserved, code):
+    if not required:
+        return ""
+    if (type(total) in (int, float) and math.isfinite(total) and total > 0
+            and type(available) in (int, float) and math.isfinite(available) and available > total):
+        return f"UNKNOWN: {code}"
+    if type(total) in (int, float) and math.isfinite(total) and total > 0 and required > total:
+        return f"INCOMPATIBLE: {code}"
+    if type(available) not in (int, float) or not math.isfinite(available) or available < 0:
+        return f"UNKNOWN: {code}"
+    if required > max(0, available - reserved):
+        kind = "TEMPORARILY_UNAVAILABLE" if type(total) in (int, float) and total > 0 else "UNKNOWN"
+        return f"{kind}: {code}"
+    return ""
+
+
+def _resource_wait_backoff(database, task_id, node, now):
+    row = database.execute(
+        "SELECT resolved_execution_config FROM task_node_assignments WHERE task_id=? AND node_id=? "
+        "ORDER BY generation DESC LIMIT 1", (task_id, str(node["node_id"])),
+    ).fetchone()
+    config = _loads(row[0], {}) if row is not None else {}
+    receipt = config.get("resource_wait_receipt") or {}
+    admission = receipt.get("admission", {})
+    host_capacity = (str(admission.get("code") or "").startswith("RESOURCE_HOST_MEMORY")
+                     or admission.get("code") == "RESOURCE_RAM_UNSAFE"
+                     or (admission.get("code") == "RESOURCE_MANUAL_INVALID" and "host RAM" in str(admission.get("reason"))))
+    if (host_capacity and admission.get("classification") == "INCOMPATIBLE"
+            and receipt.get("node_capacity") == _node_capacity_signature(node)):
+        return str(receipt.get("resource_wait_reason") or "INCOMPATIBLE: execution-node capacity")
+    retry = _utc(receipt.get("retry_after"))
+    if retry is not None and retry > now:
+        return str(receipt.get("resource_wait_reason") or "TEMPORARILY_UNAVAILABLE: retry backoff")
+    return ""
+
+
+def _hard_admission(
+    database,
+    node,
+    capability: str,
+    requirements: Mapping[str, Any],
+    *,
+    requested_device: str = "auto",
+) -> tuple[bool, str, dict[str, Any] | None]:
+    """Evaluate an opt-in opt-in hard budget against latest durable state."""
+    resources = _loads(node["resource_json"], {})
+    if not isinstance(resources, Mapping):
+        return False, "RESOURCE_REPORT_UNKNOWN", None
+    # A legacy active task has no frozen requirement. Its consumption cannot be
+    # proven, so a new opt-in task must wait instead of overcommitting the node.
+    running_without_assignment = database.execute(
+        """
+        SELECT 1 FROM tasks t
+         WHERE t.status IN ('RUNNING','CANCEL_REQUESTED') AND t.worker_id=?
+           AND NOT EXISTS (
+               SELECT 1 FROM task_node_assignments a
+                WHERE a.task_id=t.task_id
+                  AND (
+                      a.state IN ('ASSIGNED','CLAIMED')
+                      OR (
+                          a.state='RELEASED'
+                          AND a.release_reason='execution_started'
+                          AND json_extract(a.resolved_execution_config, '$.execution_attempt') = t.attempt
+                      )
+                  )
+           )
+         LIMIT 1
+        """,
+        (f"agent:{node['node_id']}",),
+    ).fetchone()
+    if running_without_assignment:
+        return False, "ACTIVE_RESOURCE_UNKNOWN", None
+
+    used_cpu = 0.0
+    used_ram = 0
+    used_scratch = 0
+    assigned_gpus: set[str] = set()
+    for _task_id, resolved in _active_assignment_configs(database, str(node["node_id"])):
+        if not isinstance(resolved, Mapping):
+            return False, "ACTIVE_RESOURCE_UNKNOWN", None
+        requirement = resolved.get("resource_requirements")
+        if not isinstance(requirement, Mapping):
+            return False, "ACTIVE_RESOURCE_UNKNOWN", None
+        used_cpu += float(requirement.get("cpu_cores") or 0)
+        used_ram += int(requirement.get("ram_bytes") or 0)
+        used_scratch += int(requirement.get("scratch_bytes") or 0)
+        selected = resolved.get("selected_gpu")
+        if isinstance(selected, Mapping):
+            if selected.get("uuid"):
+                assigned_gpus.add(str(selected["uuid"]))
+            if selected.get("id"):
+                assigned_gpus.add(str(selected["id"]))
+
+    cpu = resources.get("cpu") if isinstance(resources.get("cpu"), Mapping) else {}
+    memory = resources.get("memory") if isinstance(resources.get("memory"), Mapping) else {}
+    disk = resources.get("disk") if isinstance(resources.get("disk"), Mapping) else {}
+    for required, total, available, reserved, code in (
+        (float(requirements.get("cpu_cores") or 0), cpu.get("logical_cores"), cpu.get("logical_cores"), used_cpu, "CPU_INSUFFICIENT"),
+        (int(requirements.get("ram_bytes") or 0), memory.get("effective_total_bytes", memory.get("total_bytes")),
+         memory.get("effective_available_bytes", memory.get("available_bytes")), used_ram, "RAM_INSUFFICIENT"),
+        (int(requirements.get("scratch_bytes") or 0), disk.get("total_bytes"), disk.get("free_bytes"), used_scratch, "SCRATCH_INSUFFICIENT"),
+    ):
+        reason = _capacity_wait(required, total, available, reserved, code)
+        if reason:
+            return False, reason, None
+    required_storage = set(requirements.get("storage_source_ids") or ())
+    if required_storage and not required_storage.issubset(_reported_storage_ids(resources)):
+        return False, "STORAGE_REACHABILITY_UNVERIFIED", None
+
+    if capability != "training":
+        return True, "OK", None
+    if int(requirements.get("gpu_count") or 0) != 1:
+        return False, "MULTI_GPU_REQUIREMENT_UNSUPPORTED", None
+    gpu = resources.get("gpu") if isinstance(resources.get("gpu"), Mapping) else {}
+    items = (gpu or {}).get("gpus") if isinstance(gpu, Mapping) else []
+    items = [item for item in (items if isinstance(items, list) else []) if isinstance(item, Mapping)]
+    seen_uuids: set[str] = set()
+    for item in items:
+        uuid = str(item.get("uuid") or "").strip()
+        if uuid and uuid in seen_uuids:
+            return False, "DUPLICATE_GPU_IDENTITY", None
+        if uuid:
+            seen_uuids.add(uuid)
+    requested = str(requested_device or "auto").strip().lower()
+    minimum_memory = int(requirements.get("min_gpu_memory_bytes") or 0)
+    allowed_uuids = {str(value) for value in requirements.get("gpu_uuids") or ()}
+    candidates = []
+    failures = []
+    for item in items:
+        uuid = str(item.get("uuid") or "").strip()
+        if not uuid:
+            failures.append("UNKNOWN: GPU_IDENTITY_UNVERIFIED")
+            continue
+        device = str(item.get("id") or f"cuda:{item.get('index', 0)}")
+        if (allowed_uuids and uuid not in allowed_uuids) or (requested.startswith("cuda:") and device != requested):
+            failures.append("INCOMPATIBLE: GPU_IDENTITY_NOT_SELECTED")
+            continue
+        total_value, free_value = item.get("memory_total_bytes"), item.get("memory_free_bytes")
+        if (type(total_value) not in (int, float) or not math.isfinite(total_value) or total_value <= 0
+                or type(free_value) not in (int, float) or not math.isfinite(free_value) or free_value < 0):
+            failures.append("UNKNOWN: GPU_REPORT_MISSING")
+            continue
+        reason = _capacity_wait(max(1, minimum_memory), total_value, free_value, 0, "GPU_INSUFFICIENT")
+        if reason:
+            failures.append(reason)
+            continue
+        if uuid in assigned_gpus or device in assigned_gpus or not _gpu_is_training_candidate(item):
+            failures.append("TEMPORARILY_UNAVAILABLE: GPU_INSUFFICIENT")
+            continue
+        candidates.append(item)
+    if not candidates:
+        reason = next((value for value in failures if value.startswith("UNKNOWN:")), None)
+        reason = reason or next((value for value in failures if value.startswith("TEMPORARILY_UNAVAILABLE:")), None)
+        return False, reason or (failures[0] if failures else "UNKNOWN: GPU_REPORT_MISSING"), None
+    best = max(candidates, key=_gpu_rank_value)
+    return True, "OK", {
+        "id": str(best.get("id") or f"cuda:{best.get('index', 0)}"),
+        "identity": str(best.get("uuid") or best.get("id") or f"cuda:{best.get('index', 0)}"),
+        "index": int(best.get("index") or 0),
+        "uuid": best.get("uuid"),
+        "name": best.get("name"),
+        "memory_free_bytes": int(best.get("memory_free_bytes") or 0),
+        "memory_total_bytes": int(best.get("memory_total_bytes") or 0),
+        "utilization_percent": (
+            int(best.get("utilization_percent"))
+            if best.get("utilization_percent") is not None else None
+        ),
+    }
+
+
+class CentralTaskAllocator:
+    def __init__(self, repository, artifacts, *, heartbeat_ttl_seconds: int = HEARTBEAT_TTL_SECONDS):
+        self.repository = repository
+        self.artifacts = artifacts
+        self.heartbeat_ttl_seconds = max(10, int(heartbeat_ttl_seconds))
+        # Ensure both authoritative tables before any scheduling transaction.
+        # Never run executescript() after BEGIN IMMEDIATE: sqlite3 may issue an
+        # implicit COMMIT around scripts and would break allocator atomicity.
+        ServiceNodeRepository(repository)
+        with closing(self.repository._connect()) as database:
+            ensure_task_node_assignment_schema(database)
+
+    def list(self, *, active_only: bool = False, node_id: str | None = None) -> list[dict[str, Any]]:
+        clauses, values = [], []
+        if active_only:
+            clauses.append("state IN ('ASSIGNED','CLAIMED')")
+        if node_id is not None:
+            clauses.append("node_id=?")
+            values.append(str(node_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with closing(self.repository._connect()) as database:
+            rows = database.execute(
+                f"SELECT * FROM task_node_assignments{where} ORDER BY assigned_at DESC,task_id DESC,generation DESC",
+                values,
+            ).fetchall()
+        return [_public(row) for row in rows]
+
+    def get_active(self, task_id: str) -> dict[str, Any] | None:
+        with closing(self.repository._connect()) as database:
+            row = database.execute(
+                "SELECT * FROM task_node_assignments WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED') ORDER BY generation DESC LIMIT 1",
+                (str(task_id),),
+            ).fetchone()
+        return _public(row) if row is not None else None
+
+    def list_preemptions(self, *, incoming_task_id: str | None = None) -> list[dict[str, Any]]:
+        clauses, values = [], []
+        if incoming_task_id is not None:
+            clauses.append("incoming_task_id=?")
+            values.append(str(incoming_task_id))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        with closing(self.repository._connect()) as database:
+            rows = database.execute(
+                f"SELECT * FROM task_preemptions{where} ORDER BY created_at DESC,incoming_task_id,victim_task_id",
+                values,
+            ).fetchall()
+        return [
+            {
+                "incoming_task_id": str(row["incoming_task_id"]),
+                "victim_task_id": str(row["victim_task_id"]),
+                "node_id": str(row["node_id"]),
+                "state": str(row["state"]),
+                "created_at": str(row["created_at"]),
+                "resumed_at": row["resumed_at"],
+                "detail": str(row["detail"] or ""),
+            }
+            for row in rows
+        ]
+
+    def preempt_for(self, incoming_task_id: str, node_id: str) -> dict[str, Any]:
+        """Safely displace resumable work on one explicit node.
+
+        The running victim is asked to cancel through the existing durable task
+        state machine. It is automatically requeued after the incoming task
+        finishes. We never kill an arbitrary process or preempt a task type that
+        does not already have a recovery contract.
+        """
+        incoming = self.repository.get(str(incoming_task_id))
+        if incoming is None:
+            raise NodeAssignmentError("NODE_PREEMPT_TASK_NOT_FOUND", "incoming task does not exist", 404)
+        if incoming.status is not TaskStatus.QUEUED:
+            raise NodeAssignmentError("NODE_PREEMPT_NOT_QUEUED", "incoming task must still be queued", 409)
+        target = str(node_id or "").strip()
+        if not target or task_requested_node_id(incoming, self.artifacts) != target:
+            raise NodeAssignmentError(
+                "NODE_PREEMPT_AFFINITY_REQUIRED",
+                "preemption requires a queued task with strict affinity to the selected node",
+                409,
+            )
+        capability = task_node_capability(incoming, self.artifacts)
+        remote_contract = task_remote_execution_contract(incoming, self.artifacts)
+        required_mode = task_node_connection_mode(incoming, self.artifacts)
+        current = datetime.now(timezone.utc)
+        now = current.isoformat()
+
+        # Queue-front is part of preemption semantics even if the node becomes
+        # idle between preflight and submit.
+        try:
+            self.repository.promote(incoming.task_id)
+        except ValueError as error:
+            raise NodeAssignmentError("NODE_PREEMPT_PROMOTE_FAILED", str(error), 409) from error
+
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            candidates = _online_nodes(
+                database,
+                str(capability or ""),
+                now=current,
+                ttl_seconds=self.heartbeat_ttl_seconds,
+                remote_contract=remote_contract,
+                required_connection_mode=required_mode,
+            )
+            selected_node = next(
+                (row for row in candidates if str(row["node_id"]) == target),
+                None,
+            )
+            if selected_node is None:
+                database.rollback()
+                raise NodeAssignmentError(
+                    "NODE_PREEMPT_NODE_UNAVAILABLE",
+                    "selected node is no longer online with the required capability",
+                    409,
+                )
+
+            # Execution start releases the assignment row, so active
+            # ASSIGNED/CLAIMED rows alone are not running-task truth.
+            running_rows = database.execute(
+                """
+                SELECT * FROM tasks
+                 WHERE worker_id=? AND status IN ('RUNNING','CANCEL_REQUESTED')
+                   AND task_id<>?
+                 ORDER BY updated_at,task_id
+                """,
+                (f"agent:{target}", incoming.task_id),
+            ).fetchall()
+            assignment_rows = database.execute(
+                """
+                SELECT * FROM task_node_assignments
+                 WHERE node_id=? AND state IN ('ASSIGNED','CLAIMED')
+                   AND task_id<>?
+                 ORDER BY assigned_at,task_id,generation
+                """,
+                (target, incoming.task_id),
+            ).fetchall()
+
+            victims: dict[str, dict[str, Any]] = {}
+            for task_row in running_rows:
+                victim = _from_row(task_row)
+                victims[victim.task_id] = {"task": victim, "assignment": None}
+            for assignment in assignment_rows:
+                task_row = database.execute(
+                    "SELECT * FROM tasks WHERE task_id=?",
+                    (str(assignment["task_id"]),),
+                ).fetchone()
+                if task_row is None:
+                    continue
+                victim = _from_row(task_row)
+                entry = victims.setdefault(victim.task_id, {"task": victim, "assignment": None})
+                entry["task"] = victim
+                entry["assignment"] = assignment
+
+            for entry in victims.values():
+                victim = entry["task"]
+                if victim.status is TaskStatus.RUNNING and not task_preemptible(victim, self.artifacts):
+                    database.rollback()
+                    raise NodeAssignmentError(
+                        "NODE_PREEMPT_UNSUPPORTED_VICTIM",
+                        f"node is running non-preemptible task {victim.task_id} ({victim.kind.value})",
+                        409,
+                    )
+
+            preempted, released = [], []
+            for entry in victims.values():
+                victim = entry["task"]
+                assignment = entry["assignment"]
+                if victim.status is TaskStatus.RUNNING:
+                    changed = database.execute(
+                        """
+                        UPDATE tasks
+                           SET status='CANCEL_REQUESTED',stage='preempting',
+                               current_item=?,updated_at=?
+                         WHERE task_id=? AND status='RUNNING'
+                        """,
+                        (
+                            f"被高优先级清洗任务 {incoming.task_id} 抢占，正在保存清洗进度并让出节点",
+                            now,
+                            victim.task_id,
+                        ),
+                    ).rowcount
+                    if changed != 1:
+                        database.rollback()
+                        raise NodeAssignmentError(
+                            "NODE_PREEMPT_RACE",
+                            f"task {victim.task_id} changed state during preemption",
+                            409,
+                        )
+                    database.execute(
+                        """
+                        INSERT INTO task_preemptions
+                            (incoming_task_id,victim_task_id,node_id,state,created_at,detail)
+                        VALUES (?,?,?,'WAITING_CANCEL',?,?)
+                        ON CONFLICT(incoming_task_id,victim_task_id) DO UPDATE SET
+                            node_id=excluded.node_id,state='WAITING_CANCEL',
+                            created_at=excluded.created_at,resumed_at=NULL,detail=excluded.detail
+                        """,
+                        (
+                            incoming.task_id,
+                            victim.task_id,
+                            target,
+                            now,
+                            f"preempted recoverable {victim.kind.value} and will resume after incoming task",
+                        ),
+                    )
+                    preempted.append(victim.task_id)
+
+                if assignment is not None and victim.status is not TaskStatus.RUNNING:
+                    database.execute(
+                        """
+                        UPDATE task_node_assignments
+                           SET state='RELEASED',updated_at=?,released_at=?,
+                               release_reason=?,lease_token=NULL,lease_expires_at=NULL
+                         WHERE task_id=? AND generation=? AND state IN ('ASSIGNED','CLAIMED')
+                        """,
+                        (
+                            now,
+                            now,
+                            f"preempted_by:{incoming.task_id}",
+                            victim.task_id,
+                            int(assignment["generation"]),
+                        ),
+                    )
+                    released.append(victim.task_id)
+            database.commit()
+        return {
+            "mode": "preempt",
+            "node_id": target,
+            "incoming_task_id": incoming.task_id,
+            "preempted_task_ids": preempted,
+            "released_assignment_task_ids": released,
+            "created_at": now,
+        }
+
+    def _iter_agent_candidate_batches(self):
+        """Yield ordered, bounded preflight batches without holding a writer lock.
+
+        The canonical training:auto resource is local during normal operation.
+        We examine it in a separate *legacy fallback* pass rather than dropping
+        it: old/third-party producers may have persisted a remote payload there.
+        Every page advances using the complete scheduling sort key. The
+        legacy-only fallback is bounded to one page *per poll*, with a
+        process-local round-robin cursor so later legacy jobs are revisited
+        under continued polling instead of being permanently truncated.
+        """
+        current = datetime.now(timezone.utc)
+        with closing(self.repository._connect()) as database:
+            online = database.execute(
+                """SELECT * FROM service_nodes
+                    WHERE enabled=1 AND connection_mode='agent'
+                      AND last_heartbeat_at IS NOT NULL"""
+            ).fetchall()
+            idle_capabilities = {}
+            for node in online:
+                heartbeat = _utc(node["last_heartbeat_at"])
+                if heartbeat is None or (current - heartbeat).total_seconds() > self.heartbeat_ttl_seconds:
+                    continue
+                node_id = str(node["node_id"])
+                if _node_active_work_count(database, node_id) >= _agent_execution_slots(node):
+                    continue
+                allowed = set(_loads(node["allowed_capabilities"], []))
+                reported = set(_loads(node["reported_capabilities"], []))
+                caps = allowed & reported
+                if caps:
+                    idle_capabilities[node_id] = caps
+        if not idle_capabilities:
+            return
+
+        def fetch_page(predicate, cursor_key):
+            cursor_clause = ""
+            params = []
+            if cursor_key is not None:
+                priority, rank, created, task_id = cursor_key
+                cursor_clause = """
+                  AND (task.priority > ?
+                    OR (task.priority = ? AND task.queue_rank < ?)
+                    OR (task.priority = ? AND task.queue_rank = ? AND task.created_at > ?)
+                    OR (task.priority = ? AND task.queue_rank = ? AND task.created_at = ?
+                        AND task.task_id > ?))
+                """
+                params = [
+                    priority, priority, rank, priority, rank, created,
+                    priority, rank, created, task_id,
+                ]
+            with closing(self.repository._connect()) as preflight:
+                return preflight.execute(
+                    f"""
+                    SELECT task.* FROM tasks task
+                     WHERE task.status='QUEUED'
+                       AND task.kind IN (
+                           'TRAINING','MODEL_CONVERSION','MATERIAL_IMPORT',
+                           'MODEL_INSTALL','DEPLOYMENT_TEST','MATERIAL_BATCH'
+                       )
+                       AND ({predicate})
+                       AND NOT EXISTS (
+                           SELECT 1 FROM task_node_assignments assignment
+                            WHERE assignment.task_id=task.task_id
+                              AND assignment.state IN ('ASSIGNED','CLAIMED')
+                       )
+                       {cursor_clause}
+                     ORDER BY task.priority ASC, task.queue_rank DESC,
+                              task.created_at ASC, task.task_id ASC
+                     LIMIT 64
+                    """,
+                    (*params,),
+                ).fetchall()
+
+        def row_cursor(row):
+            return (
+                int(row["priority"]), int(row["queue_rank"]),
+                str(row["created_at"]), str(row["task_id"]),
+            )
+
+        for legacy_local_fallback in (False, True):
+            cursor_key = None
+            predicate = (
+                "task.kind='TRAINING' AND task.resource_key='training:auto' "
+                "AND task.required_capabilities NOT LIKE '%agent.remote%'"
+                if legacy_local_fallback else
+                "NOT (task.kind='TRAINING' AND task.resource_key='training:auto' "
+                "AND task.required_capabilities NOT LIKE '%agent.remote%')"
+            )
+            while True:
+                if legacy_local_fallback:
+                    # Compatibility: old producers may encode Agent intent only
+                    # inside the JSON payload of training:auto. Never discard
+                    # those tasks, but inspect at most one page per poll. A
+                    # process-local scan cursor resumes across HTTP requests.
+                    # The SQLite task/assignment tables remain the sole truth.
+                    db_stat = self.repository.path.stat()
+                    scan_key = (
+                        str(self.repository.path.resolve()),
+                        db_stat.st_dev, db_stat.st_ino,
+                    )
+                    with _AGENT_LEGACY_SCAN_LOCK:
+                        cursor_key = _AGENT_LEGACY_SCAN_CURSORS.get(scan_key)
+                        rows = fetch_page(predicate, cursor_key)
+                        if not rows and cursor_key is not None:
+                            # Queue may have changed or scan reached the tail.
+                            # Wrap around rather than permanently skip new
+                            # earlier-priority tasks and previously offline pins.
+                            rows = fetch_page(predicate, None)
+                        _AGENT_LEGACY_SCAN_CURSORS[scan_key] = (
+                            row_cursor(rows[-1]) if len(rows) == 64 else None
+                        )
+                else:
+                    rows = fetch_page(predicate, cursor_key)
+                if not rows:
+                    break
+                eligible_ids = []
+                for row in rows:
+                    cursor_key = row_cursor(row)
+                    task = _from_row(row)
+                    if task_node_connection_mode(task, self.artifacts) != "agent":
+                        continue
+                    capability = task_node_capability(task, self.artifacts)
+                    if capability is None:
+                        continue
+                    if task_remote_execution_contract(task, self.artifacts) is None:
+                        continue
+                    pin = task_requested_node_id(task, self.artifacts)
+                    if not any(
+                        capability in caps and (not pin or pin == node_id)
+                        for node_id, caps in idle_capabilities.items()
+                    ):
+                        continue
+                    eligible_ids.append(task.task_id)
+                    if len(eligible_ids) == 8:
+                        # The canonical writer revalidates every task after
+                        # preflight; this scan never grants execution rights.
+                        yield tuple(eligible_ids)
+                        eligible_ids = []
+                if eligible_ids:
+                    yield tuple(eligible_ids)
+                if legacy_local_fallback or len(rows) < 64:
+                    # The legacy cursor is resumed by the next Agent poll; do
+                    # not scan the entire legacy queue in one HTTP request.
+                    break
+
+    def assign_next(self, *, agent_only: bool = False) -> dict[str, Any] | None:
+        if not agent_only:
+            # The manually invoked scheduler keeps its existing full-queue
+            # policy and preemption semantics unchanged.
+            return self._assign_next_candidates(None, agent_only=False)
+        for candidate_ids in self._iter_agent_candidate_batches():
+            assigned = self._assign_next_candidates(candidate_ids, agent_only=True)
+            if assigned is _AGENT_CAPACITY_EXHAUSTED:
+                # Every Agent is busy *now*: defer queued work until the next
+                # normal polling opportunity, rather than scanning the tail.
+                return None
+            if assigned is not None:
+                return assigned
+        return None
+
+    def _assign_next_candidates(self, agent_candidate_ids, *, agent_only: bool):
+        current = datetime.now(timezone.utc)
+        now = current.isoformat()
+        # This function alone owns the canonical BEGIN IMMEDIATE assignment
+        # fence; preflight data is never sufficient to grant a reservation.
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            if agent_only:
+                # Preflight can take time on a large queue. Online heartbeat
+                # eligibility must be measured at allocation, not at scan start.
+                current = datetime.now(timezone.utc)
+                now = current.isoformat()
+                if not _has_idle_agent_slot(
+                    database, now=current, ttl_seconds=self.heartbeat_ttl_seconds,
+                ):
+                    # Another concurrent claim consumed the last Agent slot
+                    # after preflight. No candidate is runnable, so release
+                    # SQLite's writer immediately and skip all remaining pages.
+                    database.commit()
+                    return _AGENT_CAPACITY_EXHAUSTED
+            if not agent_only:
+                # Agent-triggered auto assignment must not mutate unrelated
+                # local/preempted task state while scanning its own queue.
+                _resume_ready_preemptions_in(database, now)
+            if agent_only:
+                # Revalidate queue status and active assignment for each
+                # preflighted ID under the one canonical allocation lock.
+                # A stale/preempted/cancelled task cannot be assigned.
+                task_rows = (
+                    database.execute(
+                        """
+                        SELECT task.* FROM tasks task
+                         WHERE task.task_id=? AND task.status='QUEUED'
+                           AND NOT EXISTS (
+                               SELECT 1 FROM task_node_assignments assignment
+                                WHERE assignment.task_id=task.task_id
+                                  AND assignment.state IN ('ASSIGNED','CLAIMED')
+                           )
+                        """,
+                        (candidate_id,),
+                    ).fetchone()
+                    for candidate_id in agent_candidate_ids
+                )
+            else:
+                task_rows = database.execute(
+                    """
+                    SELECT task.* FROM tasks task
+                     WHERE task.status='QUEUED'
+                       AND NOT EXISTS (
+                           SELECT 1 FROM task_node_assignments assignment
+                            WHERE assignment.task_id=task.task_id
+                              AND assignment.state IN ('ASSIGNED','CLAIMED')
+                       )
+                     ORDER BY task.priority ASC,task.queue_rank DESC,task.created_at ASC,task.task_id ASC
+                    """
+                ).fetchall()
+            selected = None
+            for task_row in task_rows:
+                if task_row is None:
+                    continue
+                task = _from_row(task_row)
+                capability = task_node_capability(task, self.artifacts)
+                if capability is None:
+                    continue
+                requirements = _task_resource_requirements(task, self.artifacts, capability)
+                if requirements is _INVALID_RESOURCE_REQUIREMENTS:
+                    # Malformed opt-in demand must stay QUEUED; never strip it.
+                    continue
+                payload_digest = None
+                if requirements is not None:
+                    try:
+                        payload_value = self.artifacts.read_json(
+                            task.task_id, task.payload_ref, default=None,
+                        )
+                        if not isinstance(payload_value, Mapping):
+                            continue
+                        payload_digest = _payload_digest(payload_value)
+                    except (OSError, TypeError, ValueError):
+                        continue
+                remote_contract = task_remote_execution_contract(task, self.artifacts)
+                required_connection_mode = task_node_connection_mode(task, self.artifacts)
+                if agent_only and (
+                    required_connection_mode != "agent"
+                    or remote_contract is None
+                ):
+                    # Automatic Agent polling must never intercept A800/local
+                    # Worker tasks, even if they carry optional portable metadata.
+                    continue
+                nodes = _online_nodes(
+                    database,
+                    capability,
+                    now=current,
+                    ttl_seconds=self.heartbeat_ttl_seconds,
+                    remote_contract=remote_contract,
+                    required_connection_mode=required_connection_mode,
+                )
+                if not nodes:
+                    database.execute("UPDATE tasks SET stage='resource_waiting',resource_wait_reason=? WHERE task_id=? AND status='QUEUED'",
+                                     ("UNKNOWN: no online compatible resource report", task.task_id))
+                    continue
+                requested_node_id = task_requested_node_id(task, self.artifacts)
+                if requested_node_id:
+                    nodes = [
+                        node for node in nodes
+                        if str(node["node_id"]) == requested_node_id
+                    ]
+                    if not nodes:
+                        # Manual node selection is strict affinity. Never spill a
+                        # requested task onto another machine when that node is
+                        # offline, busy with incompatible work, or loses capability.
+                        database.execute("UPDATE tasks SET stage='resource_waiting',resource_wait_reason=? WHERE task_id=? AND status='QUEUED'",
+                                         ("UNKNOWN: selected node has no valid online report", task.task_id))
+                        continue
+                requested_device = (
+                    _requested_training_device(task, self.artifacts)
+                    if capability == "training"
+                    else "auto"
+                )
+                ranked = []
+                waiting_reasons = []
+                for node in nodes:
+                    wait = _resource_wait_backoff(database, task.task_id, node, current)
+                    if wait:
+                        waiting_reasons.append(wait)
+                        continue
+                    active = _node_active_work_count(database, str(node["node_id"]))
+                    if agent_only and active >= _agent_execution_slots(node):
+                        waiting_reasons.append("TEMPORARILY_UNAVAILABLE: node execution slots occupied")
+                        continue
+                    selected_gpu = None
+                    if requirements is not None:
+                        admitted, reason, selected_gpu = _hard_admission(
+                            database, node, capability, requirements,
+                            requested_device=requested_device,
+                        )
+                        if not admitted:
+                            waiting_reasons.append(reason if ":" in reason else f"UNKNOWN: {reason}")
+                            continue
+                    elif capability == "training":
+                        assigned_gpu_ids = _assigned_gpu_ids(database, str(node["node_id"]))
+                        selected_gpu = _selected_gpu(
+                            node,
+                            assigned_gpu_ids=assigned_gpu_ids,
+                            requested_device=requested_device,
+                        )
+                        # A central assignment is the reservation truth between
+                        # heartbeats. Do not hand the same physical GPU to a
+                        # second task while its prior assignment is active.
+                        if selected_gpu is None:
+                            waiting_reasons.append("TEMPORARILY_UNAVAILABLE: no free eligible GPU; capacity not proven incompatible")
+                            continue
+                    if capability == "training" and selected_gpu is None:
+                        continue
+                    score, node_id = _score_node(
+                        node,
+                        capability,
+                        active,
+                        selected_gpu=selected_gpu,
+                    )
+                    ranked.append((score, node_id, node, selected_gpu, active))
+                if not ranked:
+                    # No terminal blocking from a filtered/offline subset. A
+                    # future heartbeat or another legal node can still admit it.
+                    summary = next((reason for reason in waiting_reasons if reason.startswith("UNKNOWN:")), None)
+                    summary = summary or next((reason for reason in waiting_reasons if reason.startswith("TEMPORARILY_UNAVAILABLE:")), None)
+                    summary = summary or (waiting_reasons[0] if waiting_reasons else "UNKNOWN: resource admission unavailable")
+                    database.execute("UPDATE tasks SET stage='resource_waiting',resource_wait_reason=? WHERE task_id=? AND status='QUEUED'",
+                                     (summary, task.task_id))
+                    continue
+                if capability == "cleaning":
+                    # Cleaning is background CPU work: an idle eligible node is
+                    # always preferred over a busy node, regardless of raw host size.
+                    ranked.sort(key=lambda item: (int(item[4]) > 0, -item[0], item[1]))
+                else:
+                    ranked.sort(key=lambda item: (-item[0], item[1]))
+                selected = (task, capability, ranked[0][2], remote_contract, ranked[0][3], ranked[0][4])
+                break
+            if selected is None:
+                database.commit()
+                return None
+            task, capability, node, remote_contract, preselected_gpu, prior_active = selected
+            generation = int(database.execute(
+                "SELECT COALESCE(MAX(generation),0)+1 FROM task_node_assignments WHERE task_id=?",
+                (task.task_id,),
+            ).fetchone()[0])
+            gpu = preselected_gpu if capability == "training" else None
+            resolved = {
+                "protocol": "agent-http-v1",
+                "node_id": str(node["node_id"]),
+                "capability": capability,
+                "requested_device": requested_device if capability == "training" else None,
+                "selected_device": gpu["id"] if gpu else "cpu",
+                "selected_gpu": gpu,
+                "resource_requirements": dict(requirements) if requirements else None,
+                "payload_digest": payload_digest,
+                "hard_admission": "verified_declared" if requirements is not None else "legacy",
+                # Snapshot host-level contention at reservation time. The current
+                # assignment is included so Agent workers can divide CPU/RAM/cache
+                # budgets across simultaneously reserved tasks on a multi-GPU node.
+                "concurrent_reservations": max(1, int(prior_active) + 1),
+                "node_build_id": str(node["build_id"] or ""),
+                "node_runtime": _loads(node["runtime_json"], {}),
+                "connection_mode": str(node["connection_mode"] or ""),
+                "remote_execution": dict(remote_contract) if remote_contract is not None else None,
+                "assigned_at": now,
+            }
+            database.execute(
+                """
+                INSERT INTO task_node_assignments
+                    (task_id,generation,node_id,capability,state,assigned_at,updated_at,resolved_execution_config)
+                VALUES (?,?,?,?, 'ASSIGNED',?,?,?)
+                """,
+                (task.task_id, generation, str(node["node_id"]), capability, now, now, _dumps(resolved)),
+            )
+            database.execute(
+                "UPDATE tasks SET stage='queued',resource_wait_reason=NULL,updated_at=? "
+                "WHERE task_id=? AND status='QUEUED' AND stage='resource_waiting'",
+                (now, task.task_id),
+            )
+            row = database.execute(
+                "SELECT * FROM task_node_assignments WHERE task_id=? AND generation=?",
+                (task.task_id, generation),
+            ).fetchone()
+            database.commit()
+        return _public(row)
+
+    def release(self, task_id: str, reason: str = "operator_release") -> dict[str, Any]:
+        now = utc_now()
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            row = database.execute(
+                "SELECT * FROM task_node_assignments WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED') ORDER BY generation DESC LIMIT 1",
+                (str(task_id),),
+            ).fetchone()
+            if row is None:
+                database.rollback()
+                raise NodeAssignmentError("NODE_ASSIGNMENT_NOT_FOUND", "task has no active node assignment", 404)
+            database.execute(
+                """
+                UPDATE task_node_assignments
+                   SET state='RELEASED',updated_at=?,released_at=?,release_reason=?,lease_token=NULL,lease_expires_at=NULL
+                 WHERE task_id=? AND generation=? AND state IN ('ASSIGNED','CLAIMED')
+                """,
+                (now, now, str(reason or "operator_release")[:1000], str(task_id), int(row["generation"])),
+            )
+            released = database.execute(
+                "SELECT * FROM task_node_assignments WHERE task_id=? AND generation=?",
+                (str(task_id), int(row["generation"])),
+            ).fetchone()
+            database.commit()
+        return _public(released)
+
+    def claim_for_node(self, node_id: str, *, lease_seconds: int = DEFAULT_ASSIGNMENT_LEASE_SECONDS) -> dict[str, Any] | None:
+        """Reserve one assignment for the future HTTP Agent executor.
+
+        TaskRepository is intentionally still QUEUED here. The executor protocol
+        will own the one atomic QUEUED->RUNNING transition and task execution
+        lease, preserving the existing fencing model.
+        """
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        # A normal empty Agent poll has no state to mutate. Inspect only the
+        # current node's claimable/expired reservations and the shared CLEAN
+        # preemption queue before taking SQLite's single writer lock.
+        #
+        # This is a hint, never an ownership decision: an assignment created
+        # just after the read will be seen on the next poll. When work exists,
+        # the original BEGIN IMMEDIATE / lease-token fencing remains unchanged.
+        with closing(self.repository._connect()) as preflight:
+            possible_claim = preflight.execute(
+                """
+                SELECT 1 FROM task_node_assignments
+                 WHERE node_id=?
+                   AND (state='ASSIGNED'
+                     OR (state='CLAIMED' AND lease_expires_at IS NOT NULL
+                         AND lease_expires_at<=?))
+                 LIMIT 1
+                """,
+                (str(node_id), now),
+            ).fetchone()
+            if possible_claim is None:
+                # Even a node with no own assignments may be the poll that
+                # resumes a canceled CLEAN victim. Never drop this contract.
+                preemptions_waiting = preflight.execute(
+                    "SELECT 1 FROM task_preemptions WHERE state='WAITING_CANCEL' LIMIT 1"
+                ).fetchone()
+                if preemptions_waiting is None:
+                    return None
+        expires = (now_dt + timedelta(seconds=max(5, int(lease_seconds)))).isoformat()
+        token = secrets.token_urlsafe(24)
+        with closing(self.repository._connect()) as database:
+            database.execute("BEGIN IMMEDIATE")
+            _resume_ready_preemptions_in(database, now)
+            database.execute(
+                """
+                UPDATE task_node_assignments
+                   SET state='ASSIGNED',lease_token=NULL,lease_expires_at=NULL,updated_at=?
+                 WHERE node_id=? AND state='CLAIMED' AND lease_expires_at IS NOT NULL AND lease_expires_at<=?
+                """,
+                (now, str(node_id), now),
+            )
+            row = database.execute(
+                """
+                SELECT assignment.* FROM task_node_assignments assignment
+                JOIN tasks task ON task.task_id=assignment.task_id
+                 WHERE assignment.node_id=? AND assignment.state='ASSIGNED' AND task.status='QUEUED'
+                 ORDER BY task.priority ASC,task.queue_rank DESC,task.created_at ASC,task.task_id ASC
+                 LIMIT 1
+                """,
+                (str(node_id),),
+            ).fetchone()
+            if row is None:
+                database.commit()
+                return None
+            changed = database.execute(
+                """
+                UPDATE task_node_assignments
+                   SET state='CLAIMED',claimed_at=COALESCE(claimed_at,?),updated_at=?,lease_token=?,lease_expires_at=?
+                 WHERE task_id=? AND generation=? AND state='ASSIGNED'
+                """,
+                (now, now, token, expires, str(row["task_id"]), int(row["generation"])),
+            ).rowcount
+            if changed != 1:
+                database.rollback()
+                return None
+            claimed = database.execute(
+                "SELECT * FROM task_node_assignments WHERE task_id=? AND generation=?",
+                (str(row["task_id"]), int(row["generation"])),
+            ).fetchone()
+            database.commit()
+        result = _public(claimed)
+        result["assignment_lease_token"] = token
+        return result
+
+
+class AssignmentAwareFencedTaskRepository(FencedTaskRepository):
+    """Production Worker repository that refuses centrally assigned tasks."""
+
+    def claim_next(self, worker_id, kinds, capabilities, lease_seconds: int = 30, admission=None, *, candidate_budget=256):
+        caller = admission
+
+        def assignment_guard(database, candidate, owner, token, expires_at, now):
+            if (
+                str(candidate["kind"]) == TaskKind.TRAINING.value
+                and str(candidate["resource_key"]).startswith("training:remote:")
+            ):
+                # RemoteTrainingPreparation owns the explicit remote target.
+                # It must wait for its Agent execution assignment even when
+                # no assignment has been created yet. Never let the A800/local
+                # GPU Worker claim this queue entry or bypass local GPU limits.
+                return False, "REMOTE_EXECUTION_WAITING_FOR_AGENT: remote training is Agent-owned"
+            table = database.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_node_assignments'"
+            ).fetchone()
+            if table is not None:
+                row = database.execute(
+                    "SELECT node_id FROM task_node_assignments WHERE task_id=? AND state IN ('ASSIGNED','CLAIMED') ORDER BY generation DESC LIMIT 1",
+                    (str(candidate["task_id"]),),
+                ).fetchone()
+                if row is not None:
+                    return False, f"CENTRAL_NODE_ASSIGNED: waiting for Agent execution on node {row['node_id']}"
+            if caller is None:
+                return True, None
+            return caller(database, candidate, owner, token, expires_at, now)
+
+        assignment_guard.prepare = admission_preparer(caller)
+        return super().claim_next(
+            worker_id,
+            kinds,
+            capabilities,
+            lease_seconds,
+            admission=assignment_guard, candidate_budget=candidate_budget,
+        )
+
+
+def central_scheduler_router(task_repository, task_artifacts):
+    from fastapi import APIRouter, Body, HTTPException, Query
+
+    router = APIRouter(prefix="/api/v63/scheduler")
+
+    def allocator() -> CentralTaskAllocator:
+        return CentralTaskAllocator(task_repository(), task_artifacts())
+
+    @router.get("/assignments")
+    def assignments(active_only: bool = Query(default=True), node_id: str | None = Query(default=None)):
+        return {"items": allocator().list(active_only=active_only, node_id=node_id)}
+
+    @router.post("/allocate-next")
+    def allocate_next():
+        assignment = allocator().assign_next()
+        return {"assigned": assignment is not None, "assignment": assignment}
+
+    @router.post("/assignments/{task_id}/release")
+    def release_assignment(task_id: str, payload: dict = Body(default={})):
+        try:
+            assignment = allocator().release(task_id, str(payload.get("reason") or "operator_release"))
+        except NodeAssignmentError as error:
+            raise HTTPException(status_code=error.status_code, detail={"code": error.code, "message": str(error)}) from error
+        return {"ok": True, "assignment": assignment}
+
+    return router
+
+
+__all__ = [
+    "ACTIVE_ASSIGNMENT_STATES",
+    "ASSIGNMENT_STATES",
+    "AssignmentAwareFencedTaskRepository",
+    "CentralTaskAllocator",
+    "NodeAssignmentError",
+    "REMOTE_EXECUTION_CONTRACT_VERSION",
+    "SUPPORTED_REMOTE_EXECUTION_TRANSPORTS",
+    "central_scheduler_router",
+    "ensure_task_node_assignment_schema",
+    "task_node_capability",
+    "task_node_connection_mode",
+    "task_preemptible",
+    "task_requested_node_id",
+    "task_remote_execution_contract",
+]
+

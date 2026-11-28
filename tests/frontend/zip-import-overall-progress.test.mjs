@@ -1,56 +1,96 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
+import {readFileSync} from 'node:fs';
+import {overallZipProgress, zipPhaseDetail} from '../../static/modules/zip-import-runtime.js';
 
-const source = fs.readFileSync(new URL('../../static/app.js', import.meta.url), 'utf8');
+const runtime = readFileSync(new URL('../../static/modules/zip-import-runtime.js', import.meta.url), 'utf8');
 
-function extractProgressMapper() {
-  const match = source.match(/function mapImportProcessingProgress411\(progress\)\{([^}]*)\}/);
-  assert.ok(match, 'ZIP import must define a processing-to-overall progress mapper');
-  return new Function('progress', match[1]);
-}
-
-function extractPollFailureAction() {
-  const match = source.match(/function importPollFailureAction411\(failures,code\)\{([^}]*)\}/);
-  assert.ok(match, 'ZIP import must define a bounded polling failure policy');
-  return new Function('failures', 'code', match[1]);
-}
-
-test('ZIP processing progress is projected into the whole-task 38..99 range', () => {
-  const mapProgress = extractProgressMapper();
-  assert.equal(mapProgress(0), 38);
-  assert.equal(mapProgress(8), 42.9);
-  assert.equal(mapProgress(34), 58.7);
-  assert.equal(mapProgress(45), 65.5);
-  assert.equal(mapProgress(95), 96);
-  assert.equal(mapProgress(100), 99);
-  assert.equal(mapProgress(-10), 38);
-  assert.equal(mapProgress(200), 99);
+test('ZIP browser consumes server-owned overall progress and does not remap lifecycle status', () => {
+  assert.equal(overallZipProgress({
+    status:'uploading',
+    progress:17,
+    zip_display_progress:{overall_progress:12.5},
+  }),12.5);
+  assert.equal(overallZipProgress({status:'merging',progress:36}),36);
+  assert.equal(overallZipProgress({status:'validating',progress:41}),41);
+  assert.equal(overallZipProgress({status:'running',progress:73}),73);
+  assert.equal(overallZipProgress({status:'done',progress:100}),100);
 });
 
-test('active ZIP polling uses whole-task progress instead of raw backend phase progress', () => {
-  assert.match(source, /progress:mapImportProcessingProgress411\(j\.progress\)/);
-  assert.doesNotMatch(source, /progress:Number\(j\.progress\|\|0\)/);
-  assert.match(source, /const p=e\.loaded\/e\.total\*35/);
-  assert.match(source, /progress:p,eta,uploadSeconds:elapsed/);
-  assert.match(source, /progress:38,uploadSeconds:job\.upload_seconds/);
-  assert.match(source, /stage:'导入完成'.*progress:100/);
+test('ZIP phase detail preserves unknown percent and ETA instead of coercing null to zero', () => {
+  assert.deepEqual(zipPhaseDetail({
+    zip_display_progress:{
+      phase:'SCAN',
+      phase_progress:null,
+      completed:null,
+      total:null,
+      eta_seconds:null,
+    },
+  }),{
+    text:'',
+    phaseProgress:null,
+    etaSeconds:null,
+  });
+  assert.deepEqual(zipPhaseDetail({
+    zip_display_progress:{
+      phase:'EXTRACT',
+      phase_progress:25,
+      completed:25,
+      total:100,
+      unit:'files',
+      eta_seconds:12,
+    },
+  }),{
+    text:'阶段 25% · 25 / 100 文件 · 预计剩余 12 秒',
+    phaseProgress:25,
+    etaSeconds:12,
+  });
 });
 
-test('ZIP polling is bounded and never spins forever when task status cannot be read', () => {
-  const action = extractPollFailureAction();
-  assert.equal(action(1, 'NETWORK_ERROR'), 'retry');
-  assert.equal(action(11, 'HTTP_503'), 'retry');
-  assert.equal(action(12, 'HTTP_503'), 'unavailable');
-  assert.equal(action(1, 'HTTP_404'), 'missing');
+test('durable ZIP polling is page-scoped and centrally owned', () => {
+  const start=runtime.indexOf('function arm(){');
+  const end=runtime.indexOf('async function refreshKnown',start);
+  const arm=runtime.slice(start,end);
+  assert.ok(start>=0&&end>start);
+  assert.match(arm,/PollRegistryRuntime\?\.startTimeout/);
+  assert.match(arm,/'zip-import-runtime'/);
+  assert.match(arm,/activeZipJobs\(jobs\)/);
+  assert.doesNotMatch(arm,/while\s*\(true\)/);
+});
 
-  const pollMatch = source.match(/async function pollImport411\(jobId\)\{([\s\S]*?)\}\n  window\.doUploadZip426/);
-  assert.ok(pollMatch, 'active ZIP polling implementation must be present');
-  const pollBody = pollMatch[1];
-  assert.match(pollBody, /consecutiveErrors/);
-  assert.match(pollBody, /importPollFailureAction411\(consecutiveErrors,e\?\.code\)/);
-  assert.doesNotMatch(pollBody, /catch\(e\)\{continue\}/);
-  assert.match(source, /IMPORT_POLL_UNAVAILABLE/);
-  assert.match(source, /stage:'进度读取中断'/);
-  assert.match(source, /后台任务可能仍在执行/);
+test('browser upload reports only real transfer percent and delegates later phases to server', () => {
+  assert.match(runtime,/const resumedUpload=Math\.max\(0,Math\.min\(100,Number\(session\.upload_progress\)\|\|0\)\)/);
+  assert.match(runtime,/uploading=\{\.\.\.uploading,progress:networkPercent/);
+  assert.match(runtime,/status:'MERGING',progress:null/);
+  assert.match(runtime,/仅显示当前网络上传的真实进度/);
+  assert.doesNotMatch(runtime,/upload\*3\.5/);
+  assert.doesNotMatch(runtime,/e\.ratio\*350/);
+  assert.doesNotMatch(runtime,/3800\+backend/);
+  assert.doesNotMatch(runtime,/progress:36,message:phase\.message/);
+});
+
+test('server canonical ZIP display projection remains the first progress source', () => {
+  const job={
+    status:'running',
+    progress:5,
+    zip_display_progress:{
+      phase:'EXTRACT',
+      phase_label:'解压导入范围',
+      phase_progress:25,
+      overall_progress:53,
+      completed:25,
+      total:100,
+      unit:'files',
+      eta_seconds:12,
+    },
+  };
+  assert.equal(overallZipProgress(job),53);
+  assert.equal(zipPhaseDetail(job).text,'阶段 25% · 25 / 100 文件 · 预计剩余 12 秒');
+  const start=runtime.indexOf('export function overallZipProgress(job)');
+  const end=runtime.indexOf('export function zipPhaseDetail(job)',start);
+  const block=runtime.slice(start,end);
+  assert.match(block,/zipDisplayProgress\(job\)/);
+  assert.doesNotMatch(block,/s==='uploading'/);
+  assert.doesNotMatch(block,/s==='merging'/);
+  assert.doesNotMatch(block,/s==='validating'/);
 });

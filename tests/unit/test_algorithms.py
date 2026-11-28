@@ -14,6 +14,7 @@ from platform_core.algorithms import (
     delete_algorithm_version,
     resolve_current_version_id,
     rollback_algorithm_version,
+    retry_algorithm_version_cleanup,
     update_algorithm_version,
 )
 from platform_core.errors import PlatformError
@@ -186,7 +187,7 @@ def test_attach_version_is_idempotent_for_training_task(tmp_path: Path):
     first = attach_version(path, "algorithm-one", version)
     second = attach_version(path, "algorithm-one", {**version, "id": "duplicate-version"})
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]["versions"]
+    stored = algorithms_module.list_algorithms(path)[0]["versions"]
     assert first["id"] == "version-one"
     assert second["id"] == "version-one"
     assert [row["task_id"] for row in stored] == ["train-one"]
@@ -252,7 +253,7 @@ def test_historical_algorithm_projects_latest_trainable_version_without_rewritin
     assert "current_version_id" not in algorithm
 
 
-def test_rollback_persists_pointer_and_audit_without_deleting_current_version(tmp_path: Path):
+def test_rollback_always_deletes_current_version_and_records_audit(tmp_path: Path):
     path = tmp_path / "algorithms.json"
     versions = [
         _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
@@ -265,29 +266,27 @@ def test_rollback_persists_pointer_and_audit_without_deleting_current_version(tm
         "algorithm-one",
         "v3",
         now="2026-09-15T01:02:03+00:00",
+        delete_current_version=False,
         operator="local_user",
         expected_current_version_id="v5",
     )
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     assert result["previous_current_version_id"] == "v5"
     assert result["current_version_id"] == "v3"
-    assert result["deleted_version_id"] is None
+    assert result["deleted_version_id"] == "v5"
+    assert result["action"] == "rollback_and_delete"
     assert stored["current_version_id"] == "v3"
-    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
-    assert stored["version_operations"][-1] == {
-        "id": result["operation_id"],
-        "algorithm_id": "algorithm-one",
-        "from_version_id": "v5",
-        "to_version_id": "v3",
-        "deleted_version_id": None,
-        "action": "rollback",
-        "operator": "local_user",
-        "created_at": "2026-09-15T01:02:03+00:00",
-        "cleanup_status": "not_required",
-        "cleanup_targets": [],
-        "cleanup_errors": [],
-    }
+    assert {row["id"] for row in stored["versions"]} == {"v3"}
+    operation = stored["version_operations"][-1]
+    assert operation["algorithm_id"] == "algorithm-one"
+    assert operation["from_version_id"] == "v5"
+    assert operation["to_version_id"] == "v3"
+    assert operation["deleted_version_id"] == "v5"
+    assert operation["action"] == "rollback_and_delete"
+    assert operation["operator"] == "local_user"
+    assert operation["created_at"] == "2026-09-15T01:02:03+00:00"
+    assert operation["cleanup_status"] == "cleanup_pending"
 
 
 def test_rollback_and_delete_preflight_failure_is_atomic(tmp_path: Path):
@@ -313,6 +312,7 @@ def test_rollback_and_delete_preflight_failure_is_atomic(tmp_path: Path):
 
     assert error.value.code == "ALGORITHM_VERSION_IN_USE"
     assert json.loads(path.read_text(encoding="utf-8")) == original
+    assert algorithms_module.list_algorithms(path)[0]["current_version_id"] == original[0].get("current_version_id")
 
 
 def test_rollback_and_delete_records_cleanup_failure_after_trusted_pointer_switch(tmp_path: Path):
@@ -340,13 +340,75 @@ def test_rollback_and_delete_records_cleanup_failure_after_trusted_pointer_switc
         },
     )
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     assert result["current_version_id"] == "v3"
     assert result["deleted_version_id"] == "v5"
     assert result["cleanup_status"] == "cleanup_failed"
     assert {row["id"] for row in stored["versions"]} == {"v3"}
     assert stored["version_operations"][-1]["cleanup_status"] == "cleanup_failed"
     assert stored["version_operations"][-1]["cleanup_errors"] == ["permission denied"]
+
+
+def test_cleanup_failure_can_be_retried_idempotently_after_version_row_is_deleted(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "name": "fire", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+    attempts = []
+
+    def cleanup(_algorithm, version):
+        attempts.append(dict(version))
+        if len(attempts) == 1:
+            return {"status": "cleanup_failed", "targets": [], "errors": ["temporary delete failure"]}
+        return {"status": "cleanup_completed", "targets": ["retired-v5"], "errors": []}
+
+    rolled_back = rollback_algorithm_version(
+        path,
+        "algorithm-one",
+        "v3",
+        now="2026-09-15T01:02:03+00:00",
+        delete_current_version=True,
+        expected_current_version_id="v5",
+        dependency_check=lambda _algorithm, _version: [],
+        cleanup=cleanup,
+    )
+    assert rolled_back["cleanup_status"] == "cleanup_failed"
+    operation_id = rolled_back["operation_id"]
+    stored = algorithms_module.list_algorithms(path)[0]
+    operation = stored["version_operations"][-1]
+    assert operation["cleanup_version"]["id"] == "v5"
+    assert operation["cleanup_version"]["stored_path"].endswith("v5.pt")
+    assert [row["id"] for row in stored["versions"]] == ["v3"]
+
+    retried = retry_algorithm_version_cleanup(
+        path,
+        "algorithm-one",
+        operation_id,
+        cleanup=cleanup,
+    )
+    assert retried["cleanup_status"] == "cleanup_completed"
+    assert retried["already_completed"] is False
+    assert attempts[-1]["id"] == "v5"
+    assert attempts[-1]["stored_path"].endswith("v5.pt")
+
+    repeated = retry_algorithm_version_cleanup(
+        path,
+        "algorithm-one",
+        operation_id,
+        cleanup=cleanup,
+    )
+    assert repeated["cleanup_status"] == "cleanup_completed"
+    assert repeated["already_completed"] is True
+    assert len(attempts) == 2
+    stored = algorithms_module.list_algorithms(path)[0]
+    operation = stored["version_operations"][-1]
+    assert operation["cleanup_status"] == "cleanup_completed"
+    assert operation["cleanup_targets"] == ["retired-v5"]
 
 
 def test_iteration_base_uses_persisted_current_version_after_rollback(tmp_path: Path):
@@ -379,7 +441,7 @@ def test_attach_version_makes_new_version_current_and_preserves_base_as_parent_t
 
     attach_version(path, "algorithm-one", next_version)
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     saved = next(row for row in stored["versions"] if row["id"] == "v6")
     assert stored["current_version_id"] == "v6"
     assert saved["base_version_id"] == "v3"
@@ -405,7 +467,7 @@ def test_version_patch_keeps_current_pointer_and_other_versions(tmp_path: Path):
         now="2026-09-16T01:00:00+00:00",
     )
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     assert stored["current_version_id"] == "v6"
     assert {row["id"] for row in stored["versions"]} == {"v3", "v6"}
     current = next(row for row in stored["versions"] if row["id"] == "v6")
@@ -423,6 +485,7 @@ def test_direct_delete_rejects_current_version_without_mutating_store(tmp_path: 
 
     assert error.value.code == "ALGORITHM_CURRENT_VERSION_DELETE_FORBIDDEN"
     assert json.loads(path.read_text(encoding="utf-8")) == original
+    assert algorithms_module.list_algorithms(path)[0]["current_version_id"] == original[0].get("current_version_id")
 
 
 def test_direct_delete_historical_version_keeps_current_and_records_audit(tmp_path: Path):
@@ -444,9 +507,151 @@ def test_direct_delete_historical_version_keeps_current_and_records_audit(tmp_pa
         cleanup=lambda _algorithm, _version: {"status": "cleanup_completed", "targets": [], "errors": []},
     )
 
-    stored = json.loads(path.read_text(encoding="utf-8"))[0]
+    stored = algorithms_module.list_algorithms(path)[0]
     assert result["action"] == "delete_version"
     assert result["deleted_version_id"] == "v3"
     assert stored["current_version_id"] == "v5"
     assert [row["id"] for row in stored["versions"]] == ["v5"]
     assert stored["version_operations"][-1]["action"] == "delete_version"
+
+
+def test_rollback_remote_delete_failure_keeps_local_versions_unchanged(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    original = [{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]
+    path.write_text(json.dumps(original), encoding="utf-8")
+
+    def fail_remote(_algorithm, _version):
+        raise PlatformError(
+            "EXTERNAL_VERSION_DELETE_FAILED",
+            "远端删除失败",
+            "provider rejected deletion",
+            "请修复远端状态后重试。",
+            502,
+        )
+
+    with pytest.raises(PlatformError) as error:
+        rollback_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            delete_current_version=True,
+            expected_current_version_id="v5",
+            dependency_check=lambda _algorithm, _version: [],
+            remote_delete=fail_remote,
+        )
+
+    assert error.value.code == "EXTERNAL_VERSION_DELETE_FAILED"
+    stored = algorithms_module.list_algorithms(path)[0]
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+    assert not stored.get("version_operations")
+
+
+def test_historical_version_remote_delete_failure_keeps_local_version(tmp_path: Path):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    def fail_remote(_algorithm, _version):
+        raise RuntimeError("remote remove timeout")
+
+    with pytest.raises(RuntimeError, match="remote remove timeout"):
+        delete_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            dependency_check=lambda _algorithm, _version: [],
+            remote_delete=fail_remote,
+        )
+
+    stored = algorithms_module.list_algorithms(path)[0]
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+    assert not stored.get("version_operations")
+
+
+def test_rollback_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails(tmp_path: Path, monkeypatch):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        algorithms_module.AlgorithmSqlStore,
+        "rollback_version",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database commit failed")),
+    )
+
+    with pytest.raises(PlatformError) as error:
+        rollback_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            expected_current_version_id="v5",
+            dependency_check=lambda _algorithm, _version: [],
+            remote_delete=lambda _algorithm, _version: {
+                "required": True,
+                "status": "deleted",
+                "external_algo_version_id": "remote-v5",
+            },
+        )
+
+    assert error.value.code == "ALGORITHM_ROLLBACK_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE"
+    stored = algorithms_module.list_algorithms(path)[0]
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}
+
+
+def test_direct_delete_reports_divergence_when_remote_delete_succeeds_but_local_commit_fails(tmp_path: Path, monkeypatch):
+    path = tmp_path / "algorithms.json"
+    versions = [
+        _trainable_version(tmp_path, "v5", "2026-09-15T00:00:00+00:00"),
+        _trainable_version(tmp_path, "v3", "2026-09-13T00:00:00+00:00"),
+    ]
+    path.write_text(
+        json.dumps([{"id": "algorithm-one", "current_version_id": "v5", "versions": versions}]),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        algorithms_module.AlgorithmSqlStore,
+        "delete_version_with_operation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("database commit failed")),
+    )
+
+    with pytest.raises(PlatformError) as error:
+        delete_algorithm_version(
+            path,
+            "algorithm-one",
+            "v3",
+            now="2026-09-15T01:02:03+00:00",
+            dependency_check=lambda _algorithm, _version: [],
+            remote_delete=lambda _algorithm, _version: {
+                "required": True,
+                "status": "deleted",
+                "external_algo_version_id": "remote-v3",
+            },
+        )
+
+    assert error.value.code == "ALGORITHM_DELETE_LOCAL_COMMIT_FAILED_AFTER_REMOTE_DELETE"
+    stored = algorithms_module.list_algorithms(path)[0]
+    assert stored["current_version_id"] == "v5"
+    assert {row["id"] for row in stored["versions"]} == {"v3", "v5"}

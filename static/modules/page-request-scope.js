@@ -1,4 +1,15 @@
-const NEVER = new Promise(() => {});
+// A retired read must settle so the caller's finally releases its state.
+export const PAGE_NAVIGATION_CANCELLED = '__PAGE_NAVIGATION_CANCELLED__';
+export function isPageNavigationCancelled(value) {
+  return value?.code === 'PAGE_NAVIGATION_CANCELLED'
+    || String(typeof value === 'string' ? value : value?.message || '').includes(PAGE_NAVIGATION_CANCELLED);
+}
+function cancelledNavigation() {
+  const error = new Error(PAGE_NAVIGATION_CANCELLED);
+  error.name = 'AbortError';
+  error.code = 'PAGE_NAVIGATION_CANCELLED';
+  return error;
+}
 
 function requestMethod(input, init = {}) {
   return String(init?.method || input?.method || 'GET').toUpperCase();
@@ -10,21 +21,41 @@ function requestUrl(input) {
   return String(input?.url || '');
 }
 
-function isApiRequest(input) {
+function apiPath(input) {
   const raw = requestUrl(input);
-  if (!raw) return false;
-  if (raw.startsWith('/api/')) return true;
-  if (typeof location === 'undefined') return /\/api\//.test(raw);
+  if (!raw) return '';
+  if (raw.startsWith('/api/')) return raw.split('?')[0];
+  if (typeof location === 'undefined') {
+    const match = raw.match(/\/api\/[^?#]*/);
+    return match?.[0] || '';
+  }
   try {
     const parsed = new URL(raw, location.href);
-    return parsed.origin === location.origin && parsed.pathname.startsWith('/api/');
+    return parsed.origin === location.origin ? parsed.pathname : '';
   } catch (_) {
-    return false;
+    return '';
   }
 }
 
-function isAbortError(error) {
-  return error?.name === 'AbortError' || error?.code === 20;
+function isApiRequest(input) {
+  return apiPath(input).startsWith('/api/');
+}
+
+function isApplicationLifecycleRequest(input) {
+  const path = apiPath(input);
+  return path === '/api/v53/bootstrap/status'
+    || path === '/api/v53/bootstrap/snapshot'
+    || path === '/api/v53/bootstrap/start';
+}
+
+function isPageScopedRead(input, init = {}) {
+  const method = requestMethod(input, init);
+  return (method === 'GET' || method === 'HEAD')
+    && isApiRequest(input)
+    && !isApplicationLifecycleRequest(input)
+    // A Request or init with its own signal has a different lifecycle owner.
+    && !init?.signal
+    && !input?.signal;
 }
 
 export class PageRequestScope {
@@ -52,37 +83,55 @@ export class PageRequestScope {
     return generation === this.generation && String(page || '') === this.page;
   }
 
-  async fetch(input, init = {}) {
-    const nativeFetch = this.fetchImpl;
-    if (typeof nativeFetch !== 'function') throw new Error('PageRequestScope requires fetchImpl');
-
-    const method = requestMethod(input, init);
-    const scopeEligible = (method === 'GET' || method === 'HEAD')
-      && isApiRequest(input)
-      && !init?.signal;
-    if (!scopeEligible) return nativeFetch(input, init);
-
+  async _runUntilRetired(operation, {countFetchCancellation = false} = {}) {
     const generation = this.generation;
     const page = this.page;
     const controller = this.controller;
 
+    // Some transports and test doubles do not reject when AbortSignal fires.
+    // Race their response against the owner's retirement so a cancelled page
+    // settles even if the underlying fetch ignores cancellation entirely.
+    let onRetire;
+    const retired = new Promise((_resolve, reject) => {
+      onRetire = () => reject(cancelledNavigation());
+      controller.signal.addEventListener('abort', onRetire, {once: true});
+      if (controller.signal.aborted) onRetire();
+    });
     try {
-      const response = await nativeFetch(input, {...init, signal: controller.signal});
-      if (controller.signal.aborted || !this.isCurrent(generation, page)) {
-        this.abortedRequests += 1;
-        return NEVER;
-      }
+      let active;
+      try { active = Promise.resolve(operation(controller.signal)); }
+      catch (error) { active = Promise.reject(error); }
+      const response = await Promise.race([active, retired]);
+      if (controller.signal.aborted || !this.isCurrent(generation, page)) throw cancelledNavigation();
       return response;
     } catch (error) {
-      if (isAbortError(error) && (controller.signal.aborted || !this.isCurrent(generation, page))) {
-        this.abortedRequests += 1;
-        // Legacy app.js callers often catch every error and show a toast. Keep a request
-        // invalidated by navigation suspended instead: its caller can no longer mutate state/DOM,
-        // and no spurious "request failed" message is shown to the user.
-        return NEVER;
+      if (controller.signal.aborted || !this.isCurrent(generation, page)) {
+        if (countFetchCancellation) this.abortedRequests += 1;
+        throw cancelledNavigation();
       }
       throw error;
+    } finally {
+      controller.signal.removeEventListener('abort', onRetire);
     }
+  }
+
+
+  async fetch(input, init = {}) {
+    const nativeFetch = this.fetchImpl;
+    if (typeof nativeFetch !== 'function') throw new Error('PageRequestScope requires fetchImpl');
+    if (!isPageScopedRead(input, init)) return nativeFetch(input, init);
+    return this._runUntilRetired(
+      signal => nativeFetch(input, {...init, signal}),
+      {countFetchCancellation: true},
+    );
+  }
+
+  // The fetch promise ends at response headers. Keep the same page owner until
+  // callers also finish consuming the response body (json/text/error bodies).
+  // Mutations, bootstrap reads and caller-owned signals still bypass this race.
+  runPageRead(input, init, operation) {
+    if (!isPageScopedRead(input, init)) return operation();
+    return this._runUntilRetired(() => operation());
   }
 
   destroy() {
@@ -106,6 +155,7 @@ export function installPageRequestScope({getPage} = {}) {
     scope,
     navigate(page) { return scope.navigate(page); },
     alignPage(page) { scope.alignPage(page); },
+    runPageRead(input, init, operation) { return scope.runPageRead(input, init, operation); },
     stats() {
       return {
         page: scope.page,

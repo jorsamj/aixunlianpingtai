@@ -77,6 +77,59 @@ def test_local_provider_list_is_paginated_and_recursive_flag_is_honored(tmp_path
     assert [item.key for item in shallow.items] == ["nested/b.jpg"]
 
 
+def test_local_provider_long_path_full_lifecycle(tmp_path):
+    root = tmp_path / ("root-" + "x" * 40)
+    provider = LocalStorageProvider("local-long", root)
+    key = "artifacts/" + "/".join(["segment-" + "y" * 20] * 6) + "/model.rknn"
+    target = root / key
+    if sys.platform == "win32":
+        assert len(str(target)) >= 240
+    provider.upload(key, BytesIO(b"long-model"))
+    assert provider.exists(key) is True
+    stat_result = provider.stat(key)
+    assert stat_result.key == key
+    assert stat_result.size_bytes == 10
+    with provider.open_reader(key) as stream:
+        assert stream.read() == b"long-model"
+    listed = provider.list_objects("artifacts", recursive=True, limit=10)
+    assert [item.key for item in listed.items] == [key]
+    assert [item.key for item in provider.iter_objects("artifacts")] == [key]
+    downloaded = tmp_path / "downloaded.rknn"
+    provider.download(key, downloaded)
+    assert downloaded.read_bytes() == b"long-model"
+    provider.upload(key, BytesIO(b"long-model"))
+    assert provider.stat(key).sha256 == stat_result.sha256
+    provider.delete(key)
+    assert provider.exists(key) is False
+    with pytest.raises(StorageError) as captured:
+        provider.exists("../" + key)
+    assert captured.value.code == "STORAGE_INVALID_OBJECT_KEY"
+
+
+def test_local_provider_pagination_hashes_only_the_returned_page(tmp_path, monkeypatch):
+    provider = LocalStorageProvider("local-a", tmp_path / "root")
+    for index in range(25):
+        provider.upload(f"materials/{index:02d}.jpg", BytesIO(f"image-{index}".encode()))
+    calls = []
+    original = local_module._sha256
+
+    def counting(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(local_module, "_sha256", counting)
+    first = provider.list_objects("materials", limit=5)
+    assert len(first.items) == 5
+    assert first.next_cursor == "materials/04.jpg"
+    assert len(calls) == 5
+    calls.clear()
+    second = provider.list_objects("materials", limit=5, cursor=first.next_cursor)
+    assert [item.key for item in second.items] == [
+        f"materials/{index:02d}.jpg" for index in range(5, 10)
+    ]
+    assert len(calls) == 5
+
+
 def test_iter_objects_scans_recursively_in_a_stable_depth_first_order(tmp_path):
     provider = LocalStorageProvider("local-a", tmp_path / "root")
     for key in ("z.jpg", "a/2.jpg", "a/1.jpg", "a/deep/3.jpg"):

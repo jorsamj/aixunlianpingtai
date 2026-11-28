@@ -1,0 +1,39 @@
+✔ smart analysis uncertainty retries the same request without blocking original CLEAN (70.3419ms)
+✔ smart analysis coalesces clicks, validates project identity and clears accepted pending (16.5534ms)
+✔ material estimate and create share one submission and release the original busy button (3.2801ms)
+✔ unknown material creation remains locked across clicks and refresh while querying existing tasks (3.4678ms)
+✔ material estimate pending is bounded without posting a mutation (17.436ms)
+✔ logical delete carries the frozen preview credential and shows actual retention before creation (2.0774ms)
+✔ project clear freezes an unfiltered project and rejects a wrong name without posting (0.573ms)
+✔ a late delete submission carries the original training context instead of capturing a replacement draft (6.0854ms)
+✔ delete terminal updates training from results even when dataset refresh fails (2.0429ms)
+✔ material polling pending stops with a recoverable timeout message (42.1195ms)
+✔ audit submission uncertainty queries latest instead of asserting no creation (10.0003ms)
+✔ audit lost response queries latest and never treats the old audit as recovered (17.2358ms)
+✔ pending create becomes persistent unknown and never posts again on query (28.8486ms)
+✔ audit baseline read failure never recovers an unrelated historical audit and permits retry (21.2127ms)
+✔ ordinary DELETE_INDEX completion invalidates the old integrity audit, not only dedup plans (78.9533ms)
+✔ a delayed material task response cannot mutate the next project or keep polling it (2.2741ms)
+✔ a project switch during terminal refresh cannot expire the next project audit (1.6996ms)
+✔ material batch polling is centrally owned and resumes only on relevant pages (0.9387ms)
+✔ large explicit ready selections reuse the durable material-batch owner (12.0271ms)
+✔ material batch terminal truth refreshes the canonical dataset page owner (1.6701ms)
+✔ restoring finished clean/skip task does not open AI review modal (2.5033ms)
+✔ filtered material deletion estimates and freezes server-owned scope with annotation cleanup (16.3616ms)
+✔ smart audit defaults to full filtered scope, not the current page (2.7507ms)
+✔ completed analysis and unknown checks never claim business correctness (0.3501ms)
+✔ confirmation identity uses persisted successful images and filters missing, retired, duplicate rows (2.5288ms)
+✔ mixed selection routes to actual batches and never resubmits decided rows (0.9343ms)
+✔ submission refreshes receipts, blocks concurrent duplicate clicks and opens original annotation queue (3.8177ms)
+✔ project switch during receipt refresh cannot submit decisions to old project (0.9237ms)
+✔ deferred pointer restores pending entry without auto-opening and ignores uncommitted requests (0.8708ms)
+✔ mid-upload refresh keeps unconfirmed counts visible and manual query recovers original request pointer (3.3279ms)
+✔ navigation restore cannot invalidate an opening receipt request or leave loading stuck (0.9697ms)
+ℹ tests 31
+ℹ suites 0
+ℹ pass 31
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 664.7624

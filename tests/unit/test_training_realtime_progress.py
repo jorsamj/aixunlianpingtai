@@ -78,7 +78,7 @@ def test_batch_progress_callback_is_throttled_but_flushes_the_last_batch(tmp_pat
             callbacks[event] = callback
 
     clock = iter([100.0, 100.1, 100.2, 100.3])
-    monkeypatch.setattr(train_worker.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(train_worker, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     train_worker.attach_training_batch_progress(Model(), job_file, requested_total_epochs=10)
     assert "on_train_batch_end" in callbacks
 
@@ -126,3 +126,27 @@ def test_training_completion_metadata_distinguishes_quality_target_from_early_st
     )
     assert target["completion_reason"] == "quality_target_reached"
     assert target["quality_gate_reason"] == "map50 达到提前完成阈值 0.850"
+
+def test_training_failure_metadata_keeps_structured_summary_outside_traceback(tmp_path):
+    job_file = tmp_path / "job.json"
+    job_file.write_text(
+        json.dumps({
+            "id": "train-failure",
+            "status": "running",
+            "current_item": "最终模型验证",
+            "message": "正在执行独立评测集盲测",
+        }),
+        encoding="utf-8",
+    )
+
+    metadata = train_worker.training_failure_metadata(
+        job_file,
+        RuntimeError("CUDA out of memory"),
+    )
+
+    assert metadata == {
+        "error": "CUDA out of memory",
+        "error_type": "RuntimeError",
+        "failure_stage": "final_validation",
+    }
+

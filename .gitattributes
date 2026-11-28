@@ -1,0 +1,9 @@
+# These reviewed upstream artifacts and notices are verified byte-for-byte.
+static/vendor/annotorious/** -text
+tools/third_party_notices/** -text
+static/vendor/uppy/** -text -whitespace
+
+static/vendor/material-presentation/** -text -whitespace
+
+# Vue production scope IDs hash SFC bytes; keep local and CI builds reproducible.
+frontend/src/**/*.vue text eol=lf

@@ -6,6 +6,10 @@ from pathlib import Path
 from .config import choose_data_dir
 
 
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def resolve_data_dir(
     explicit: str | Path | None = None,
     *,
@@ -13,7 +17,7 @@ def resolve_data_dir(
 ) -> Path:
     configured = explicit or os.environ.get("MC_TRAIN_DATA_DIR") or os.environ.get("MC_DATA_DIR")
     application_root = Path(base_dir or Path.cwd()).expanduser().resolve()
-    if os.name == "nt":
+    if _is_windows():
         local_root = Path(
             os.environ.get("LOCALAPPDATA")
             or (Path.home() / "AppData" / "Local")

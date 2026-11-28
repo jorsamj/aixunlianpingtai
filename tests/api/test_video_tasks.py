@@ -2,6 +2,8 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import pytest
+from filelock import FileLock
 
 import app as app_module
 from platform_core.task_runtime import TaskKind, TaskStatus
@@ -84,3 +86,84 @@ def test_video_task_list_and_cancel_use_persistent_repository(client, seeded_pro
     assert cancelled.status_code == 200
     assert cancelled.json()["status"] == TaskStatus.CANCELLED.value
     assert app_module.shared_task_repository().get(task_id).status is TaskStatus.CANCELLED
+
+
+def test_video_creation_request_reuses_one_task_and_binds_upload_identity(client, seeded_project):
+    project_id, _ = seeded_project
+    base = f"/api/v33/projects/{project_id}/video-tasks"
+    identity = "native-video-request-01"
+    form = {"mode": "fixed_count", "fixed_count": "3", "request_id": identity}
+    lookup = f"{base}/by-request/{identity}"
+    assert client.get(lookup).status_code == 404
+    recovery = lookup + "?recovery=true"
+    assert client.get(recovery).json() == {"request_id": identity, "state": "UNREGISTERED"}
+
+    def submit(content=b"unchanged-video", **changes):
+        return client.post(base, data={**form, **changes}, files={"video": ("input.mp4", content, "video/mp4")})
+
+    first = submit()
+    assert first.status_code == 202, first.text
+    task_id = first.json()["id"]
+    recovered = client.get(lookup)
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()["request_id"] == identity
+    assert recovered.json()["task"]["id"] == task_id
+    assert client.get(recovery).json()["state"] == "ACCEPTED"
+    again = submit()
+    assert again.status_code == 202, again.text
+    assert again.json()["id"] == task_id
+    assert submit(b"different-video").status_code == 409
+    assert submit(fixed_count="4").status_code == 409
+    assert [row["id"] for row in client.get(base).json()["items"]] == [task_id]
+    task = app_module.shared_task_repository().get(task_id)
+    artifacts = app_module.shared_task_artifacts()
+    payload = artifacts.read_json(task_id, task.payload_ref)
+    assert artifacts.artifact_path(task_id, payload["source_ref"]).read_bytes() == b"unchanged-video"
+    assert client.post(f"{base}/{task_id}/stop").status_code == 200
+    assert client.get(recovery).json()["state"] == "TERMINAL"
+    assert app_module.shared_task_repository().delete_terminal(task_id, project_id=project_id, kind=TaskKind.VIDEO_FRAMES)
+    assert client.get(recovery).json() == {"request_id": identity, "state": "RETIRED"}
+    assert submit().status_code == 410
+
+
+def test_video_creation_recovers_published_input_after_task_insert_interruption(client, seeded_project, monkeypatch):
+    project_id, _ = seeded_project
+    base = f"/api/v33/projects/{project_id}/video-tasks"
+    identity = "native-video-interrupted-01"
+    lookup = f"{base}/by-request/{identity}?recovery=true"
+    form = {"mode": "fixed_count", "fixed_count": "3", "request_id": identity}
+    artifacts = app_module.shared_task_artifacts()
+    repository = app_module.shared_task_repository()
+    task_id = None
+
+    def submit(content=b"unchanged-video", **changes):
+        return client.post(base, data={**form, **changes}, files={"video": ("input.mp4", content, "video/mp4")})
+
+    def interrupt_insert(self, task, **kwargs):
+        nonlocal task_id
+        task_id = task.task_id
+        assert artifacts.artifact_path(task_id, "inputs/input.mp4").read_bytes() == b"unchanged-video"
+        raise RuntimeError("simulated interruption before TaskRepository registration")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(type(repository), "create", interrupt_insert)
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            submit()
+
+    assert task_id is not None and repository.get(task_id) is None
+    assert client.get(lookup).json()["state"] == "STAGED"
+    with FileLock(str(artifacts.artifact_path(task_id, "create.lock")), timeout=0):
+        assert client.get(lookup).json()["state"] == "IN_FLIGHT"
+        assert submit().status_code == 409
+    assert submit(b"another--video").status_code == 409
+    assert submit(fixed_count="4").status_code == 409
+    published = artifacts.artifact_path(task_id, "inputs/input.mp4")
+    published.write_bytes(b"another--video")
+    assert submit().status_code == 409
+    assert published.read_bytes() == b"another--video"
+    published.write_bytes(b"unchanged-video")
+    original_mtime = published.stat().st_mtime_ns
+    replay = submit()
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["id"] == task_id
+    assert published.stat().st_mtime_ns == original_mtime

@@ -1,0 +1,1009 @@
+{
+  "sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+  "version": "42.24.371",
+  "scope": "Supplementary governance acceptance, isolated development only",
+  "actions": {
+    "total": 35,
+    "success": 35,
+    "items": [
+      {
+        "id": 39593151514,
+        "name": "Training Input Integrity",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151514"
+      },
+      {
+        "id": 39593151738,
+        "name": "ChangLian Login Auth",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151738"
+      },
+      {
+        "id": 39593151838,
+        "name": "Storage Cache Governance",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151838"
+      },
+      {
+        "id": 39593151867,
+        "name": "Task Runtime Truth",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151867"
+      },
+      {
+        "id": 39593151764,
+        "name": "External Algorithm Publish",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151764"
+      },
+      {
+        "id": 39593151543,
+        "name": "Video Frame Recovery",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151543"
+      },
+      {
+        "id": 39593151755,
+        "name": "Remote RKNN Board Runtime Protocol",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151755"
+      },
+      {
+        "id": 39593151607,
+        "name": "GPU Runtime Truth",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151607"
+      },
+      {
+        "id": 39593151758,
+        "name": "Resource Discovery SQLite Stability",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151758"
+      },
+      {
+        "id": 39593151714,
+        "name": "Central Node Assignment",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151714"
+      },
+      {
+        "id": 39593151687,
+        "name": "Label Normalization Contract",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151687"
+      },
+      {
+        "id": 39593151612,
+        "name": "Portable Deployment",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151612"
+      },
+      {
+        "id": 39593151724,
+        "name": "Node Agent Executor",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151724"
+      },
+      {
+        "id": 39593151777,
+        "name": "External Algorithm Platform",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151777"
+      },
+      {
+        "id": 39593151681,
+        "name": "AI Annotation Recovery",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151681"
+      },
+      {
+        "id": 39593151562,
+        "name": "Remote Conversion Runtime",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151562"
+      },
+      {
+        "id": 39593151667,
+        "name": "Remote Material Import",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151667"
+      },
+      {
+        "id": 39593151945,
+        "name": "Online Feedback Runtime",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151945"
+      },
+      {
+        "id": 39593151626,
+        "name": "Remote Cleaning Runtime",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151626"
+      },
+      {
+        "id": 39593151521,
+        "name": "Remote Training Runtime",
+        "event": "pull_request",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151521"
+      },
+      {
+        "id": 39593145038,
+        "name": "ChangLian Login Auth",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145038"
+      },
+      {
+        "id": 39593145002,
+        "name": "External Algorithm Publish",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145002"
+      },
+      {
+        "id": 39593145092,
+        "name": "Label Normalization Contract",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145092"
+      },
+      {
+        "id": 39593145013,
+        "name": "External Algorithm Platform",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145013"
+      },
+      {
+        "id": 39593145140,
+        "name": "Training Task Visibility",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145140"
+      },
+      {
+        "id": 39593145029,
+        "name": "Remote RKNN Board Runtime Protocol",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145029"
+      },
+      {
+        "id": 39593144983,
+        "name": "Material Upload Chunking",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144983"
+      },
+      {
+        "id": 39593144981,
+        "name": "Remote Cleaning Runtime",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144981"
+      },
+      {
+        "id": 39593145124,
+        "name": "Service Node UI",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145124"
+      },
+      {
+        "id": 39593145073,
+        "name": "Remote Material Import",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145073"
+      },
+      {
+        "id": 39593145017,
+        "name": "Training Create First Open",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145017"
+      },
+      {
+        "id": 39593145163,
+        "name": "Remote Conversion Runtime",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145163"
+      },
+      {
+        "id": 39593145141,
+        "name": "ZIP Import Durable Runtime",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145141"
+      },
+      {
+        "id": 39593145081,
+        "name": "Training Recovery Guard",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145081"
+      },
+      {
+        "id": 39593145176,
+        "name": "Frontend Runtime Stabilization",
+        "event": "push",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145176"
+      }
+    ]
+  },
+  "checks": {
+    "total": 98,
+    "success": 98,
+    "items": [
+      {
+        "id": 119198876252,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151667/job/119198876252"
+      },
+      {
+        "id": 119198876141,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151667/job/119198876141"
+      },
+      {
+        "id": 119198876127,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151667/job/119198876127"
+      },
+      {
+        "id": 119198875852,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151667/job/119198875852"
+      },
+      {
+        "id": 119198855619,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151724/job/119198855619"
+      },
+      {
+        "id": 119198855014,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151777/job/119198855014"
+      },
+      {
+        "id": 119198854951,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151945/job/119198854951"
+      },
+      {
+        "id": 119198854872,
+        "name": "contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151738/job/119198854872"
+      },
+      {
+        "id": 119198854794,
+        "name": "runtime-truth (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151867/job/119198854794"
+      },
+      {
+        "id": 119198854781,
+        "name": "sqlite-lifecycle (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151758/job/119198854781"
+      },
+      {
+        "id": 119198854741,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151945/job/119198854741"
+      },
+      {
+        "id": 119198854738,
+        "name": "contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151764/job/119198854738"
+      },
+      {
+        "id": 119198854646,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151714/job/119198854646"
+      },
+      {
+        "id": 119198854587,
+        "name": "sqlite-lifecycle (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151758/job/119198854587"
+      },
+      {
+        "id": 119198854549,
+        "name": "annotation-api-contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151681/job/119198854549"
+      },
+      {
+        "id": 119198854547,
+        "name": "recovery-contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151681/job/119198854547"
+      },
+      {
+        "id": 119198854544,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151755/job/119198854544"
+      },
+      {
+        "id": 119198854521,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151755/job/119198854521"
+      },
+      {
+        "id": 119198854498,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151714/job/119198854498"
+      },
+      {
+        "id": 119198854493,
+        "name": "contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151777/job/119198854493"
+      },
+      {
+        "id": 119198854479,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151945/job/119198854479"
+      },
+      {
+        "id": 119198854464,
+        "name": "storage-cache-governance",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151838/job/119198854464"
+      },
+      {
+        "id": 119198854449,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151755/job/119198854449"
+      },
+      {
+        "id": 119198854382,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151724/job/119198854382"
+      },
+      {
+        "id": 119198854269,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151714/job/119198854269"
+      },
+      {
+        "id": 119198854246,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151626/job/119198854246"
+      },
+      {
+        "id": 119198854215,
+        "name": "recovery-contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151681/job/119198854215"
+      },
+      {
+        "id": 119198854206,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151724/job/119198854206"
+      },
+      {
+        "id": 119198854200,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151626/job/119198854200"
+      },
+      {
+        "id": 119198854176,
+        "name": "runtime-truth (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151867/job/119198854176"
+      },
+      {
+        "id": 119198854174,
+        "name": "transport-contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151612/job/119198854174"
+      },
+      {
+        "id": 119198854168,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151764/job/119198854168"
+      },
+      {
+        "id": 119198854141,
+        "name": "preparation-contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151521/job/119198854141"
+      },
+      {
+        "id": 119198854136,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151755/job/119198854136"
+      },
+      {
+        "id": 119198854095,
+        "name": "ultralytics-loader-contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151521/job/119198854095"
+      },
+      {
+        "id": 119198854092,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151626/job/119198854092"
+      },
+      {
+        "id": 119198854074,
+        "name": "contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151687/job/119198854074"
+      },
+      {
+        "id": 119198854001,
+        "name": "node-scoped-reservations (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151607/job/119198854001"
+      },
+      {
+        "id": 119198853995,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151612/job/119198853995"
+      },
+      {
+        "id": 119198853977,
+        "name": "browser",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151738/job/119198853977"
+      },
+      {
+        "id": 119198853945,
+        "name": "agent-contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151562/job/119198853945"
+      },
+      {
+        "id": 119198853920,
+        "name": "preparation-contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151521/job/119198853920"
+      },
+      {
+        "id": 119198853899,
+        "name": "control-plane",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151562/job/119198853899"
+      },
+      {
+        "id": 119198853856,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151562/job/119198853856"
+      },
+      {
+        "id": 119198853818,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151626/job/119198853818"
+      },
+      {
+        "id": 119198853719,
+        "name": "transport-contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151612/job/119198853719"
+      },
+      {
+        "id": 119198853619,
+        "name": "node-scoped-reservations (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151607/job/119198853619"
+      },
+      {
+        "id": 119198853517,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151521/job/119198853517"
+      },
+      {
+        "id": 119198853499,
+        "name": "agent-contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151562/job/119198853499"
+      },
+      {
+        "id": 119198853415,
+        "name": "recovery-contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151543/job/119198853415"
+      },
+      {
+        "id": 119198853320,
+        "name": "jpeg-cache-integrity (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151514/job/119198853320"
+      },
+      {
+        "id": 119198853122,
+        "name": "recovery-contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151543/job/119198853122"
+      },
+      {
+        "id": 119198852995,
+        "name": "jpeg-cache-integrity (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593151514/job/119198852995"
+      },
+      {
+        "id": 119198833181,
+        "name": "recovery-contracts",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145081/job/119198833181"
+      },
+      {
+        "id": 119198833177,
+        "name": "checkpoint-resume-contracts (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145081/job/119198833177"
+      },
+      {
+        "id": 119198833002,
+        "name": "checkpoint-resume-contracts (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145081/job/119198833002"
+      },
+      {
+        "id": 119198832549,
+        "name": "real-chrome-recovery",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145081/job/119198832549"
+      },
+      {
+        "id": 119198832277,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145141/job/119198832277"
+      },
+      {
+        "id": 119198832187,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145141/job/119198832187"
+      },
+      {
+        "id": 119198832121,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145073/job/119198832121"
+      },
+      {
+        "id": 119198832081,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145073/job/119198832081"
+      },
+      {
+        "id": 119198832066,
+        "name": "real-chrome-refresh",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145141/job/119198832066"
+      },
+      {
+        "id": 119198832037,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145124/job/119198832037"
+      },
+      {
+        "id": 119198832020,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145073/job/119198832020"
+      },
+      {
+        "id": 119198831855,
+        "name": "frontend",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145176/job/119198831855"
+      },
+      {
+        "id": 119198831851,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145124/job/119198831851"
+      },
+      {
+        "id": 119198831833,
+        "name": "backend-persistence",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145141/job/119198831833"
+      },
+      {
+        "id": 119198831829,
+        "name": "agent-contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145163/job/119198831829"
+      },
+      {
+        "id": 119198831757,
+        "name": "agent-contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145163/job/119198831757"
+      },
+      {
+        "id": 119198831734,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145073/job/119198831734"
+      },
+      {
+        "id": 119198831726,
+        "name": "visibility-contracts",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145140/job/119198831726"
+      },
+      {
+        "id": 119198831675,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145029/job/119198831675"
+      },
+      {
+        "id": 119198831611,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145163/job/119198831611"
+      },
+      {
+        "id": 119198831580,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145140/job/119198831580"
+      },
+      {
+        "id": 119198831485,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145124/job/119198831485"
+      },
+      {
+        "id": 119198831448,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145017/job/119198831448"
+      },
+      {
+        "id": 119198831439,
+        "name": "contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145013/job/119198831439"
+      },
+      {
+        "id": 119198831432,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145029/job/119198831432"
+      },
+      {
+        "id": 119198831386,
+        "name": "browser-navigation",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145176/job/119198831386"
+      },
+      {
+        "id": 119198831385,
+        "name": "api-idempotency",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144983/job/119198831385"
+      },
+      {
+        "id": 119198831383,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145029/job/119198831383"
+      },
+      {
+        "id": 119198831347,
+        "name": "frontend-contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144983/job/119198831347"
+      },
+      {
+        "id": 119198831266,
+        "name": "browser",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145038/job/119198831266"
+      },
+      {
+        "id": 119198831248,
+        "name": "frontend-contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144983/job/119198831248"
+      },
+      {
+        "id": 119198831237,
+        "name": "control-plane",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145163/job/119198831237"
+      },
+      {
+        "id": 119198831227,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145017/job/119198831227"
+      },
+      {
+        "id": 119198831121,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145002/job/119198831121"
+      },
+      {
+        "id": 119198831099,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145029/job/119198831099"
+      },
+      {
+        "id": 119198831050,
+        "name": "contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145092/job/119198831050"
+      },
+      {
+        "id": 119198831048,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144981/job/119198831048"
+      },
+      {
+        "id": 119198831044,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144981/job/119198831044"
+      },
+      {
+        "id": 119198831023,
+        "name": "real-chrome",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145013/job/119198831023"
+      },
+      {
+        "id": 119198831004,
+        "name": "api",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144981/job/119198831004"
+      },
+      {
+        "id": 119198830955,
+        "name": "real-chrome-upload",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144983/job/119198830955"
+      },
+      {
+        "id": 119198830886,
+        "name": "contract (windows-latest)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145017/job/119198830886"
+      },
+      {
+        "id": 119198830824,
+        "name": "contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145038/job/119198830824"
+      },
+      {
+        "id": 119198830761,
+        "name": "contract",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593145002/job/119198830761"
+      },
+      {
+        "id": 119198830717,
+        "name": "contract (ubuntu-24.04)",
+        "head_sha": "bbb4950d8aee4dc3acf51bcf30760a9c8420d619",
+        "conclusion": "success",
+        "url": "https://github.com/jorsamj/aixunlianpingtai/actions/runs/39593144981/job/119198830717"
+      }
+    ]
+  },
+  "local": {
+    "python": {
+      "passed": 55,
+      "failed": 0,
+      "skipped": 0
+    },
+    "node": {
+      "passed": 1142,
+      "failed": 0,
+      "skipped": 0
+    },
+    "chrome_distinct_individually_passed": 90
+  },
+  "production": {
+    "deployed": false,
+    "accessed": false,
+    "performance_12080ms_remeasured": false
+  },
+  "ci_chrome": {
+    "run_id": 39593145176,
+    "job_id": 119198831386,
+    "passed": 140,
+    "failed": 0,
+    "skipped": 0,
+    "duration_minutes": 7.9
+  }
+}

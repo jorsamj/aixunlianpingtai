@@ -1,0 +1,84 @@
+name: U3 P4 Scale Measurement
+
+# Explicit, opt-in only. The workflow exists on the feature branch so it can be
+# triggered from that branch without merging main. A push job runs only when the
+# commit message contains [p4-scale]; otherwise the job is skipped. The
+# workflow_dispatch entry remains available once the file is on the default
+# branch.
+on:
+  workflow_dispatch:
+    inputs:
+      materials:
+        description: "Synthetic material rows"
+        required: false
+        default: "200000"
+      gt_rows:
+        description: "Formal GT rows"
+        required: false
+        default: "40000"
+      samples:
+        description: "Measured samples per scenario"
+        required: false
+        default: "15"
+  push:
+    paths:
+      - ".github/workflows/u3-p4-scale.yml"
+      - "tests/performance/test_u3_p4_scale.py"
+      - "platform_core/u3_*.py"
+      - "platform_core/training_material_business_read.py"
+      - "platform_core/training_material_picker_read.py"
+
+jobs:
+  u3-p4-scale:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[p4-scale]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: changlian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MC_TEST_POSTGRES_DSN: postgresql://postgres:postgres@localhost:5432/changlian_test
+      MC_REQUIRE_POSTGRES: "1"
+      RUN_U3_P4_SCALE: "1"
+      SCALE_MATERIALS: ${{ inputs.materials || '200000' }}
+      SCALE_GT: ${{ inputs.gt_rows || '40000' }}
+      P4_SAMPLES: ${{ inputs.samples || '15' }}
+      P4_SYNC_LIMIT: "500"
+      P4_SYNC_BATCHES: "200"
+      P4_RESULTS_PATH: u3-p4-results.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install P4 measurement dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --disable-pip-version-check \
+            fastapi uvicorn python-multipart pillow pyyaml requests \
+            psutil keyring filelock boto3 oss2 pytest httpx "psycopg[binary]"
+      - name: Run 200k U3 P4 measurement
+        run: |
+          python -m pytest -q -p no:cacheprovider -s \
+            --confcutdir=tests/performance \
+            tests/performance/test_u3_p4_scale.py
+      - name: Upload P4 result evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: u3-p4-scale-results
+          path: u3-p4-results.json
+          if-no-files-found: warn

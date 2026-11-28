@@ -8,7 +8,7 @@ from PIL import Image
 def create_project(client) -> str:
     response = client.post(
         "/api/projects",
-        json={"name": f"batch-{uuid.uuid4().hex[:8]}", "labels": []},
+        json={"name": f"batch-{uuid.uuid4().hex[:8]}", "labels": ["target"]},
     )
     response.raise_for_status()
     return response.json()["id"]
@@ -16,6 +16,71 @@ def create_project(client) -> str:
 
 def write_png(path, color: str):
     Image.new("RGB", (64, 64), color).save(path, format="PNG")
+
+
+@pytest.mark.parametrize("operation", ["MOVE_DATASET", "CLASSIFY_SPLIT"])
+def test_assignment_freeze_replays_original_receipts_without_rewriting(client, tmp_path, monkeypatch, operation):
+    import app as app_module
+    from platform_core.material_batches import BatchSelection, MaterialBatchHandler, SELECTION_REF
+    from platform_core.task_runtime import ArtifactStore, Scheduler, TaskKind, TaskRepository
+    from contextlib import closing
+
+    project = create_project(client)
+    repository = TaskRepository(tmp_path / "tasks.sqlite3")
+    artifacts = ArtifactStore(tmp_path / "artifacts")
+    monkeypatch.setattr(app_module, "_SHARED_TASK_REPOSITORY", repository)
+    monkeypatch.setattr(app_module, "_SHARED_TASK_ARTIFACTS", artifacts)
+    scheduler = Scheduler(repository, artifacts, "assignment-worker",
+        {TaskKind.MATERIAL_BATCH: MaterialBatchHandler(app_module.DATA_DIR)}, {"materials.batch"})
+    store = app_module.material_store(project)
+    dataset = client.post(f"/api/projects/{project}/datasets", json={"name": "Review"}).json()["id"]
+    for image_id in ("apply", "drift", "exclude"):
+        store.upsert({"id": image_id, "filename": image_id + ".png", "content_sha256": "a" * 64,
+                      "split": "unassigned", "dataset_id": "default"})
+    base = f"/api/v62/projects/{project}/material-batches"
+    field, target = ("dataset_id", dataset) if operation == "MOVE_DATASET" else ("split", "val")
+    packet = {"operation": operation, "selection_spec": {"scope": "FILTERED", "excluded_image_ids": ["exclude"]},
+              "options": {field: target}, "request_id": str(uuid.uuid4())}
+    preview = client.post(base + "/estimate", json=packet)
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["count"] == 2
+    packet["selection_spec"] = preview.json()["selection_spec"]
+    if "dataset_revision" in preview.json():
+        packet["options"]["dataset_revision"] = preview.json()["dataset_revision"]
+    created = client.post(base, json=packet)
+    assert created.status_code == 202, created.text
+    task_id = created.json()["task_id"]
+    assert client.get(base + "/by-request/" + packet["request_id"]).json()["task_id"] == task_id
+    assert client.post(base, json=packet).json()["task_id"] == task_id
+    assert client.post(base, json={**packet, "options": {field: "train" if field == "split" else "default",
+                **({"dataset_revision": "f" * 64} if field == "dataset_id" else {})}}).status_code == 409
+    store.patch({"drift": {"content_sha256": "b" * 64}})
+
+    # Lose the selection checkpoint after a material transaction commits.
+    apply = type(store).apply_assignment_batch
+    def lost_checkpoint(self, *args, **kwargs):
+        apply(self, *args, **kwargs)
+        raise RuntimeError("simulated interruption after material commit")
+    monkeypatch.setattr(type(store), "apply_assignment_batch", lost_checkpoint)
+    assert scheduler.run_once()
+    assert store.get("apply")[field] == target
+    revision = store.read().revision
+    page = client.get(f"{base}/{task_id}/results?limit=1").json()
+    assert page["items"][0]["outcome"] == "updated"
+    assert page["next_cursor"] == "apply"
+
+    monkeypatch.setattr(type(store), "apply_assignment_batch", apply)
+    assert client.post(f"{base}/{task_id}/retry").status_code == 202
+    assert scheduler.run_once()
+    assert store.read().revision == revision
+    assert store.get("drift")[field] != target
+    assert store.get("exclude")[field] != target
+    assert client.get(f"{base}/{task_id}").json()["status"] == "PARTIAL_SUCCESS"
+    assert client.get(f"{base}/{task_id}/results?cursor=apply").json()["items"] == [{
+        "image_id": "drift", "item_state": "failed", "outcome": "conflict", "item_error": "MATERIAL_IDENTITY_CHANGED",
+    }]
+    with closing(BatchSelection(artifacts.artifact_path(task_id, SELECTION_REF))) as selection:
+        assert selection.summary()["total"] == 2
 
 
 def test_image_batch_commits_once_and_rebases_concurrent_upsert(client, tmp_path):
@@ -76,7 +141,9 @@ def test_image_batch_commits_once_and_rebases_concurrent_upsert(client, tmp_path
             app_module._v50_end_image_batch(save=False)
 
     snapshot = store.read()
-    assert snapshot.revision == outside_revision + 1
+    # One bounded Material identity transaction plus one bounded annotation
+    # projection transaction; never one Material revision per image.
+    assert snapshot.revision == outside_revision + 2
     assert {row["id"] for row in snapshot.rows} == {
         "existing", "outside", first["id"], second["id"]
     }
@@ -139,8 +206,11 @@ def test_image_batch_rejects_dataset_deleted_before_commit(client, tmp_path):
     upload_path = project_path / "uploads" / record["stored_name"]
     annotation_repository = app_module.AnnotationRepository(project_path)
     assert upload_path.exists()
-    assert annotation_repository.exists(record["id"])
-    assert app_module.delete_dataset(project_id, dataset_id) == {"ok": True}
+    # Formal GT cannot precede its canonical Material identity.
+    assert not annotation_repository.exists(record["id"])
+    app_module.atomic_write_json(app_module.datasets_file(project_id), [
+        value for value in app_module.read_json(app_module.datasets_file(project_id), [])
+        if value['id'] != dataset_id])
 
     try:
         with pytest.raises(app_module.HTTPException) as raised:
@@ -154,7 +224,9 @@ def test_image_batch_rejects_dataset_deleted_before_commit(client, tmp_path):
         str(row.get("id")) != record["id"]
         for row in app_module.material_store(project_id).read().rows
     )
-    assert not upload_path.exists()
+    assert upload_path.is_file()
+    with app_module.material_store(project_id)._connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM material_cleanup_deferred').fetchone()[0] == 1
     assert not annotation_repository.exists(record["id"])
 
 
@@ -189,47 +261,26 @@ def test_rejected_multi_dataset_batch_cleans_all_buffered_files(
     second = app_module.add_image_record(
         project_id, second_source, "second.png", "imported_yolo", other_dataset
     )
-    reached = threading.Event()
-    resume = threading.Event()
-    original_stage = app_module._v50_stage_material_file
-
-    def paused_stage(source, destination):
-        if threading.current_thread().name == "batch-delete" and not reached.is_set():
-            reached.set()
-            assert resume.wait(5), "dataset deletion did not resume"
-        return original_stage(source, destination)
-
-    monkeypatch.setattr(app_module, "_v50_stage_material_file", paused_stage)
-    outcome = {}
-
-    def run_delete():
-        try:
-            outcome["value"] = app_module.delete_dataset(
-                project_id, deleting_dataset
-            )
-        except BaseException as error:
-            outcome["error"] = error
-
-    thread = threading.Thread(target=run_delete, name="batch-delete")
-    thread.start()
+    token = uuid.uuid4().hex
+    app_module._v50_register_dataset_delete_token(token, project_id, deleting_dataset)
     try:
-        assert reached.wait(5)
         with pytest.raises(app_module.HTTPException) as raised:
             app_module._v50_end_image_batch(save=True)
     finally:
-        resume.set()
-        thread.join(5)
+        app_module._v50_unregister_dataset_delete_token(token)
         if app_module._v50_active_image_batch(project_id):
             app_module._v50_end_image_batch(save=False)
-
     assert raised.value.status_code == 409
-    assert outcome == {"value": {"ok": True}}
     rows = app_module.material_store(project_id).read().rows
     assert {str(row.get("id")) for row in rows}.isdisjoint(
-        {seed["id"], first["id"], second["id"]}
+        {first["id"], second["id"]}
     )
     project_path = app_module.project_dir(project_id)
     annotation_repository = app_module.AnnotationRepository(project_path)
     for record in (first, second):
-        assert not (project_path / "uploads" / record["stored_name"]).exists()
+        assert (project_path / "uploads" / record["stored_name"]).is_file()
         assert not annotation_repository.exists(record["id"])
+
+    assert app_module.material_store(project_id).get(seed['id']) is not None
+    with app_module.material_store(project_id)._connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM material_cleanup_deferred').fetchone()[0] == 2
