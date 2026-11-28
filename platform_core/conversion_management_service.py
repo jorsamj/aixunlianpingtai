@@ -794,28 +794,57 @@ class ConversionManagementService:
             params = validate_target(payload.target, params)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+        source_sha256 = sha256_file(local_src)
         source_trace = {
             "source_id": payload.source_id,
             "version_id": source.get("version_id") or "",
             "algorithm_id": source.get("algorithm_id") or "",
-            "sha256": sha256_file(local_src),
+            "sha256": source_sha256,
         }
-        if version and payload.target == "sophon":
+        # The label order belongs to the trained model, not to today's project
+        # catalog. Freeze it for every conversion target so ONNX/RKNN/TRT/OM
+        # evidence can never silently compare a different class order.
+        if version:
             for field in ("label_schema", "label_codes", "yolo", "training_lineage", "snapshot_id", "snapshot"):
                 if field in version:
                     source_trace[field] = json.loads(json.dumps(version[field], ensure_ascii=False))
-            # Keep the original historical version untouched. An absent or
-            # contradictory label contract must remain visible as incomplete.
             from platform_core.model_metadata import model_metadata
             frozen_labels = model_metadata(self.dependencies.DATA_DIR(), version)
-            if frozen_labels.get("label_validation_status") == "VERIFIED":
-                source_trace["label_codes"] = list(frozen_labels["tags"])
+            raw_status = str(frozen_labels.get("label_validation_status") or "UNKNOWN").lower()
+            status = raw_status if raw_status in {"verified", "unknown", "conflict"} else "unknown"
+            codes = list(frozen_labels.get("tags") or []) if status == "verified" else []
+            schema = source_trace.get("label_schema")
+            schema_rows = schema if isinstance(schema, list) else []
+            if status == "verified":
+                source_trace["label_codes"] = codes
             source_trace["label_binding"] = {
-                "status": str(frozen_labels.get("label_validation_status") or "UNKNOWN").lower(),
+                "status": status,
                 "source": frozen_labels.get("label_source") or "unknown",
-                "mapping_sha256": hashlib.sha256(json.dumps(source_trace.get("label_codes") or [],
+                "class_count": len(codes) if status == "verified" else None,
+                "class_ids": [row.get("class_id") for row in schema_rows] if status == "verified" else [],
+                "mapping_sha256": hashlib.sha256(json.dumps(codes,
                     ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
-                    if frozen_labels.get("label_validation_status") == "VERIFIED" else "",
+                    if status == "verified" else "",
+                "schema_sha256": hashlib.sha256(json.dumps(schema_rows,
+                    ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                    if schema_rows else "",
+                "source_sha256": source_sha256,
+                "algorithm_id": str(source.get("algorithm_id") or ""),
+                "version_id": str(source.get("version_id") or ""),
+                "reason": str(frozen_labels.get("label_error") or "")[:500],
+            }
+        else:
+            source_trace["label_binding"] = {
+                "status": "unknown",
+                "source": "unknown",
+                "class_count": None,
+                "class_ids": [],
+                "mapping_sha256": "",
+                "schema_sha256": "",
+                "source_sha256": source_sha256,
+                "algorithm_id": str(source.get("algorithm_id") or ""),
+                "version_id": str(source.get("version_id") or ""),
+                "reason": "源模型版本不可用，无法取得冻结类别合同",
             }
         job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":{k:v for k,v in source.items() if k!="_resolved_version"},"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"requested_params":dict(payload.params or {}),"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":self.dependencies.now_iso(),"updated_at":self.dependencies.now_iso(),"outputs":[],"request_id":str(payload.request_id or ""),"request_identity":self._deploy_request_identity(payload) if payload.request_id else ""}
         portable_conversion = None
@@ -1839,6 +1868,9 @@ class ConversionManagementService:
                                      if type((job.get("params") or {}).get("batch")) is int else None),
                     "label_codes": source_evidence.get("label_codes") if isinstance(source_evidence.get("label_codes"), list) else [],
                     "label_schema": source_evidence.get("label_schema") if isinstance(source_evidence.get("label_schema"), list) else [],
+                    "label_binding": source_evidence.get("label_binding") if isinstance(source_evidence.get("label_binding"), dict) else {},
+                    "preprocessing_contract": source_evidence.get("preprocessing_contract") if isinstance(source_evidence.get("preprocessing_contract"), dict) else {},
+                    "output_contract": source_evidence.get("output_contract") if isinstance(source_evidence.get("output_contract"), dict) else {},
                     "image_names": names, "source_type": "PT", "compared_type": "ONNX",
                 }
                 self.dependencies.write_json(directory / "request.json", receipt)
