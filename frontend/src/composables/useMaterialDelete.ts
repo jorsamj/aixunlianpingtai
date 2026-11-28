@@ -79,8 +79,14 @@ export function useMaterialDelete(options: {
       if (!value || value.operation !== 'DELETE_INDEX'
           || typeof value.plan_id !== 'string' || value.project_id !== options.projectId())
         return null;
-      const mode: DeleteMode = value.mode === 'selected' ? 'selected' : 'single';
+      const rawMode = value.mode;
+      if (rawMode !== 'single' && rawMode !== 'selected' && rawMode !== 'filtered')
+        return null;
+      const mode: DeleteMode = rawMode;
       if (mode === 'single' && typeof value.image_id !== 'string') return null;
+      if (mode === 'filtered'
+          && (typeof value.id_digest !== 'string' || !value.id_digest.startsWith('sha256:')))
+        return null;
       return {
         project_id: value.project_id, plan_id: value.plan_id, operation: 'DELETE_INDEX',
         mode, image_id: typeof value.image_id === 'string' ? value.image_id : undefined,
@@ -343,10 +349,32 @@ export function useMaterialDelete(options: {
   }
   function prepare(imageId: string) { return prepareMany([imageId], 'single'); }
 
+  function canonicalSelection(value: MaterialBatchSelection) {
+    const normalize = (item: unknown): unknown => {
+      if (Array.isArray(item)) return item.map(normalize).sort();
+      if (item && typeof item === 'object') return Object.fromEntries(
+        Object.entries(item as Record<string, unknown>)
+          .filter(([, entry]) => entry !== '' && entry !== null && entry !== undefined)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([key, entry]) => [key, normalize(entry)]),
+      );
+      return item;
+    };
+    return JSON.stringify({
+      scope: value.scope,
+      filters: normalize(value.filters || {}),
+      excluded: normalize(value.excluded_image_ids || []),
+    });
+  }
+
   async function prepareFiltered(selection: MaterialBatchSelection) {
     if (!options.enabled() || state.busy) return;
     if (selection.scope !== 'FILTERED') {
       state.error = '全选删除必须使用服务端筛选范围';
+      return;
+    }
+    if ((selection.excluded_image_ids?.length || 0) > 500) {
+      state.error = '本次排除超过 500 张，请缩小排除范围后重新预检';
       return;
     }
     syncPending();
@@ -372,6 +400,13 @@ export function useMaterialDelete(options: {
       if (estimate.selection_spec?.scope !== 'FILTERED'
           || !estimate.deletion_preview.selection_digest)
         throw new Error('全选删除预检身份不完整，请重新预检');
+      if (canonicalSelection(selection) !== canonicalSelection(estimate.selection_spec))
+        throw new Error('预检返回的筛选或排除范围与本次请求不一致，请重新预检');
+      const previewCount = Number(estimate.deletion_preview.delete_count
+        ?? estimate.deletion_preview.selected_count ?? -1);
+      const digestCount = Number(estimate.deletion_preview.selection_digest.split(':').at(-1));
+      if (previewCount !== estimate.count || digestCount !== estimate.count)
+        throw new Error('预检数量与冻结集合摘要不一致，请重新预检');
       state.estimate = estimate;
       state.dialog = true;
     } catch (cause) {

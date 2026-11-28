@@ -170,6 +170,12 @@ def test_filtered_delete_estimate_keeps_exclusions_in_frozen_range(client, tmp_p
     assert body["deletion_preview"]["delete_count"] == 1
     assert second["id"] != first["id"]
     assert project.is_dir()
+    clear = client.post(base + "/estimate", json={
+        "operation": "DELETE_INDEX",
+        "selection_spec": {"scope": "FILTERED", "filters": {}},
+    })
+    assert clear.status_code == 409
+    assert "清空项目" in str(clear.json().get("detail"))
 
 
 def governed_delete(client, pid, image_ids):
