@@ -128,4 +128,3 @@ SQLite 历史 → 角色/用途 → 最终过滤 → 分页/统计。SQLite 权�
 - `BusinessSnapshot.read_identity` 与 owner 版本取自会话打开时捕获的 picker 上下文，不再重新
   `snapshot_context()`。
 - 正式候选流与冻结比较禁止 `verify_owner=False`；诊断读取继续使用原 P1 Provider。
-

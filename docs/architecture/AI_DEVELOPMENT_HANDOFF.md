@@ -1,5 +1,11 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P2 固定读取事务收口（fbf44541）**：`read_session` 在中央 Task 库持有
+> 单个只读事务，所有批次复用（`TrainingMaterialUsage` 仅新增借用连接），初始 revision/活跃 Task
+> 摘要同事务获取；批次结束关闭事务并用新连接复核当前版本后才发布；snapshot 身份取自会话捕获
+> 的 picker 上下文；正式候选流与冻结比较禁止 `verify_owner=False`。定向 **22 passed / 0 skipped**；
+> P3-A 设计已验收不变。未切换生产、未改 VERSION、未启动 P3-B/P4/P5。
+
 > **2026-11-28 / U3-P2 第三轮收口（952d559e）**：历史一致性改为 usage revision + 活跃 Task
 > 身份摘要（`(task_id,status)` 有界查询），不再用按状态计数、不累积候选事实、不逐素材查 Task；
 > `iter_candidates` 消费业务 cursor；浏览模式保留权威回执角色；`verify_owner=False` 仅诊断；
