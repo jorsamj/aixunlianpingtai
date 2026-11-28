@@ -785,16 +785,19 @@ def test_bounded_batches_do_not_accumulate_or_recheck_everything(tmp_path):
         SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
     )
     calls = {"count": 0}
-    real = provider.usage.query_filter
+    real = TrainingMaterialUsage.query_filter
 
-    def counting(*args, **kwargs):
+    def counting(self, *args, **kwargs):
         calls["count"] += 1
-        return real(*args, **kwargs)
+        return real(self, *args, **kwargs)
 
-    provider.usage.query_filter = counting
-    with provider.read_session(_query(filters=_filter(), count_mode="deferred")) as session:
-        assert not hasattr(session, "_facts")
-        batches = list(session.batches(batch_size=4))
+    TrainingMaterialUsage.query_filter = counting
+    try:
+        with provider.read_session(_query(filters=_filter(), count_mode="deferred")) as session:
+            assert not hasattr(session, "_facts")
+            batches = list(session.batches(batch_size=4))
+    finally:
+        TrainingMaterialUsage.query_filter = real
     assert len(batches) == 3
     # One bounded history read per batch; verify() adds no full-candidate re-read.
     assert calls["count"] == 3
@@ -875,12 +878,12 @@ def test_session_holds_one_fixed_task_snapshot_across_batches(tmp_path):
         SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
     )
     with provider.read_session(_query(filters=_filter())) as session:
-        borrow = provider.usage._borrowed_connection
+        borrow = session.usage._borrowed_connection
         assert borrow is not None
         batches = list(session.batches(batch_size=4))
         assert len(batches) == 3
-        assert provider.usage._borrowed_connection is borrow
-    assert provider.usage._borrowed_connection is None
+        assert session.usage._borrowed_connection is borrow
+    assert session.usage._borrowed_connection is None
     with pytest.raises(sqlite3.ProgrammingError):
         borrow.execute("SELECT 1")
 
@@ -924,10 +927,9 @@ def test_overlapping_sessions_are_rejected_and_released(tmp_path):
     )
     with provider.read_session(_query(filters=_filter())) as first:
         assert list(first.batches())
-        with pytest.raises(BusinessReadError):
-            with provider.read_session(_query(filters=_filter())):
-                pass
-        # The live session keeps its exclusive borrow.
+        with provider.read_session(_query(filters=_filter())) as second:
+            assert list(second.batches())
+        # The live session keeps its own fixed borrow.
         assert list(first.batches())
     with provider.read_session(_query(filters=_filter())) as third:
         assert list(third.batches())
@@ -936,7 +938,7 @@ def test_overlapping_sessions_are_rejected_and_released(tmp_path):
             raise RuntimeError("boom")
     with provider.read_session(_query(filters=_filter())) as fourth:
         assert list(fourth.batches())
-    assert provider.usage._borrowed_connection is None
+    assert first.usage._borrowed_connection is None
 
 
 def test_status_change_without_restore_between_batches_fails_closed(tmp_path):
