@@ -586,14 +586,14 @@ def test_controlled_sync_runner_is_disabled_by_default_and_bounded(pg, tmp_path)
         ensure_schema(connection)
         _baseline(connection, project, "p13")
         disabled = run_once(
-            connection, data_dir=project, config=SyncRunnerConfig()
+            connection, data_dir=tmp_path, config=SyncRunnerConfig()
         )
         assert disabled["status"] == "DISABLED"
         row = materials.get("m1")
         row.update(filename="runner-sync.jpg")
         materials.upsert(row)
         result = run_once(
-            connection, data_dir=project,
+            connection, data_dir=tmp_path,
             config=SyncRunnerConfig(
                 enabled=True, project_ids=("p13",), batch_limit=10,
                 max_batches=10, max_seconds=30,
@@ -621,6 +621,37 @@ def test_change_log_governance_is_read_only_and_conservative(pg, tmp_path):
         assert dry_run["status"] == "READY"
         assert dry_run["candidates"]["materials"]["to_sequence"] >= 1
         assert "只读 dry-run" in dry_run["note"]
+
+
+def test_sync_runner_scopes_projects_and_rejects_bad_identity(pg, tmp_path):
+    project_a, materials_a, _, _, _ = _project(tmp_path, "p15a")
+    project_b, materials_b, _, _, _ = _project(tmp_path, "p15b")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        _baseline(connection, project_a, "p15a")
+        _baseline(connection, project_b, "p15b")
+        row = materials_a.get("m1")
+        row.update(filename="only-a.jpg")
+        materials_a.upsert(row)
+        result = run_once(
+            connection, data_dir=tmp_path,
+            config=SyncRunnerConfig(
+                enabled=True, project_ids=("p15a",), batch_limit=50,
+                max_batches=10, max_seconds=30,
+            ),
+        )
+        assert result["status"] == "COMPLETED"
+        assert connection.execute(
+            f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p15a' AND id='m1'"
+        ).fetchone()[0] == "only-a.jpg"
+        assert connection.execute(
+            f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p15b' AND id='m1'"
+        ).fetchone()[0] == "fire.jpg"
+        bad = run_once(
+            connection, data_dir=tmp_path,
+            config=SyncRunnerConfig(enabled=True, project_ids=("../p15a",)),
+        )
+        assert bad["status"] == "BLOCKED"
 
 
 def test_b3_publish_failure_keeps_previous_identity_and_stale(pg, tmp_path, monkeypatch):

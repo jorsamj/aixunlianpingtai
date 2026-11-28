@@ -1131,6 +1131,8 @@ def synchronize_project(
             }
         progressed = False
         for stream in STREAMS:
+            if batches >= int(max_batches):
+                break
             result = apply_incremental_batch(
                 connection, project_dir=project_dir,
                 project_id=project_id, stream=stream, limit=limit,
@@ -1139,6 +1141,15 @@ def synchronize_project(
             batches += 1
             if result.get("has_more"):
                 progressed = True
+        if batches >= int(max_batches) and progressed:
+            return {
+                "status": "INCOMPLETE",
+                "applied": applied,
+                "batches": batches,
+                "publication": {
+                    "published": False, "code": "U3_INCREMENTAL_BATCH_LIMIT"
+                },
+            }
         if not progressed:
             published = publish_ready(
                 connection, project_dir=project_dir, project_id=project_id

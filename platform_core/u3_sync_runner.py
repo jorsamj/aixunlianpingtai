@@ -7,6 +7,8 @@ classification in that existing implementation.
 """
 from __future__ import annotations
 
+import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,6 +19,26 @@ from .u3_incremental_sync import (
     diagnose_project,
     synchronize_project,
 )
+
+
+def resolve_project_dir(data_dir: str | Path, project_id: str) -> Path:
+    """Resolve one authorized project directory without path traversal/symlinks."""
+    identity = str(project_id or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,96}", identity):
+        raise ValueError("invalid project identity")
+    root = (Path(data_dir) / "projects").resolve()
+    candidate = (root / identity).resolve()
+    if candidate.parent != root or not candidate.is_dir():
+        raise ValueError("project directory is outside the authorized scope")
+    meta = candidate / "meta.json"
+    if meta.is_file():
+        try:
+            value = json.loads(meta.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise ValueError("project metadata is unreadable") from error
+        if isinstance(value, dict) and str(value.get("id") or "") not in {"", identity}:
+            raise ValueError("project identity does not match its directory")
+    return candidate
 
 _TRANSIENT_CODES = frozenset({
     "U3_INCREMENTAL_OWNER_UNAVAILABLE",
@@ -73,23 +95,42 @@ class SyncProjectResult:
 
 def run_project_sync(
     connection, *, data_dir: str | Path, project_id: str,
-    config: SyncRunnerConfig,
+    config: SyncRunnerConfig, stop_event=None,
 ) -> SyncProjectResult:
     """Run one project with bounded retries.  Never rebuilds automatically."""
     config.validate()
     if not config.enabled:
         return SyncProjectResult(project_id, "DISABLED", code="SYNC_DISABLED")
+    try:
+        project_dir = resolve_project_dir(data_dir, project_id)
+    except ValueError as error:
+        return SyncProjectResult(
+            project_id, "BLOCKED", code="PROJECT_IDENTITY_INVALID",
+            publication={"reason": str(error)[:300]},
+        )
     started = time.monotonic()
+    deadline = started + float(config.max_seconds)
     attempts = 0
     last_code = ""
     while attempts <= int(config.retry_attempts):
+        if stop_event is not None and stop_event.is_set():
+            return SyncProjectResult(
+                project_id, "STOPPED", code="SYNC_STOPPED",
+                attempts=attempts, seconds=round(time.monotonic() - started, 3),
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return SyncProjectResult(
+                project_id, "INCOMPLETE", code="U3_SYNC_TIME_LIMIT",
+                attempts=attempts, seconds=round(time.monotonic() - started, 3),
+            )
         attempts += 1
         try:
             result = synchronize_project(
-                connection, project_dir=Path(data_dir), project_id=project_id,
+                connection, project_dir=project_dir, project_id=project_id,
                 limit=int(config.batch_limit),
                 max_batches=int(config.max_batches),
-                max_seconds=float(config.max_seconds),
+                max_seconds=remaining,
             )
             return SyncProjectResult(
                 project_id=project_id,
@@ -116,7 +157,12 @@ def run_project_sync(
                 )
             if attempts > int(config.retry_attempts):
                 break
-            time.sleep(float(config.retry_backoff_seconds) * attempts)
+            pause = min(
+                float(config.retry_backoff_seconds) * attempts,
+                max(0.0, deadline - time.monotonic()),
+            )
+            if pause:
+                time.sleep(pause)
     return SyncProjectResult(
         project_id, "RETRY_EXHAUSTED", code=last_code,
         attempts=attempts, seconds=round(time.monotonic() - started, 3),
@@ -125,22 +171,59 @@ def run_project_sync(
 
 def run_once(
     connection, *, data_dir: str | Path, config: SyncRunnerConfig,
+    stop_event=None,
 ) -> dict[str, Any]:
     """One explicit fair pass over the configured project scope."""
     config.validate()
     if not config.enabled:
         return {"status": "DISABLED", "projects": []}
-    results = [
-        run_project_sync(
-            connection, data_dir=data_dir, project_id=project_id, config=config
-        ).__dict__
-        for project_id in config.project_ids
-    ]
+    results = []
+    for project_id in config.project_ids:
+        if stop_event is not None and stop_event.is_set():
+            results.append({
+                "project_id": project_id, "status": "STOPPED",
+                "code": "SYNC_STOPPED",
+            })
+            break
+        results.append(run_project_sync(
+            connection, data_dir=data_dir, project_id=project_id,
+            config=config, stop_event=stop_event,
+        ).__dict__)
+    statuses = {row["status"] for row in results}
+    if "BLOCKED" in statuses:
+        status = "BLOCKED"
+    elif "FAILED" in statuses or "RETRY_EXHAUSTED" in statuses:
+        status = "FAILED"
+    elif "INCOMPLETE" in statuses:
+        status = "INCOMPLETE"
+    elif "STOPPED" in statuses:
+        status = "STOPPED"
+    else:
+        status = "COMPLETED"
     return {
-        "status": "COMPLETED",
+        "status": status,
         "projects": results,
         "blocked": [row["project_id"] for row in results if row["status"] == "BLOCKED"],
     }
+
+
+def run_loop(
+    connection, *, data_dir: str | Path, config: SyncRunnerConfig,
+    stop_event, interval_seconds: float = 5.0, max_rounds: int | None = None,
+) -> list[dict[str, Any]]:
+    """Explicit bounded loop for an isolated service/maintenance caller only."""
+    if not config.enabled:
+        return [{"status": "DISABLED", "projects": []}]
+    rounds: list[dict[str, Any]] = []
+    while not stop_event.is_set():
+        rounds.append(run_once(
+            connection, data_dir=data_dir, config=config, stop_event=stop_event
+        ))
+        if max_rounds is not None and len(rounds) >= int(max_rounds):
+            break
+        if stop_event.wait(max(0.0, float(interval_seconds))):
+            break
+    return rounds
 
 
 def sync_status(
