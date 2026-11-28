@@ -290,3 +290,42 @@ def test_source_manifest_preserves_label_and_preprocessing_contracts(tmp_path):
     assert source["label_binding"]["status"] == "verified"
     assert source["preprocessing_contract"]["letterbox_mode"] == "fixed_shape_center"
     assert source["output_contract"]["layout"] == "yolo_v8"
+
+
+def test_worker_manifest_preserves_contracts(tmp_path):
+    from deployment_worker import build_conversion_source_manifest
+    from platform_core.conversion import sha256_file
+
+    source = tmp_path / "best.pt"
+    onnx = tmp_path / "model.onnx"
+    source.write_bytes(b"worker-pt")
+    onnx.write_bytes(b"worker-onnx")
+    source_digest = sha256_file(source)
+    digest = sha256_file(onnx)
+    manifest = build_conversion_source_manifest(
+        source=source,
+        source_trace={
+            "algorithm_id": "a1", "version_id": "v1",
+            "label_codes": ["fire"], "label_schema": [{"class_id": 0, "code": "fire"}],
+            "label_binding": {"status": "verified", "class_count": 1, "class_ids": [0],
+                              "source_sha256": source_digest,
+                              "algorithm_id": "a1", "version_id": "v1"},
+            "preprocessing_contract": {"status": "declared", "pixel_format": "rgb"},
+            "output_contract": {"status": "declared", "layout": "yolo_v8"},
+        },
+        source_meta={},
+        params={"opset": 12, "dynamic": False, "simplify": False, "batch": 1,
+                "imgsz": [64, 64], "precision": "fp16", "kind": "onnx"},
+        target="onnx", tool_name="onnx", tool_version="1",
+        tool_python="python", toolchain_file=tmp_path / "toolchain.json",
+        onnx_record=None,
+        onnx_validation={"input_shapes": [[1, 3, 64, 64]],
+                         "output_shapes": [[1, 7, 6]]},
+        output_records=[{"name": onnx.name, "sha256": digest,
+                         "size_bytes": onnx.stat().st_size}],
+        source_sha_recheck={"status": "verified",
+                            "computed_sha256": source_digest},
+    )
+    assert manifest["source"]["label_binding"]["status"] == "verified"
+    assert manifest["source"]["preprocessing_contract"]["pixel_format"] == "rgb"
+    assert manifest["source"]["output_contract"]["layout"] == "yolo_v8"

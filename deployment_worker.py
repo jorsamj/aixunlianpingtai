@@ -808,9 +808,30 @@ def build_conversion_source_manifest(*, source: Path, source_trace: Dict[str, An
         'label_codes': source_trace.get('label_codes'),
         'label_schema': source_trace.get('label_schema'),
         'label_binding': source_trace.get('label_binding'),
+        'preprocessing_contract': source_trace.get('preprocessing_contract'),
+        'output_contract': source_trace.get('output_contract'),
         'training_lineage': source_trace.get('training_lineage'),
         'sha256_recheck': source_sha_recheck,
     }
+    binding = source_trace.get('label_binding') if isinstance(source_trace.get('label_binding'), dict) else {}
+    if binding.get('status') == 'verified':
+        codes = source_block.get('label_codes') if isinstance(source_block.get('label_codes'), list) else []
+        schema = source_block.get('label_schema') if isinstance(source_block.get('label_schema'), list) else []
+        class_ids = binding.get('class_ids') if isinstance(binding.get('class_ids'), list) else []
+        if (not codes or binding.get('class_count') != len(codes)
+                or class_ids != list(range(len(codes)))
+                or str(binding.get('source_sha256') or '') != str(source_block['sha256'])
+                or str(binding.get('algorithm_id') or '') != source_block['algorithm_id']
+                or str(binding.get('version_id') or '') != source_block['version_id']):
+            raise ConversionError(
+                'LABEL_BINDING_MISMATCH',
+                '冻结类别绑定与源模型 SHA/算法/版本/class_id 顺序不一致',
+                solution='请重新冻结源模型类别合同，不能把未核验的 label_binding 写入 manifest。',
+            )
+    elif binding:
+        # A historical declaration is not a verified contract. Keep it for audit
+        # but never expose it as label_codes to verification.
+        source_block['label_codes'] = None
     onnx_block = None
     if onnx_record:
         onnx_block = {

@@ -1100,6 +1100,13 @@ def verification_parameters(receipt, result=None) -> dict:
         "compared_kind": "ONNX",
         "bmodel_expected": bool(receipt.get("bmodel_expected")),
     }
+    # Additive contract fields participate in the immutable verification identity
+    # only when the request carries them. Historical receipts keep their exact
+    # old digest instead of being invalidated by an empty new key.
+    for key in ("label_binding", "preprocessing_contract", "output_contract"):
+        value = receipt.get(key)
+        if isinstance(value, Mapping) and value:
+            params[key] = dict(value)
     params["digest"] = _safe_digest({key: value for key, value in params.items() if key != "digest"})
     return params
 

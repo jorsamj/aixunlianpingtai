@@ -833,6 +833,22 @@ class ConversionManagementService:
                 "version_id": str(source.get("version_id") or ""),
                 "reason": str(frozen_labels.get("label_error") or "")[:500],
             }
+            if status == "verified":
+                class_ids = [row.get("class_id") for row in schema_rows] if schema_rows else list(range(len(codes)))
+                if (class_ids != list(range(len(codes)))
+                        or len(codes) == 0
+                        or (schema_rows and [str(row.get("code") or "").strip() for row in schema_rows] != codes)):
+                    source_trace["label_binding"].update(
+                        status="conflict", class_count=None, class_ids=[],
+                        mapping_sha256="", reason="class_id/order/code 与冻结类别映射不一致",
+                    )
+                    source_trace.pop("label_codes", None)
+                else:
+                    source_trace["label_binding"]["class_ids"] = class_ids
+            else:
+                # A historical label_codes field may be an unverified claim. It must
+                # not survive as if it were the formal verified contract.
+                source_trace.pop("label_codes", None)
         else:
             source_trace["label_binding"] = {
                 "status": "unknown",
@@ -1865,6 +1881,16 @@ class ConversionManagementService:
                     names.append(name)
                 onnx_evidence = manifest.get("onnx") if isinstance(manifest.get("onnx"), dict) else {}
                 source_evidence = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+                frozen_preprocessing = source_evidence.get("preprocessing_contract") if isinstance(source_evidence.get("preprocessing_contract"), dict) else {}
+                request_preprocessing = (job.get("params") or {}).get("preprocessing") if isinstance((job.get("params") or {}).get("preprocessing"), Mapping) else {}
+                for field in ("pixel_format", "channel_format", "letterbox", "letterbox_mode",
+                              "pad_value", "resize_interpolation", "mean", "scale"):
+                    if (field in frozen_preprocessing and field in request_preprocessing
+                            and frozen_preprocessing.get(field) != request_preprocessing.get(field)):
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"验证请求的预处理字段 {field} 与转换 manifest 冻结合同冲突",
+                        )
                 receipt = {
                     "id": verification_id, "project_id": project_id, "conversion_job_id": job_id,
                     "created_at": self.dependencies.now_iso(), "request_id": request_id,
