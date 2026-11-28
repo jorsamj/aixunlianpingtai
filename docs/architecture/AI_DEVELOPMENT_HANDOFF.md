@@ -1,5 +1,11 @@
 # AI 开发接续入口
 
+> **2026-11-28 / 产品修复 + L1 分段诊断（本批）**：素材库刷新失败不再清空已有页面，
+> 保留上次结果并显示刷新态；训练报告切换任务时重置 history/evaluation/class 偏移；
+> Service Nodes 测试等待 fixtureReady；新增 `P4_PROFILE=1` 分段计时，小规模实测
+> evaluate 为主要成本、history 占约 20–26%。L 完整 SQL/GT/回执/READY 分段、M 非空角色/
+> 三方差分、O AI 审核、P 训练创建/任务仍未完成。
+>
 > **2026-11-28 / 批次 I–N（本批）**：修复 exact count 外层提前退出；sync runner 绑定真实
 > `data_dir/projects/<id>`、批次总上限、共享时间预算、stop event 及项目隔离；Change Log
 > 治理补 HWM 缺失/固定读事务/物理库去重；部署预检改为 SQLite `query_only` + PG 只读事务并

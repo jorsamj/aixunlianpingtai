@@ -595,6 +595,9 @@ flowchart TB
 | Change Log 治理 | 只读诊断已实现 | HWM 缺失/固定读事务/物理库去重；safe_to_delete=false |
 | 部署预检 | 只读预检/回退准备已实现 | SQLite query_only + PG 只读事务 + 完整表检查；未部署 |
 | Service Nodes 前端 | 定向修复 | Playwright setPage 前等待 fixtureReady；失败用例通过 |
+| 素材库刷新 | 已修复 | 刷新失败保留已加载页面，不再清空 |
+| 训练报告分页 | 已修复 | 切换任务重置 history/evaluation/class 偏移 |
+| P4 分段诊断 | 小规模已实现、完整未完成 | P4_PROFILE evaluate/history 计时；SQL/GT/回执/READY 待补 |
 | U3-P5 | 未授权 | 生产读取切换 |
 
 SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。\n\n
