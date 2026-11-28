@@ -51,7 +51,8 @@ const benchmark=ref<any>(null),backgroundConfirmed=ref(false),negativePreview=re
 watch(()=>JSON.stringify(fixedScope.value),()=>{fixedPreview.value=null;fixedSignature.value='';finalConfirm.value=false});
 function chooseTarget(){engineKey.value=target.value?.algorithms?.[0]?.key||'';draft.config.model=engine.value?.base_model||'';if(draft.config.imgsz==null)draft.config.imgsz=engine.value?.default_imgsz||640;}
 async function mergeSelections(nextPositive:PickerSelection,nextNegative:PickerSelection){
- if(!nextNegative.count)return nextPositive;
+ if(!nextNegative.count&&!nextPositive.reference)return nextPositive;
+ if(!nextNegative.count&&nextPositive.reference&&!nextPositive.ids.length)return nextPositive;
  const ids=[...new Set([...nextPositive.ids,...nextNegative.ids])];
  const revision=await trainingApi.trainingMaterialRevision(projectId,algorithmId,controller.signal);
  let references:Awaited<ReturnType<typeof trainingApi.combineTrainingSelections>>|undefined;
@@ -125,7 +126,16 @@ async function loadSource(epoch=loadEpoch){
  }
  if(!source.candidateSetId)return;
  const candidates=view.candidate_set!.material_ids;
- if(draft.trainSelectionRef)throw new Error('来源补数需要显式素材选择');
+ if(draft.trainSelectionRef){
+  if(negative.value.count)throw new Error('来源补数需要先清除负样本，再按来源新增素材重新核验');
+  if(candidates.length>2000)throw new Error('来源补充素材超过2000张，请先在来源范围筛选后再补数');
+  const next={ids:candidates,reference:draft.trainSelectionRef,count:positive.value.count};
+  const value=await mergeSelections(next,{ids:[],count:0});
+  if(epoch!==loadEpoch)return;
+  positive.value=value;
+  setTrain(value);
+  return;
+ }
  const ids=[...new Set([...positive.value.ids,...candidates])];
  const next={ids,count:ids.length};
  const value=await mergeSelections(next,negative.value);
