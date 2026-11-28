@@ -1130,3 +1130,97 @@ def synchronize_project(
             "published": False, "code": "U3_INCREMENTAL_BATCH_LIMIT"
         },
     }
+
+
+def rebuild_project(
+    connection, *, project_dir: str | Path, project_id: str,
+    limit: int = 200, max_batches: int = 100,
+) -> dict[str, Any]:
+    """Controlled full rebuild: export, atomic full import as STALE, then catch up.
+
+    A failed import rolls back to the previous projection. New Owner events that
+    land after the export are consumed by the following synchronize step; the
+    imported state is never advertised as READY in between.
+    """
+    project = str(project_id or "").strip()
+    if not project:
+        raise U3IncrementalSyncError(
+            "U3_INCREMENTAL_PROJECT_MISSING", "project_id is required"
+        )
+    snapshot = export_project_snapshot(project_dir, project)
+    imported = import_project_snapshot(
+        connection, snapshot, mode="full", status_override="STALE"
+    )
+    synchronized = synchronize_project(
+        connection, project_dir=project_dir, project_id=project,
+        limit=limit, max_batches=max_batches,
+    )
+    return {
+        "rebuilt": True,
+        "snapshot_id": str(snapshot.get("snapshot_id") or ""),
+        "import": imported,
+        "synchronize": synchronized,
+    }
+
+
+def diagnose_project(
+    connection, *, project_dir: str | Path, project_id: str,
+) -> dict[str, Any]:
+    """Read-only backlog/diagnostic view over existing state and evidence."""
+    project = str(project_id or "").strip()
+    owner = read_owner_change_marks(project_dir)
+    with connection.transaction():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                f"SELECT snapshot_id,status,published_at FROM {SCHEMA_NAME}.picker_snapshot_state "
+                "WHERE project_id=%s",
+                (project,),
+            )
+            state = cursor.fetchone()
+            cursor.execute(
+                f"SELECT store,last_applied_seq FROM {SCHEMA_NAME}.u3_projection_cursor "
+                "WHERE project_id=%s ORDER BY store",
+                (project,),
+            )
+            cursors = {str(row[0]): (int(row[1]) if row[1] is not None else None)
+                       for row in cursor.fetchall()}
+    streams: dict[str, Any] = {}
+    needs_rebuild = False
+    for stream in STREAMS:
+        current = cursors.get(stream)
+        marks = owner.get(stream) or {}
+        if not marks.get("available"):
+            streams[stream] = {
+                "owner": "UNAVAILABLE", "cursor": current, "pending": None,
+                "reason": marks.get("reason"),
+            }
+            continue
+        hwm = int(marks["high_water_sequence"])
+        pending = max(0, hwm - current) if current is not None else None
+        next_sequence = None
+        gap = False
+        if current is not None and hwm > current:
+            try:
+                with closing(_open_owner_database(project_dir, stream)) as database:
+                    events = read_events(database, stream, current, 1)
+                next_sequence = int(events[0]["sequence"]) if events else None
+                gap = next_sequence is None or next_sequence != current + 1
+            except (sqlite3.Error, ValueError, U3IncrementalSyncError):
+                gap = True
+        needs_rebuild = needs_rebuild or gap
+        streams[stream] = {
+            "owner": "AVAILABLE",
+            "high_water_sequence": hwm,
+            "cursor": current,
+            "pending": pending,
+            "next_sequence": next_sequence,
+            "gap": gap,
+        }
+    return {
+        "project_id": project,
+        "status": None if state is None else str(state[1]),
+        "snapshot_id": None if state is None else str(state[0]),
+        "published_at": None if state is None else state[2],
+        "streams": streams,
+        "needs_rebuild": bool(needs_rebuild),
+    }

@@ -386,6 +386,13 @@ def test_b3_publish_ready_after_all_streams_align(pg, tmp_path):
         marks = _marks(project)
         for stream, sequence in marks.items():
             assert _cursor(connection, "p6", stream) == sequence
+        diagnosis = sync.diagnose_project(
+            connection, project_dir=project, project_id="p6"
+        )
+        assert diagnosis["status"] == "READY"
+        assert diagnosis["needs_rebuild"] is False
+        assert all(item["pending"] == 0 for item in diagnosis["streams"].values())
+
 
 def test_b3_export_high_water_then_new_event_is_not_lost(pg, tmp_path):
     project, materials, _, _, _ = _project(tmp_path, "p7")
@@ -405,3 +412,198 @@ def test_b3_export_high_water_then_new_event_is_not_lost(pg, tmp_path):
         assert connection.execute(
             f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p7' AND id='m1'"
         ).fetchone()[0] == "after-export.jpg"
+
+
+def test_b4_gap_blocks_sync_and_controlled_rebuild_recovers(pg, tmp_path):
+    project, materials, _, _, _ = _project(tmp_path, "p8")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        marks = _baseline(connection, project, "p8")
+        row = materials.get("m1")
+        row.update(filename="gap-1.jpg")
+        materials.upsert(row)
+        row = materials.get("m1")
+        row.update(filename="gap-2.jpg")
+        materials.upsert(row)
+        row = materials.get("m1")
+        row.update(filename="gap-3.jpg")
+        materials.upsert(row)
+        first = _apply(connection, project, MATERIAL_STREAM, "p8", limit=1)
+        assert first["applied"] == 1
+        with sqlite3.connect(materials.path) as database:
+            database.execute("DROP TRIGGER owner_change_log_no_delete")
+            database.execute(
+                "DELETE FROM owner_change_log WHERE stream=? AND sequence=?",
+                (MATERIAL_STREAM, marks[MATERIAL_STREAM] + 2),
+            )
+            database.commit()
+        with pytest.raises(sync.U3IncrementalSyncError) as gap:
+            sync.synchronize_project(
+                connection, project_dir=project, project_id="p8", limit=1
+            )
+        assert gap.value.code == "U3_INCREMENTAL_SEQUENCE_GAP"
+        diagnosis = sync.diagnose_project(
+            connection, project_dir=project, project_id="p8"
+        )
+        assert diagnosis["needs_rebuild"] is True
+
+        rebuilt = sync.rebuild_project(
+            connection, project_dir=project, project_id="p8", limit=10
+        )
+        assert rebuilt["rebuilt"] is True
+        assert rebuilt["synchronize"]["status"] == "READY"
+        assert connection.execute(
+            f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p8' AND id='m1'"
+        ).fetchone()[0] == "gap-3.jpg"
+
+
+def test_b4_incremental_evidence_identity_matches_full_snapshot(pg, tmp_path):
+    project, materials, annotations, _, _ = _project(tmp_path, "p9")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        _baseline(connection, project, "p9")
+        gt = annotations.get("m1")
+        annotations.confirm_task_negatives(
+            "task-p9",
+            [{
+                "receipt_id": "receipt-p9", "image_id": "m1",
+                "annotation_version": gt["version"],
+                "annotation_hash": gt["content_digest"],
+            }],
+            "actor-p9",
+        )
+        materials.record_physical_reclamation_audit(
+            "op-p9", "m1", "a" * 64
+        )
+        result = sync.synchronize_project(
+            connection, project_dir=project, project_id="p9", limit=20
+        )
+        assert result["status"] == "READY", result
+
+        snapshot = export_project_snapshot(project, "p9")
+        target = read_target_snapshot(connection, "p9")
+        for store, table in (
+            ("annotations", "task_negative_confirmations"),
+            ("materials", "material_storage_audit"),
+        ):
+            source_keys = {
+                row["row_key"]
+                for row in snapshot["stores"][store]["evidence"][table]
+            }
+            target_keys = {
+                row["row_key"]
+                for row in target["stores"][store]["evidence"][table]
+            }
+            assert source_keys == target_keys
+        comparison = dict(target)
+        comparison["revisions"] = dict(snapshot["revisions"])
+        assert reconcile(snapshot, comparison)["same"] is True
+
+
+def test_b4_cursor_and_applied_evidence_do_not_regress(pg, tmp_path):
+    project, materials, _, _, _ = _project(tmp_path, "p10")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        _baseline(connection, project, "p10")
+        row = materials.get("m1")
+        row.update(filename="monotonic.jpg")
+        materials.upsert(row)
+        _apply(connection, project, MATERIAL_STREAM, "p10")
+        current = _cursor(connection, "p10", MATERIAL_STREAM)
+        with connection.transaction():
+            sync._advance_cursor(connection, "p10", MATERIAL_STREAM, 0)
+        assert _cursor(connection, "p10", MATERIAL_STREAM) == current
+
+        applied = connection.execute(
+            f"SELECT event_digest FROM {SCHEMA_NAME}.u3_applied_owner_event "
+            "WHERE project_id='p10' AND store=%s AND sequence=%s",
+            (MATERIAL_STREAM, current),
+        ).fetchone()[0]
+        assert applied
+        connection.execute(
+            f"UPDATE {SCHEMA_NAME}.u3_applied_owner_event SET payload_digest=%s "
+            "WHERE project_id='p10' AND store=%s AND sequence=%s",
+            ("f" * 64, MATERIAL_STREAM, current),
+        )
+        connection.execute(
+            f"UPDATE {SCHEMA_NAME}.u3_projection_cursor SET last_applied_seq=%s "
+            "WHERE project_id='p10' AND store=%s",
+            (current - 1, MATERIAL_STREAM),
+        )
+        connection.commit()
+        with pytest.raises(sync.U3IncrementalSyncError) as conflict:
+            _apply(connection, project, MATERIAL_STREAM, "p10")
+        assert conflict.value.code == "U3_INCREMENTAL_EVENT_DIGEST_CONFLICT"
+
+
+def test_b3_legacy_project_without_log_gets_zero_baseline(pg, tmp_path):
+    project, materials, annotations, _, _ = _project(tmp_path, "p11")
+    with sqlite3.connect(materials.path) as database:
+        database.executescript(
+            "DROP TABLE owner_change_log; DROP TABLE owner_change_meta;"
+        )
+    with sqlite3.connect(annotations.path) as database:
+        database.executescript(
+            "DROP TABLE owner_change_log; DROP TABLE owner_change_meta;"
+        )
+    material_batch_module._MATERIAL_INIT_READY.discard(materials.path.resolve())
+    material_batch_module._ANNOTATION_INIT_READY.discard(annotations.path.resolve())
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        snapshot = export_project_snapshot(project, "p11")
+        assert snapshot["change_log_present"] == {
+            "materials": False, "annotations": False,
+        }
+        assert snapshot["change_high_water_marks"] == {
+            "materials": 0, "annotations": 0, "negative_pool": 0,
+        }
+        import_project_snapshot(connection, snapshot)
+        assert connection.execute(
+            f"SELECT last_applied_seq FROM {SCHEMA_NAME}.u3_projection_cursor "
+            "WHERE project_id='p11' AND store=%s", (MATERIAL_STREAM,)
+        ).fetchone()[0] == 0
+
+        fresh = MaterialRepository(project)
+        fresh.upsert({
+            "id": "m3", "filename": "m3.jpg", "object_key": "uploads/m3.jpg",
+            "content_sha256": "3" * 64,
+        })
+        result = _apply(connection, project, MATERIAL_STREAM, "p11")
+        assert result["applied"] == 1
+        assert connection.execute(
+            f"SELECT filename FROM {SCHEMA_NAME}.material WHERE project_id='p11' AND id='m3'"
+        ).fetchone()[0] == "m3.jpg"
+
+
+def test_b3_publish_failure_keeps_previous_identity_and_stale(pg, tmp_path, monkeypatch):
+    project, materials, _, _, _ = _project(tmp_path, "p12")
+    with psycopg.connect(pg.get_uri()) as connection:
+        ensure_schema(connection)
+        _baseline(connection, project, "p12")
+        before = connection.execute(
+            f"SELECT snapshot_id FROM {SCHEMA_NAME}.picker_snapshot_state "
+            "WHERE project_id='p12'"
+        ).fetchone()[0]
+        connection.commit()
+        row = materials.get("m1")
+        row.update(filename="publish-fails.jpg")
+        materials.upsert(row)
+        _apply(connection, project, MATERIAL_STREAM, "p12")
+        state_after_apply = connection.execute(
+            f"SELECT snapshot_id,status FROM {SCHEMA_NAME}.picker_snapshot_state "
+            "WHERE project_id='p12'"
+        ).fetchone()
+        assert state_after_apply == (before, "STALE")
+        connection.commit()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated publication failure")
+
+        monkeypatch.setattr(sync, "_publish_ready_state", boom)
+        with pytest.raises(RuntimeError):
+            sync.publish_ready(connection, project_dir=project, project_id="p12")
+        state = connection.execute(
+            f"SELECT snapshot_id,status FROM {SCHEMA_NAME}.picker_snapshot_state "
+            "WHERE project_id='p12'"
+        ).fetchone()
+        assert state == (before, "STALE")

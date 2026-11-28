@@ -236,7 +236,7 @@ jobs:
             --junitxml=u3-p2-postgres.xml \
             tests/integration/test_u3_picker_business_postgres.py
 
-      - name: U3 P3-B2 incremental consumption contracts
+      - name: U3 P3-B2/B3/B4 incremental and baseline contracts
         run: |
           python -m pytest -q -p no:cacheprovider -rs \
             --confcutdir=tests/integration \
@@ -256,7 +256,7 @@ jobs:
               "u3-p0-postgres.xml": 50,   # P0 = 57 contracts
               "u3-p1-postgres.xml": 20,   # P1 = 41 contracts
               "u3-p2-postgres.xml": 7,    # P2 = 7 business contracts
-              "u3-p3-b2-postgres.xml": 5, # P3-B2 = 5 incremental contracts
+              "u3-p3-b2-postgres.xml": 12, # B2/B3/B4 incremental contracts
           }
           for name, minimum in stages.items():
               report = Path(name)

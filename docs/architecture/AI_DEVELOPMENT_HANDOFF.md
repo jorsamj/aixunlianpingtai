@@ -1,5 +1,19 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P3-B3/B4 增量闭环与审计收口（本批）**：
+> B3 在 `export_project_snapshot` 同一 SQLite 读事务内加入各流 high-water mark、
+> `change_log_present` 与 `baseline_id`；全量导入在同一 PG 事务写入
+> `u3_projection_baseline`、游标（HWM）与 READY；无日志老项目以 HWM 0 建立可信基线。
+> B2 消费要求 baseline，Owner HWM 与事件读取同事务，日志尾部缺失/游标超前失败关闭；
+> 增量、全量导入、发布、重建共享 `u3_import:{project_id}` advisory lock，游标不回退，
+> applied 凭据 insert-only。`publish_ready` 在生命周期围栏内重新导出并 reconcile
+> 投影/证据/确认回执，同一 PG 事务发布新 READY 身份。B4 提供 `synchronize_project`、
+> `rebuild_project`（全量导入 STALE → 增量衔接 → READY）及 `diagnose_project`。
+> 审计收口：证据 row_key 复用 P0 真实主键哈希；事件 schema_version 2 增加信封
+> `event_digest`（v1 兼容只读）；B2 校验实体/证据身份，拒绝未知事件类型；证据表首次
+> 出现补 table_state。真实 PostgreSQL 定向 **12 passed / 0 skipped**；P0 回归
+> **40 passed**。未启动 Worker/队列/自动重建/生产读取，VERSION 42.24.592。
+>
 > **2026-11-28 / U3-P3-B1 事务内变更日志（a8421f41）**：新增 `u3_owner_change_log.py`，
 > `materials.sqlite3` 内 `materials`/`negative_pool` 两流、`annotations.sqlite3` 内
 > `annotations` 流各自单调 sequence；业务写、完整投影事件、摘要与 sequence 同事务提交，
