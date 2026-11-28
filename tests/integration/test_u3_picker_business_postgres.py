@@ -585,6 +585,23 @@ def _insert_task(tasks_path, task_id, status, project_id="p1"):
         )
 
 
+def test_exact_count_falls_back_when_page_item_has_no_created_at(tmp_path):
+    from platform_core.material_repository import MaterialRepository
+
+    project, _usage = _business_project(tmp_path)
+    repository = MaterialRepository(project)
+    row = repository.get("m000")
+    row["created_at"] = ""
+    repository.upsert(row)
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    one = provider.read_page(_query(filters=_filter(), page_size=1, count_mode="exact"))
+    full = provider.read_page(_query(filters=_filter(), page_size=120, count_mode="exact"))
+    assert one.total == full.total
+    assert one.total is not None and one.total >= 1
+
+
 def test_real_task_status_change_rejects_cursor_without_usage_revision_change(tmp_path):
     project, usage = _business_project(tmp_path)
     tasks_path = project.parent.parent / "task_runtime" / "tasks.sqlite3"

@@ -745,6 +745,7 @@ class BusinessReadProvider:
             skipped = 0
             last: BusinessMaterial | None = None
             has_more = False
+            resume_exact = False
             for batch in session.batches(cursor=base_cursor):
                 for item in batch:
                     matched += 1
@@ -763,13 +764,10 @@ class BusinessReadProvider:
                         # the original full materialization path, never silently
                         # drop the remainder.
                         if last is not None and last.material.created_at:
+                            resume_exact = True
                             break
                         continue
-                if has_more or (
-                    query.count_mode == "exact"
-                    and last is not None
-                    and len(items) >= size
-                ):
+                if has_more or resume_exact:
                     break
             if query.count_mode == "exact" and last is not None and last.material.created_at:
                 matched = skipped + len(items)
