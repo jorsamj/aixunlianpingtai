@@ -758,27 +758,29 @@ class BusinessReadProvider:
                         has_more = True
                         break
                     else:
-                        # The page is complete. Do not materialize the remaining
-                        # exact matches; they are counted below with a count-only
-                        # pass from this item's cursor.
-                        break
+                        # Only a stable (created_at, id) cursor can resume the
+                        # exact count. A legacy row without created_at must keep
+                        # the original full materialization path, never silently
+                        # drop the remainder.
+                        if last is not None and last.material.created_at:
+                            break
+                        continue
                 if has_more or (
                     query.count_mode == "exact"
                     and last is not None
                     and len(items) >= size
                 ):
                     break
-            if query.count_mode == "exact" and last is not None:
+            if query.count_mode == "exact" and last is not None and last.material.created_at:
                 matched = skipped + len(items)
-                if last.material.created_at:
-                    count_cursor = _picker_cursor_for(
-                        session, query,
-                        (last.material.created_at, last.material.id),
-                    )
-                    for count in session.batches(
-                        cursor=count_cursor, materialize=False,
-                    ):
-                        matched += int(count)
+                count_cursor = _picker_cursor_for(
+                    session, query,
+                    (last.material.created_at, last.material.id),
+                )
+                for count in session.batches(
+                    cursor=count_cursor, materialize=False,
+                ):
+                    matched += int(count)
                 has_more = matched > skipped + len(items)
             elif query.count_mode == "exact":
                 has_more = matched > skipped + len(items)
