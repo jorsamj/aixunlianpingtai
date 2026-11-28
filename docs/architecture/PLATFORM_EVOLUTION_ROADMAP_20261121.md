@@ -600,7 +600,9 @@ flowchart TB
 | P4 分段诊断 | 按场景 evaluate/history 已实现；完整未完成 | 4 场景独立数据；SQL/GT/回执/READY 待补 |
 | 素材库查询上下文 | 已修复 | 旧页只在同查询保留；筛选/页码切换失效旧响应 |
 | 素材库删除统计 | 已修复 | 可见行即时移除；total 服务端权威并标记待刷新 |
-| 素材服务端选择 | 既有能力保留 | `MaterialBatchGovernance` SELECTED/FILTERED；未重建 |
+| 素材 FILTERED 删除 | 已实现 | 服务端冻结 ID 摘要、排除集合、前端全选/排除 |
+| AI 审核正式入库 | 已修复 | 完成后冻结选择失效，已入库候选不能重复提交 |
+| 训练创建初始化 | 已修复 | load epoch 防止旧响应覆盖新算法/选项/设备 |
 | U3-P5 | 未授权 | 生产读取切换 |
 
 SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。\n\n
