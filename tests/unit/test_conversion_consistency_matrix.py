@@ -251,3 +251,42 @@ def test_onnx_only_deliverable_is_unchanged(tmp_path, monkeypatch):
     verdict = numeric.assert_delivery_quality_eligibility(layout["verification"])
     assert verdict["eligible"] is True, verdict
     assert verdict["code"] == ""
+
+
+def test_source_manifest_preserves_label_and_preprocessing_contracts(tmp_path):
+    from platform_core.conversion import build_source_manifest, sha256_file
+
+    onnx = tmp_path / "model.onnx"
+    onnx.write_bytes(b"onnx-bytes")
+    digest = sha256_file(onnx)
+    manifest = build_source_manifest(
+        source={
+            "sha256": "a" * 64, "size_bytes": 3, "file_name": "best.pt",
+            "algorithm_id": "a1", "version_id": "v1",
+            "label_codes": ["smoke", "fire"],
+            "label_binding": {
+                "status": "verified", "class_count": 2,
+                "class_ids": [0, 1], "mapping_sha256": "b" * 64,
+            },
+            "preprocessing_contract": {
+                "status": "declared", "pixel_format": "rgb",
+                "letterbox_mode": "fixed_shape_center",
+            },
+            "output_contract": {"status": "declared", "layout": "yolo_v8"},
+        },
+        export={"opset": 12, "dynamic": False, "simplify": False, "batch": 1,
+                "imgsz": [64, 64], "precision": "fp16", "half": False},
+        tool={"name": "onnx", "version": "1", "python_path": "python",
+              "dependencies": {}},
+        onnx={"name": onnx.name, "sha256": digest, "size_bytes": onnx.stat().st_size,
+              "opset_imports": {"": 12}, "input_shapes": [[1, 3, 64, 64]],
+              "input_types": ["tensor(float)"], "input_names": ["images"],
+              "output_shapes": [[1, 7, 6]], "output_types": ["tensor(float)"],
+              "output_names": ["output0"], "output_inferred_shapes": [[1, 7, 6]],
+              "output_dtypes": ["float32"], "floating_tensor_types": []},
+        outputs=[{"name": onnx.name, "sha256": digest, "size_bytes": onnx.stat().st_size}],
+    )
+    source = manifest["source"]
+    assert source["label_binding"]["status"] == "verified"
+    assert source["preprocessing_contract"]["letterbox_mode"] == "fixed_shape_center"
+    assert source["output_contract"]["layout"] == "yolo_v8"

@@ -846,6 +846,27 @@ class ConversionManagementService:
                 "version_id": str(source.get("version_id") or ""),
                 "reason": "源模型版本不可用，无法取得冻结类别合同",
             }
+        preprocessing = params.get("preprocessing") if isinstance(params.get("preprocessing"), Mapping) else {}
+        source_trace["preprocessing_contract"] = {
+            "status": "declared" if preprocessing else "unknown",
+            "owner": preprocessing.get("owner", "caller"),
+            "pixel_format": preprocessing.get("pixel_format", ""),
+            "channel_format": preprocessing.get("channel_format", ""),
+            "letterbox": preprocessing.get("letterbox"),
+            "letterbox_mode": preprocessing.get("letterbox_mode", ""),
+            "pad_value": preprocessing.get("pad_value"),
+            "resize_interpolation": preprocessing.get("resize_interpolation", ""),
+            "mean": preprocessing.get("mean"),
+            "scale": preprocessing.get("scale"),
+            "input_width": params.get("input_width"),
+            "input_height": params.get("input_height"),
+            "batch": params.get("batch"),
+            "dynamic": params.get("dynamic"),
+        }
+        source_trace["output_contract"] = {
+            "status": "declared" if params.get("model_output_contract") else "unsupported",
+            "layout": params.get("model_output_contract") or "",
+        }
         job={"id":job_id,"project_id":project_id,"source_id":payload.source_id,"source_name":src.name,"source_path":str(local_src),"source_meta":{k:v for k,v in source.items() if k!="_resolved_version"},"source_trace":source_trace,"target":payload.target,"resource_id":payload.resource_id,"resource":resource_for_job,"params":params,"requested_params":dict(payload.params or {}),"dataset_id":payload.dataset_id,"calibration_split":payload.calibration_split,"calibration_dir":str(cal_dir) if cal_dir else "","status":"queued","stage":"等待启动","progress":0,"message":"等待启动","created_at":self.dependencies.now_iso(),"updated_at":self.dependencies.now_iso(),"outputs":[],"request_id":str(payload.request_id or ""),"request_identity":self._deploy_request_identity(payload) if payload.request_id else ""}
         portable_conversion = None
         conversion_target = str(payload.target or "").strip().lower()

@@ -173,6 +173,14 @@ def build_source_manifest(
         source_block["label_schema"] = label_schema
     if source.get("label_binding") is not None:
         source_block["label_binding"] = _bounded_json(source.get("label_binding"), limit=4096)
+    if source.get("preprocessing_contract") is not None:
+        source_block["preprocessing_contract"] = _bounded_json(
+            source.get("preprocessing_contract"), limit=4096
+        )
+    if source.get("output_contract") is not None:
+        source_block["output_contract"] = _bounded_json(
+            source.get("output_contract"), limit=4096
+        )
     if source.get("training_lineage") is not None:
         source_block["training_lineage"] = _bounded_json(source.get("training_lineage"))
     recheck = source.get("sha256_recheck")
