@@ -70,6 +70,8 @@ export interface TrainingSelectionReference {
   count: number;
   role: string;
   history_policy: string;
+  positive_selection_ref?: string;
+  positive_count?: number;
 }
 
 export interface TrainingMaterialRow {

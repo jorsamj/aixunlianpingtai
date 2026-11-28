@@ -26,7 +26,7 @@ function switchAlgorithm(id:string){void router.push({path:`/projects/${encodeUR
 const controller=new AbortController();onBeforeUnmount(()=>controller.abort());
 const asset=ref<any>(null),targets=ref<any[]>([]),devices=ref<any[]>([]),targetId=ref(''),engineKey=ref(''),busy=ref(false),error=ref(''),ready=ref(false),picker=ref<'train'|'test'|'negative'|'robustness'|null>(null),taskId=ref(''),stage=ref('idle'),result=ref<any>(null);
 const draft=reactive(createTrainingDraft({algorithmId})),train=ref<any>({ids:[],count:0}),test=ref<any>({ids:[],count:0}),labels=ref<string[]>([]);
-type PickerSelection={ids:string[];count:number;reference?:string;summary?:any;revision?:any};
+type PickerSelection={ids:string[];count:number;reference?:string;summary?:any;revision?:any;positiveReference?:string;positiveCount?:number};
 const positive=ref<PickerSelection>({ids:[],count:0}),negative=ref<PickerSelection>({ids:[],count:0});
 const poolEvidence=ref<Awaited<ReturnType<typeof trainingApi.previewTrainingNegatives>>|null>(null);
 const target=computed(()=>targets.value.find(row=>String(row.id)===targetId.value)),engine=computed(()=>target.value?.algorithms?.find((row:any)=>String(row.key)===engineKey.value)),base=computed(()=>trainingBaseVersionFromAlgorithm(asset.value||{})),preset=computed(()=>trainingModePreset(draft.trainingMode,Boolean(draft.baseVersionId)));
@@ -73,7 +73,9 @@ async function mergeSelections(nextPositive:PickerSelection,nextNegative:PickerS
  const summary=await trainingApi.summarizeTrainingSelection(projectId,{...identity.value,...scope,role:'train',summary_only:true},controller.signal);
  const count=references?.count??ids.length;
  if(summary.matched_count!==count||summary.requested_count!==count)throw new Error('合并素材数量已变化，请重新选择');
- return {ids:references?[]:ids,reference:references?.selection_ref,count,summary,revision};
+ return {ids:references?[]:ids,reference:references?.selection_ref,count,summary,revision,
+   positiveReference:references?.positive_selection_ref,
+   positiveCount:references?.positive_count};
 }
 function setTrain(value:PickerSelection){
  train.value=value;
@@ -127,12 +129,13 @@ async function loadSource(epoch=loadEpoch){
  if(!source.candidateSetId)return;
  const candidates=view.candidate_set!.material_ids;
  if(draft.trainSelectionRef){
-  if(negative.value.count)throw new Error('来源补数需要先清除负样本，再按来源新增素材重新核验');
   if(candidates.length>2000)throw new Error('来源补充素材超过2000张，请先在来源范围筛选后再补数');
   const next={ids:candidates,reference:draft.trainSelectionRef,count:positive.value.count};
-  const value=await mergeSelections(next,{ids:[],count:0});
+  const value=await mergeSelections(next,negative.value);
   if(epoch!==loadEpoch)return;
-  positive.value=value;
+  const positiveRef=value.positiveReference||(!negative.value.count?value.reference:'');
+  if(!positiveRef)throw new Error('来源补数未能保留独立正样本引用，请重新核验');
+  positive.value={ids:[],reference:positiveRef,count:value.positiveReference?(value.positiveCount??value.count):value.count};
   setTrain(value);
   return;
  }

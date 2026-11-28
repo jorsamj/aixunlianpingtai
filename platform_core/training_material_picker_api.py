@@ -15,6 +15,7 @@ import os
 import sqlite3
 import tempfile
 import threading
+import uuid
 from time import perf_counter
 from collections import OrderedDict
 from contextlib import closing
@@ -2371,6 +2372,22 @@ def training_material_picker_router(
                                 'negative_ref':negative_ref,'negative_ids':[] if negative_ref else sorted(negatives),'test_image_ids':sorted(test_ids)}, sort_keys=True)
             receipt = freeze_selection(data_dir(), before, dict.fromkeys(chain(positive, negatives)),
                                        request_id=payload.get('request_id'), request_scope=scope)
+            if reference and positive_extra:
+                positive_scope = json.dumps({
+                    'kind': 'positive_union', 'positive_ref': reference,
+                    'positive_extra_ids': sorted(positive_extra), 'test_image_ids': [],
+                }, sort_keys=True)
+                seed = uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"{payload.get('request_id')}:positive:{positive_scope}",
+                )
+                positive_request_id = str(uuid.UUID(bytes=seed.bytes, version=4))
+                positive_receipt = freeze_selection(
+                    data_dir(), before, dict.fromkeys(positive),
+                    request_id=positive_request_id, request_scope=positive_scope,
+                )
+                receipt['positive_selection_ref'] = positive_receipt['selection_ref']
+                receipt['positive_count'] = positive_receipt['count']
             if selection_context(data_dir(), project_id, payload) != before:
                 raise ValueError('素材证据已变化，请重新选择')
             return receipt
