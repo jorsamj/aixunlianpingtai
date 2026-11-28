@@ -491,4 +491,34 @@ L2 必须先声明**验收范围**，逐项列出"必需项"与"排除项"；不
 
 - 本文**不替代** `docs/performance/` 下历史报告；历史数值以原文为准，本文只做口径纠正与索引。
 - 本文**不替代** [20 万现场验收清单](../MATERIAL_200K_PERFORMANCE_FIELD_ACCEPTANCE.md)；该清单是场景清单，本文补充统计规范、目标与判定规则。
-- 本文**不新建**第二套性能历史台账；后续每次验收应新增独立日期文件，并在本文第 2 节登记索引。
+- 本文**不新建**第二套性能历史台账；后续每次验收应新增独立日期文件，并在本文第 2 节登记索引。\n\n
+## P4 U3 规模专项状态（2026-11-28）
+
+### P4-A 测量能力（已实现，200k 未验收）
+
+- 新增 `tests/performance/test_u3_p4_scale.py`：复用 `test_scale_200k_baseline.py` 的确定性
+  SQLite/PG 同源数据集，补充负样本池、确认回执、Test 临时预留、退役证据，并在同一 Owner
+  最终状态上比较 SQLite/PG BusinessReadProvider、正式 `/page` 基线与增量/完整导入结果。
+- 场景覆盖：基础标签、来源组合、负池、稀疏类别、无匹配、exact/deferred、深分页、
+  history 排除、Test 角色、cursor 续读、正式页 API、增量同步后 reconcile。
+- 新增 `.github/workflows/u3-p4-scale.yml`，仅 `workflow_dispatch` 显式触发；默认
+  200,000 素材 / 40,000 GT / 15 样本，上传结构化结果，不随普通 push 执行。
+- 本地小规模烟测通过：
+  - 1,200 素材 / 300 GT：SQLite/PG 9 个业务场景 ID、角色、total 全部一致；
+  - cursor 续读一致；正式 `/page`（browse_only）与 SQLite 前 50 ID、total 一致；
+  - 增量 31 事件后 READY 发布，最终增量投影与完整导入 reconcile `same=true`。
+- **以上仅为工具链和小规模烟测，不是 200k 验收数据，不得当作 P4-A 完成。**
+
+### P4-B / P4-C
+
+- 尚未开始实际优化：必须先取得 200k 真实测量结果。
+- 当前没有足够证据判断 PostgreSQL 是否优于 SQLite，也没有 200k P50/P95、RSS、
+  SQL 次数、锁等待、WAL/Change Log 增长数据。
+- P4-C 读取切换结论暂为 **NOT_VERIFIED**。
+
+### 已知限制
+
+- 正式 API 三方差分目前只覆盖基础 `/page`；完整历史/角色/冻结选择/跨页选择仍需补齐。
+- 尚未记录 200k 的 API 层耗时、查询计划、扫描行数、内存峰值和并发读写数据。
+- `publish_ready` 发布时执行一次完整 target reconcile，属于发布成本；200k 成本待专项测量。
+- P4-B 不预设 PostgreSQL 必须更快；若主要收益是可扩展性/并发/维护性，将按实测说明。

@@ -588,6 +588,8 @@ flowchart TB
 | U3-P3-B2 | 已实现、待独立验收 | PG 有界增量消费、baseline/幂等/缺口/STALE；真实 PG 定向 12 项 |
 | U3-P3-B3 | 已实现、待独立验收 | HWM 同源快照、baseline 游标、跨流依赖、READY 原子发布 |
 | U3-P3-B4 | 已实现、待独立验收 | 中断重放、受控完整重建、最小只读诊断 |
-| U3-P4/P5 | 未授权 | 规模差分、生产切换 |
+| U3-P4-A | 测量能力完成、200k 未验收 | 复用 200k 夹具；SQLite/PG/正式基线差分；显式 scale workflow |
+| U3-P4-B/C | 未开始 | 须先取得 200k 真实测量；P5 为 NOT_VERIFIED |
+| U3-P5 | 未授权 | 生产读取切换 |
 
 SQLite 仍是业务 Owner；PostgreSQL 仍是只读投影；未启用生产读取；VERSION 42.24.592。

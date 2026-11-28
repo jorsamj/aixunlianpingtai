@@ -1,5 +1,14 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P4-A 测量能力（本批）**：新增
+> `tests/performance/test_u3_p4_scale.py`，复用既有 200k 确定性夹具并补充负池、确认回执、
+> Test 预留、退役证据；对 SQLite/PG BusinessReadProvider、正式 `/page` 基线、cursor、
+> exact/deferred、深分页、history/role 及增量/完整导入做同源比较。新增
+> `.github/workflows/u3-p4-scale.yml`（仅 workflow_dispatch，默认 200k/40k/15 样本）。
+> 本地 1,200/300 小规模烟测通过：9 场景一致、正式基线与 SQLite 一致、增量 reconcile same。
+> **200k 真实数据尚未测量**，P4-A 不能宣称验收；P4-B/C 未开始，P5 为 NOT_VERIFIED。
+> VERSION 42.24.592。
+>
 > **2026-11-28 / U3-P3-B3/B4 增量闭环与审计收口（本批）**：
 > B3 在 `export_project_snapshot` 同一 SQLite 读事务内加入各流 high-water mark、
 > `change_log_present` 与 `baseline_id`；全量导入在同一 PG 事务写入
