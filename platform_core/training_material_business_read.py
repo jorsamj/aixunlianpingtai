@@ -610,12 +610,14 @@ class BusinessReadProvider:
                 end_task_transaction()
 
         inner_context = None
+        entered = False
         try:
             if hasattr(self.picker, "read_session"):
                 inner_context = self.picker.read_session(
                     query.project_id, verify_owner=query.verify_owner,
                 )
                 inner = inner_context.__enter__()
+                entered = True
                 picker_snapshot = inner.snapshot
                 session = _PostgresSession(
                     self, query, inner, picker_snapshot,
@@ -633,24 +635,32 @@ class BusinessReadProvider:
             session.verify()
         finally:
             close_once()
-            if inner_context is not None:
+            if entered and inner_context is not None:
                 inner_context.__exit__(*sys.exc_info())
 
     def _borrow_tasks(self, connection):
-        """Exclusive borrow: an overlapping session must not reuse the connection."""
-        if getattr(self.usage, "_borrowed_connection", None) is not None:
-            raise BusinessReadError(
-                "another business read session is already using the Task store",
-            )
-        token = object()
-        self.usage._borrowed_connection = connection
-        self.usage._borrowed_token = token
-        return token
+        """Atomic exclusive borrow: check, token and connection under one lock."""
+        lock = getattr(self.usage, "_borrow_lock", None)
+        if lock is None:
+            raise BusinessReadError("the usage owner has no borrow lock")
+        with lock:
+            if getattr(self.usage, "_borrowed_connection", None) is not None:
+                raise BusinessReadError(
+                    "another business read session is already using the Task store",
+                )
+            token = object()
+            self.usage._borrowed_connection = connection
+            self.usage._borrowed_token = token
+            return token
 
     def _release_tasks(self, token) -> None:
-        if getattr(self.usage, "_borrowed_token", None) is token:
-            self.usage._borrowed_connection = None
-            self.usage._borrowed_token = None
+        lock = getattr(self.usage, "_borrow_lock", None)
+        if lock is None:
+            return
+        with lock:
+            if getattr(self.usage, "_borrowed_token", None) is token:
+                self.usage._borrowed_connection = None
+                self.usage._borrowed_token = None
 
     def _verify_current(self) -> tuple[str, str]:
         """One new Task read transaction: revision + active Task digest together."""

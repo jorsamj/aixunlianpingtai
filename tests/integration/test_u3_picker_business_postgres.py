@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import threading
 import sqlite3
 import tempfile
 
@@ -499,7 +500,11 @@ def test_incomplete_or_unavailable_history_never_becomes_unused(tmp_path):
 
 
 class _UnavailableUsage:
-    def read_revision(self):
+    _borrow_lock = threading.Lock()
+    _borrowed_connection = None
+    _borrowed_token = None
+
+    def read_revision(self, connection=None):
         raise sqlite3.OperationalError("history store unavailable")
 
     def query_filter(self, *args, **kwargs):
@@ -913,3 +918,31 @@ def test_status_change_without_restore_between_batches_fails_closed(tmp_path):
                         database.execute(
                             "UPDATE tasks SET status='CANCELLED' WHERE task_id='t-live'"
                         )
+
+
+def test_borrow_is_atomic_across_threads_and_releases(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    usage = provider.usage
+    barrier = threading.Barrier(2)
+    results = []
+
+    def worker():
+        barrier.wait()
+        try:
+            results.append(provider._borrow_tasks(object()))
+        except BusinessReadError:
+            results.append(None)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    winners = [token for token in results if token is not None]
+    assert len(winners) == 1
+    provider._release_tasks(winners[0])
+    assert usage._borrowed_connection is None
+    assert getattr(usage, "_borrowed_token", None) is None

@@ -137,3 +137,12 @@ SQLite 历史 → 角色/用途 → 最终过滤 → 分页/统计。SQLite 权�
   `inner.snapshot`（P1 会话），不再使用会话外提前获取的 context。
 - `_verify_current()` 在**同一个**新的中央 Task 只读事务内读取 usage revision 与活跃 Task 摘要。
 - `read_session()` 自身拒绝 `verify_owner=False`，无法绕过正式读取保护；诊断继续使用 P1 Provider。
+
+## 11. P3-B0 会话借用原子性（2026-11-28）
+
+- `TrainingMaterialUsage` 增加实例级 `threading.Lock`；`_borrow_tasks()` 在锁内完成
+  检查+token+连接赋值，`_release_tasks()` 在锁内按 token 释放，共享 usage 的多 Provider/线程
+  不再可能覆盖连接。
+- `read_session` 记录 PG 上下文是否成功进入（`entered`），未进入时不再调用 `__exit__`。
+- 定向：并发线程竞争仅一个借用成功；异常路径释放后新会话可正常开启。
+

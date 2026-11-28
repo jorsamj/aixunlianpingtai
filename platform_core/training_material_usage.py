@@ -40,7 +40,12 @@ class TrainingMaterialUsage:
     _ACTIVE_STATUSES = ('QUEUED', 'RUNNING', 'CANCEL_REQUESTED', 'AWAITING_CONFIRMATION')
 
     def __init__(self, repository):
+        import threading
+
         self.path = Path(getattr(repository, 'path', repository))
+        # Serializes the exclusive borrow contract across providers/threads that
+        # share this usage instance.
+        self._borrow_lock = threading.Lock()
 
     def _connect(self, write=False):
         borrowed = getattr(self, '_borrowed_connection', None)
