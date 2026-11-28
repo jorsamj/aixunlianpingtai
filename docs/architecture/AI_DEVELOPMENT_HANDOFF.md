@@ -1,5 +1,9 @@
 # AI 开发接续入口
 
+> **2026-11-28 / R 收尾（本批）**：1001 张删除测试改用合法清空项目授权；FILTERED
+> 过滤条件按空数组/空值/顺序规范化；任何覆盖全部活动素材的 FILTERED 范围强制清空
+> 授权；恢复记录校验 filtered 摘要及正整数；loadSource merge 后补 epoch。D/E/F 未完成。
+>
 > **2026-11-28 / A2/B2/C2 闭环（本批）**：FILTERED 删除恢复识别 single/selected/
 > filtered，校验筛选/排除/数量/摘要并拒绝未授权全项目清空；AI 批量正式入库所有终态
 > 立即失效冻结范围；训练创建把 algorithm/benchmark/source/ready 纳入同一 epoch。
