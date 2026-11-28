@@ -2846,16 +2846,189 @@ def _apply_project_snapshot(
     return counters
 
 
+def _read_target_snapshot_in_transaction(connection, project_id: str) -> dict[str, Any]:
+    """Read the target inside the caller's transaction (no nested transaction).
+
+    The caller must hold the project-level advisory lock and set the isolation
+    level before the first query. Public ``read_target_snapshot`` keeps its
+    idle-connection REPEATABLE READ READ ONLY contract.
+    """
+    from psycopg.rows import dict_row, tuple_row
+
+    snapshot_identity = ""
+    with connection.cursor(row_factory=tuple_row) as identity:
+        identity.execute("SELECT pg_current_snapshot() AS snapshot")
+        snapshot_identity = str(identity.fetchone()[0])
+    stores: dict[str, Any] = {"materials": {}, "annotations": {}}
+    queries = {
+        "materials": (
+            "SELECT id,filename,storage_source_id,storage_type,object_key,content_sha256,"
+            "size_bytes,etag,processing_status,box_count,annotated,created_at,updated_at,"
+            "payload AS payload_json FROM {schema}.material WHERE project_id=%s ORDER BY id",
+            MATERIAL_COLUMNS,
+        ),
+        "material_labels": (
+            "SELECT material_id,label_code,box_count FROM {schema}.material_label "
+            "WHERE project_id=%s ORDER BY material_id,label_code", None,
+        ),
+        "material_annotation_scopes": (
+            "SELECT material_id,label_code FROM {schema}.material_annotation_scope "
+            "WHERE project_id=%s ORDER BY material_id,label_code", None,
+        ),
+        "negative_pool_members": (
+            "SELECT material_id,joined_at FROM {schema}.negative_pool_member "
+            "WHERE project_id=%s ORDER BY material_id", None,
+        ),
+        "negative_pool_categories": (
+            "SELECT id,name,enabled FROM {schema}.negative_pool_category "
+            "WHERE project_id=%s ORDER BY id", None,
+        ),
+        "negative_pool_links": (
+            "SELECT material_id,category_id FROM {schema}.negative_pool_link "
+            "WHERE project_id=%s ORDER BY material_id,category_id", None,
+        ),
+        "negative_pool_algorithm_members": (
+            "SELECT algorithm_id,material_id,joined_at FROM {schema}.negative_pool_algorithm_member "
+            "WHERE project_id=%s ORDER BY algorithm_id,material_id", None,
+        ),
+    }
+    annotation_queries = {
+        "annotations": (
+            "SELECT image_id,annotation_state,version,content_digest,boxes AS boxes_json,"
+            "scope AS scope_json,created_at,updated_at FROM {schema}.annotation "
+            "WHERE project_id=%s ORDER BY image_id", ANNOTATION_COLUMNS,
+        ),
+        "annotation_label_references": (
+            "SELECT image_id,label_code,box_count,scope_ref,annotation_state,source_kind "
+            "FROM {schema}.annotation_label_reference "
+            "WHERE project_id=%s ORDER BY image_id,label_code", None,
+        ),
+        "evidence": (
+            "SELECT store,table_name,row_key,payload AS payload_json FROM {schema}.evidence_row "
+            "WHERE project_id=%s ORDER BY store,table_name,row_key", None,
+        ),
+    }
+    with connection.cursor(row_factory=dict_row) as cursor:
+        for name, (statement, _columns) in queries.items():
+            cursor.execute(statement.format(schema=SCHEMA_NAME), (project_id,))
+            rows = []
+            for row in cursor.fetchall():
+                record = dict(row)
+                if "payload_json" in record:
+                    value = record.pop("payload_json")
+                    record["payload"] = (
+                        None if value is None
+                        else json.loads(value) if isinstance(value, (str, bytes, bytearray))
+                        else value
+                    )
+                rows.append(record)
+            stores["materials"][name] = rows
+        for name, (statement, _columns) in annotation_queries.items():
+            cursor.execute(statement.format(schema=SCHEMA_NAME), (project_id,))
+            rows = []
+            for row in cursor.fetchall():
+                record = dict(row)
+                for json_key in ("boxes_json", "scope_json"):
+                    if json_key in record:
+                        value = record.pop(json_key)
+                        record[json_key.removesuffix("_json")] = (
+                            None if value is None
+                            else json.loads(value) if isinstance(value, (str, bytes, bytearray))
+                            else value
+                        )
+                rows.append(record)
+            if name == "evidence":
+                # Regroup verbatim evidence rows by their original store/table.
+                grouped: dict[str, dict[str, list[dict[str, Any]]]] = {"materials": {}, "annotations": {}}
+                for record in rows:
+                    store = str(record.pop("store"))
+                    table = str(record.pop("table_name"))
+                    row_key = str(record.pop("row_key"))
+                    value = record.pop("payload_json")
+                    grouped.setdefault(store, {}).setdefault(table, []).append(
+                        {
+                            "row_key": row_key,
+                            "payload": value if isinstance(value, dict) else json.loads(value),
+                        }
+                    )
+                for tables in grouped.values():
+                    for table_rows in tables.values():
+                        table_rows.sort(key=lambda item: item["row_key"])
+                for store, tables in grouped.items():
+                    stores.setdefault(store, {})["evidence"] = tables
+                continue
+            stores["annotations"][name] = rows
+        cursor.execute(
+            f"SELECT store,revision FROM {SCHEMA_NAME}.store_revision WHERE project_id=%s",
+            (project_id,),
+        )
+        revision_rows = cursor.fetchall()
+        legacy_pending = any(
+            str(row["store"]) == LEGACY_REFERENCE_PENDING_STORE
+            for row in revision_rows
+        )
+        revisions = {
+            str(row["store"]): row["revision"]
+            for row in revision_rows
+            if str(row["store"]) != LEGACY_REFERENCE_PENDING_STORE
+        }
+        cursor.execute(
+            f"SELECT store,table_name,present,schema_version,row_count FROM {SCHEMA_NAME}.table_state "
+            "WHERE project_id=%s ORDER BY store,table_name",
+            (project_id,),
+        )
+        table_state = {
+            f"{row['store']}.{row['table_name']}": {
+                "present": bool(row["present"]),
+                "schema_version": row["schema_version"],
+                "row_count": int(row["row_count"]),
+            }
+            for row in cursor.fetchall()
+        }
+    # Present-but-empty evidence tables must exist as keys on both sides, otherwise
+    # an empty historical table would look like a mismatch instead of "zero rows".
+    for name, state in table_state.items():
+        store, _, table = name.partition(".")
+        if state.get("present") and store in EVIDENCE_TABLES and table in EVIDENCE_TABLES[store]:
+            stores.setdefault(store, {}).setdefault("evidence", {}).setdefault(table, [])
+    counts = {f"{store}.{table}": len(rows) for store, tables in stores.items()
+              for table, rows in tables.items() if table != "evidence"}
+    digests = {f"{store}.{table}": _digest(rows) for store, tables in stores.items()
+               for table, rows in tables.items() if table != "evidence"}
+    for store, tables in {k: v.get("evidence") or {} for k, v in stores.items()}.items():
+        for table, rows in tables.items():
+            counts[f"{store}.evidence.{table}"] = len(rows)
+            digests[f"{store}.evidence.{table}"] = _digest(rows)
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "project_id": str(project_id),
+        "stores": stores,
+        "counts": counts,
+        "digests": digests,
+        "snapshot": {
+            "isolation": "REPEATABLE READ",
+            "read_only": True,
+            "identity": snapshot_identity,
+        },
+        "legacy_reference_pending_import": legacy_pending,
+        "table_state": table_state,
+        "revisions": revisions,
+        "content_digest": _digest(
+            [{"table": name, "digest": value} for name, value in sorted(digests.items())]
+        ),
+    }
+
+
+
+
 def read_target_snapshot(connection, project_id: str) -> dict[str, Any]:
     """Read the PostgreSQL target from ONE repeatable-read, read-only snapshot.
 
-    The multi-table read must not mix two commit points: the tool requires an idle
-    connection, opens its own transaction and sets ``REPEATABLE READ, READ ONLY``
-    before the first query. A caller that already holds a transaction is refused
-    instead of silently inheriting its (default Read Committed) snapshot.
+    Public contract: the connection must be idle; this wrapper opens its own
+    REPEATABLE READ READ ONLY transaction. The internal split is reused by the
+    controlled READY publication transaction without nesting transactions.
     """
     from psycopg.pq import TransactionStatus
-    from psycopg.rows import dict_row, tuple_row
 
     if connection.info.transaction_status != TransactionStatus.IDLE:
         raise U3MigrationError(
@@ -2863,174 +3036,10 @@ def read_target_snapshot(connection, project_id: str) -> dict[str, Any]:
             "the target snapshot requires an idle PostgreSQL connection",
             detail=f"transaction_status={connection.info.transaction_status!r}",
         )
-    snapshot_identity = ""
     with connection.transaction():
         with connection.cursor() as setup:
             setup.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-        # Positional read: the caller may connect with ``dict_row`` (the CLI does).
-        with connection.cursor(row_factory=tuple_row) as identity:
-            identity.execute("SELECT pg_current_snapshot() AS snapshot")
-            snapshot_identity = str(identity.fetchone()[0])
-        stores: dict[str, Any] = {"materials": {}, "annotations": {}}
-        queries = {
-            "materials": (
-                "SELECT id,filename,storage_source_id,storage_type,object_key,content_sha256,"
-                "size_bytes,etag,processing_status,box_count,annotated,created_at,updated_at,"
-                "payload AS payload_json FROM {schema}.material WHERE project_id=%s ORDER BY id",
-                MATERIAL_COLUMNS,
-            ),
-            "material_labels": (
-                "SELECT material_id,label_code,box_count FROM {schema}.material_label "
-                "WHERE project_id=%s ORDER BY material_id,label_code", None,
-            ),
-            "material_annotation_scopes": (
-                "SELECT material_id,label_code FROM {schema}.material_annotation_scope "
-                "WHERE project_id=%s ORDER BY material_id,label_code", None,
-            ),
-            "negative_pool_members": (
-                "SELECT material_id,joined_at FROM {schema}.negative_pool_member "
-                "WHERE project_id=%s ORDER BY material_id", None,
-            ),
-            "negative_pool_categories": (
-                "SELECT id,name,enabled FROM {schema}.negative_pool_category "
-                "WHERE project_id=%s ORDER BY id", None,
-            ),
-            "negative_pool_links": (
-                "SELECT material_id,category_id FROM {schema}.negative_pool_link "
-                "WHERE project_id=%s ORDER BY material_id,category_id", None,
-            ),
-            "negative_pool_algorithm_members": (
-                "SELECT algorithm_id,material_id,joined_at FROM {schema}.negative_pool_algorithm_member "
-                "WHERE project_id=%s ORDER BY algorithm_id,material_id", None,
-            ),
-        }
-        annotation_queries = {
-            "annotations": (
-                "SELECT image_id,annotation_state,version,content_digest,boxes AS boxes_json,"
-                "scope AS scope_json,created_at,updated_at FROM {schema}.annotation "
-                "WHERE project_id=%s ORDER BY image_id", ANNOTATION_COLUMNS,
-            ),
-            "annotation_label_references": (
-                "SELECT image_id,label_code,box_count,scope_ref,annotation_state,source_kind "
-                "FROM {schema}.annotation_label_reference "
-                "WHERE project_id=%s ORDER BY image_id,label_code", None,
-            ),
-            "evidence": (
-                "SELECT store,table_name,row_key,payload AS payload_json FROM {schema}.evidence_row "
-                "WHERE project_id=%s ORDER BY store,table_name,row_key", None,
-            ),
-        }
-        with connection.cursor(row_factory=dict_row) as cursor:
-            for name, (statement, _columns) in queries.items():
-                cursor.execute(statement.format(schema=SCHEMA_NAME), (project_id,))
-                rows = []
-                for row in cursor.fetchall():
-                    record = dict(row)
-                    if "payload_json" in record:
-                        value = record.pop("payload_json")
-                        record["payload"] = (
-                            None if value is None
-                            else json.loads(value) if isinstance(value, (str, bytes, bytearray))
-                            else value
-                        )
-                    rows.append(record)
-                stores["materials"][name] = rows
-            for name, (statement, _columns) in annotation_queries.items():
-                cursor.execute(statement.format(schema=SCHEMA_NAME), (project_id,))
-                rows = []
-                for row in cursor.fetchall():
-                    record = dict(row)
-                    for json_key in ("boxes_json", "scope_json"):
-                        if json_key in record:
-                            value = record.pop(json_key)
-                            record[json_key.removesuffix("_json")] = (
-                                None if value is None
-                                else json.loads(value) if isinstance(value, (str, bytes, bytearray))
-                                else value
-                            )
-                    rows.append(record)
-                if name == "evidence":
-                    # Regroup verbatim evidence rows by their original store/table.
-                    grouped: dict[str, dict[str, list[dict[str, Any]]]] = {"materials": {}, "annotations": {}}
-                    for record in rows:
-                        store = str(record.pop("store"))
-                        table = str(record.pop("table_name"))
-                        row_key = str(record.pop("row_key"))
-                        value = record.pop("payload_json")
-                        grouped.setdefault(store, {}).setdefault(table, []).append(
-                            {
-                                "row_key": row_key,
-                                "payload": value if isinstance(value, dict) else json.loads(value),
-                            }
-                        )
-                    for tables in grouped.values():
-                        for table_rows in tables.values():
-                            table_rows.sort(key=lambda item: item["row_key"])
-                    for store, tables in grouped.items():
-                        stores.setdefault(store, {})["evidence"] = tables
-                    continue
-                stores["annotations"][name] = rows
-            cursor.execute(
-                f"SELECT store,revision FROM {SCHEMA_NAME}.store_revision WHERE project_id=%s",
-                (project_id,),
-            )
-            revision_rows = cursor.fetchall()
-            legacy_pending = any(
-                str(row["store"]) == LEGACY_REFERENCE_PENDING_STORE
-                for row in revision_rows
-            )
-            revisions = {
-                str(row["store"]): row["revision"]
-                for row in revision_rows
-                if str(row["store"]) != LEGACY_REFERENCE_PENDING_STORE
-            }
-            cursor.execute(
-                f"SELECT store,table_name,present,schema_version,row_count FROM {SCHEMA_NAME}.table_state "
-                "WHERE project_id=%s ORDER BY store,table_name",
-                (project_id,),
-            )
-            table_state = {
-                f"{row['store']}.{row['table_name']}": {
-                    "present": bool(row["present"]),
-                    "schema_version": row["schema_version"],
-                    "row_count": int(row["row_count"]),
-                }
-                for row in cursor.fetchall()
-            }
-        # Present-but-empty evidence tables must exist as keys on both sides, otherwise
-        # an empty historical table would look like a mismatch instead of "zero rows".
-        for name, state in table_state.items():
-            store, _, table = name.partition(".")
-            if state.get("present") and store in EVIDENCE_TABLES and table in EVIDENCE_TABLES[store]:
-                stores.setdefault(store, {}).setdefault("evidence", {}).setdefault(table, [])
-        counts = {f"{store}.{table}": len(rows) for store, tables in stores.items()
-                  for table, rows in tables.items() if table != "evidence"}
-        digests = {f"{store}.{table}": _digest(rows) for store, tables in stores.items()
-                   for table, rows in tables.items() if table != "evidence"}
-        for store, tables in {k: v.get("evidence") or {} for k, v in stores.items()}.items():
-            for table, rows in tables.items():
-                counts[f"{store}.evidence.{table}"] = len(rows)
-                digests[f"{store}.evidence.{table}"] = _digest(rows)
-        return {
-            "contract_version": CONTRACT_VERSION,
-            "project_id": str(project_id),
-            "stores": stores,
-            "counts": counts,
-            "digests": digests,
-            "snapshot": {
-                "isolation": "REPEATABLE READ",
-                "read_only": True,
-                "identity": snapshot_identity,
-            },
-            "legacy_reference_pending_import": legacy_pending,
-            "table_state": table_state,
-            "revisions": revisions,
-            "content_digest": _digest(
-                [{"table": name, "digest": value} for name, value in sorted(digests.items())]
-            ),
-        }
-
-
+        return _read_target_snapshot_in_transaction(connection, project_id)
 
 
 def reconcile(source: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str, Any]:

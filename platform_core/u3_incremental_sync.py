@@ -46,7 +46,7 @@ from .u3_shadow import (
     _store_digest,
     export_project_snapshot,
     import_project_snapshot,
-    read_target_snapshot,
+    _read_target_snapshot_in_transaction,
     reconcile,
     snapshot_evidence_streams,
     snapshot_integrity_error,
@@ -844,35 +844,39 @@ def apply_incremental_batch(
                     "the stream has no trusted baseline; import a full snapshot first",
                     detail=f"stream={stream}",
                 )
+            owner.execute("BEGIN")
             try:
-                marks = high_water_marks(owner)
-            except sqlite3.Error as error:
-                raise U3IncrementalSyncError(
-                    "U3_INCREMENTAL_OWNER_UNAVAILABLE",
-                    "the owner high-water mark cannot be read",
-                    detail=str(error),
-                ) from error
-            owner_hwm = marks.get(stream)
-            if owner_hwm is None:
-                raise U3IncrementalSyncError(
-                    "U3_INCREMENTAL_LOG_MISSING",
-                    "the owner change stream is missing",
-                    detail=f"stream={stream} marks={sorted(marks)}",
-                )
-            if cursor > int(owner_hwm):
-                raise U3IncrementalSyncError(
-                    "U3_INCREMENTAL_CURSOR_AHEAD",
-                    "the projection cursor is ahead of the owner log",
-                    detail=f"stream={stream} cursor={cursor} owner={owner_hwm}",
-                )
-            try:
-                events = read_events(owner, stream, cursor, int(limit))
-            except ValueError as error:
-                raise U3IncrementalSyncError(
-                    "U3_INCREMENTAL_EVENT_INVALID",
-                    "the owner change log cannot be verified",
-                    detail=str(error),
-                ) from error
+                try:
+                    marks = high_water_marks(owner)
+                except sqlite3.Error as error:
+                    raise U3IncrementalSyncError(
+                        "U3_INCREMENTAL_OWNER_UNAVAILABLE",
+                        "the owner high-water mark cannot be read",
+                        detail=str(error),
+                    ) from error
+                owner_hwm = marks.get(stream)
+                if owner_hwm is None:
+                    raise U3IncrementalSyncError(
+                        "U3_INCREMENTAL_LOG_MISSING",
+                        "the owner change stream is missing",
+                        detail=f"stream={stream} marks={sorted(marks)}",
+                    )
+                if cursor > int(owner_hwm):
+                    raise U3IncrementalSyncError(
+                        "U3_INCREMENTAL_CURSOR_AHEAD",
+                        "the projection cursor is ahead of the owner log",
+                        detail=f"stream={stream} cursor={cursor} owner={owner_hwm}",
+                    )
+                try:
+                    events = read_events(owner, stream, cursor, int(limit))
+                except ValueError as error:
+                    raise U3IncrementalSyncError(
+                        "U3_INCREMENTAL_EVENT_INVALID",
+                        "the owner change log cannot be verified",
+                        detail=str(error),
+                    ) from error
+            finally:
+                owner.rollback()
             if not events:
                 if cursor != int(owner_hwm):
                     raise U3IncrementalSyncError(
@@ -1038,19 +1042,23 @@ def publish_ready(
                 detail=str(integrity),
             )
         marks = snapshot.get("change_high_water_marks") or {}
-        target = read_target_snapshot(connection, project)
-        compare_target = dict(target)
-        compare_target["revisions"] = dict(snapshot.get("revisions") or {})
-        report = reconcile(snapshot, compare_target)
-        if not report["same"]:
-            return {
-                "published": False,
-                "code": "U3_READY_PROJECTION_MISMATCH",
-                "blocking_findings": report["blocking_findings"],
-            }
         with connection.transaction():
+            # The final target read, reconciliation, baseline/cursor checks and
+            # READY write share one project advisory lock and one repeatable-read
+            # transaction. The public read_target_snapshot keeps its own contract.
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             _project_transaction_lock(connection, project)
             ensure_incremental_schema(connection)
+            target = _read_target_snapshot_in_transaction(connection, project)
+            compare_target = dict(target)
+            compare_target["revisions"] = dict(snapshot.get("revisions") or {})
+            report = reconcile(snapshot, compare_target)
+            if not report["same"]:
+                return {
+                    "published": False,
+                    "code": "U3_READY_PROJECTION_MISMATCH",
+                    "blocking_findings": report["blocking_findings"],
+                }
             for stream in STREAMS:
                 cursor_value, baseline = _cursor(connection, project, stream)
                 if baseline is None:

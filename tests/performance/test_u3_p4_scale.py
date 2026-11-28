@@ -20,6 +20,11 @@ from dataclasses import replace
 
 import pytest
 
+try:
+    import psutil
+except ImportError:  # pragma: no cover - CI installs psutil
+    psutil = None
+
 
 RUN = os.environ.get("RUN_U3_P4_SCALE") == "1"
 if not RUN:
@@ -70,6 +75,18 @@ from platform_core.u3_shadow import (
 )
 
 RESULT: dict = {"layers": {}, "matches": []}
+
+
+@pytest.fixture(autouse=True)
+def _flush_results():
+    """Keep partial structured evidence even when a measurement assertion fails."""
+    yield
+    path = os.environ.pop("P4_RESULTS_PATH", "").strip()
+    if path:
+        pathlib.Path(path).write_text(
+            json.dumps(RESULT, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
 
 
 def _percentile(values, quantile):
@@ -142,6 +159,13 @@ def _enrich(world, project_id, algorithm_id):
             source_images=rows,
         )
         usage.record_execution("p4-test-reservation", test_observed=True)
+        from platform_core.task_runtime import TaskKind, TaskRecord
+        from platform_core.task_runtime.models import TaskStatus
+        task = TaskRecord.new(
+            "p4-test-reservation", project_id, TaskKind.TRAINING,
+            "payload.json", "training:p4-test-reservation",
+        )
+        world["tasks"].create(replace(task, status=TaskStatus.RUNNING))
 
     retired = repository.retire_many(
         [f"img-{baseline.TOTAL_MATERIALS - index:06d}" for index in range(1, 6)],
@@ -151,24 +175,24 @@ def _enrich(world, project_id, algorithm_id):
             "test_reservation": len(rows), "retired": retired}
 
 
+class _ExternalPostgres:
+    def __init__(self, dsn):
+        self._dsn = dsn
+
+    def get_uri(self):
+        return self._dsn
+
+    def cleanup(self):
+        with psycopg.connect(self._dsn) as connection:
+            connection.execute("DROP SCHEMA IF EXISTS w3_material_gt CASCADE")
+            connection.commit()
+
+
 def _pg_fixture(tmp_path):
     external = os.environ.get("MC_TEST_POSTGRES_DSN", "").strip()
     if external:
-        return external, tmp_path
+        return _ExternalPostgres(external), tmp_path
     root = pathlib.Path(tmp_path) / "pgdata"
-
-    class External:
-        def __init__(self, dsn):
-            self._dsn = dsn
-
-        def get_uri(self):
-            return self._dsn
-
-        def cleanup(self):
-            with psycopg.connect(self._dsn) as connection:
-                connection.execute("DROP SCHEMA IF EXISTS w3_material_gt CASCADE")
-                connection.commit()
-
     return pgserver.get_server(root, cleanup_mode="delete"), tmp_path
 
 
@@ -231,6 +255,9 @@ def test_u3_p4_scale_measurement(tmp_path):
             "deep_page": business_query(page=100),
             "history_excluded": business_query(history="new_for_algorithm"),
             "test_role": business_query(usage_role="test", usage_state="test_reserved"),
+            "positive_role": business_query(role="positive"),
+            "confirmed_negative": business_query(role="confirmed_negative"),
+            "pending_review": business_query(role="pending_review"),
         }
         for name, query in scenarios.items():
             sqlite_metrics, sqlite_page = _measure(
@@ -333,6 +360,69 @@ def test_u3_p4_scale_measurement(tmp_path):
             "same_as_sqlite": original_same,
         }
         RESULT["matches"].append({"case": "original_api_base_page", "same": original_same})
+        assert original_same, (
+            original_ids[:10], _ids(sqlite_base)[:10],
+            original_body.get("total"), sqlite_base.total,
+        )
+        assert int(original_body.get("total") or 0) == int(sqlite_base.total or 0)
+
+        # Frozen selection is the original formal contract; its ID set must match
+        # the P1 candidate stream for the same business context.
+        from platform_core.training_selection_reference import read_selection, selection_context
+
+        focus_base = {
+            "algorithm_asset_id": baseline.ALGO_ACTIVE,
+            "role": "train",
+            "storage_source_ids": [baseline.FOCUS_SOURCE],
+        }
+        freeze_response = client.post(
+            f"/api/v62/projects/{project_id}/training-materials/selection-reference",
+            json={**focus_base, "history_policy": "include_history"},
+        )
+        assert freeze_response.status_code == 200, freeze_response.text
+        frozen = freeze_response.json()
+        context = selection_context(
+            world["data_dir"], project_id,
+            {**focus_base, "history_policy": "include_history"}, "train",
+        )
+        frozen_ids = read_selection(
+            world["data_dir"], frozen["selection_ref"], context
+        )
+        assert len(frozen_ids) == int(frozen["count"])
+        picker_ids = [
+            item.material.id
+            for batch in sqlite_business.iter_candidates(
+                BusinessQuery(
+                    project_id=project_id,
+                    filters=BusinessFilter(
+                        base=PickerFilter(
+                            storage_source_ids=(baseline.FOCUS_SOURCE,)
+                        ),
+                        algorithm_asset_id=baseline.ALGO_ACTIVE,
+                        history_policy="include_history",
+                        browse_only=True,
+                    ),
+                    page_size=100,
+                )
+            )
+            for item in batch
+        ]
+        excluded_ids = {
+            f"img-{index:06d}" for index in range(0, 100)
+        } | {
+            f"img-{baseline.TOTAL_MATERIALS - index:06d}" for index in range(1, 6)
+        }
+        expected_picker = set(picker_ids) - excluded_ids
+        frozen_same = set(frozen_ids) == expected_picker
+        RESULT["layers"]["frozen_selection"] = {
+            "count": len(frozen_ids), "picker_count": len(picker_ids),
+            "expected_count": len(expected_picker),
+            "missing": sorted(set(frozen_ids) - expected_picker)[:10],
+            "extra": sorted(expected_picker - set(frozen_ids))[:10],
+            "same_as_picker": frozen_same,
+        }
+        RESULT["matches"].append({"case": "frozen_selection", "same": frozen_same})
+        assert frozen_same, RESULT["layers"]["frozen_selection"]
 
         # Incremental changes followed by READY publication, then compare with a
         # fresh full import of the same final Owner state.
@@ -353,11 +443,13 @@ def test_u3_p4_scale_measurement(tmp_path):
             )
         pool = world["negative_pool"]
         pool.category(name="p4-late-category")
+        incremental_started = time.perf_counter()
         synchronized = synchronize_project(
             connection, project_dir=project, project_id=project_id,
             limit=int(os.environ.get("P4_SYNC_LIMIT", "500")),
             max_batches=int(os.environ.get("P4_SYNC_BATCHES", "40")),
         )
+        incremental_seconds = round(time.perf_counter() - incremental_started, 3)
         assert synchronized["status"] == "READY", synchronized
         final_snapshot = export_project_snapshot(project, project_id)
         target = read_target_snapshot(connection, project_id)
@@ -367,15 +459,47 @@ def test_u3_p4_scale_measurement(tmp_path):
         RESULT["layers"]["incremental"] = {
             "status": synchronized["status"], "applied": synchronized["applied"],
             "same": report["same"], "blocking": report["blocking_findings"],
+            "seconds": incremental_seconds,
         }
         assert report["same"] is True, report["blocking_findings"]
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT version()")
+            postgres_version = str(cursor.fetchone()[0])
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            counts = {
+                table: int(database.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in (
+                    "materials", "material_labels", "material_annotation_scopes",
+                    "material_retirements", "material_storage_audit",
+                    "negative_pool_members", "negative_pool_links",
+                    "negative_pool_algorithm_members", "owner_change_log",
+                )
+            }
+            counts["owner_change_meta_hwm"] = dict(database.execute(
+                "SELECT stream,last_sequence FROM owner_change_meta"
+            ).fetchall())
+        with sqlite3.connect(project / "annotations.sqlite3") as database:
+            counts["annotations"] = int(database.execute(
+                "SELECT COUNT(*) FROM annotations"
+            ).fetchone()[0])
+            counts["task_negative_confirmations"] = int(database.execute(
+                "SELECT COUNT(*) FROM task_negative_confirmations"
+            ).fetchone()[0])
+        wal_bytes = sum(
+            path.stat().st_size for path in project.glob("*.sqlite3-wal")
+        )
+        process = psutil.Process() if psutil is not None else None
 
     RESULT["environment"] = {
+        "git_sha": os.environ.get("GITHUB_SHA", ""),
         "platform": platform.platform(), "python": platform.python_version(),
-        "sqlite": sqlite3.sqlite_version, "postgres": "server",
-        "machine": platform.machine(),
+        "sqlite": sqlite3.sqlite_version, "postgres": postgres_version,
+        "cpu_count": os.cpu_count(), "machine": platform.machine(),
         "materials": baseline.TOTAL_MATERIALS, "gt": baseline.TOTAL_GT,
         "samples": int(os.environ.get("P4_SAMPLES", "7")),
+        "rss_mb": round(process.memory_info().rss / 1024 / 1024, 1) if process else None,
+        "counts": counts, "wal_bytes": wal_bytes,
+        "db_sizes_bytes": world.get("sizes") or {},
         "enriched": enriched,
     }
     result_path = os.environ.get("P4_RESULTS_PATH", "").strip()

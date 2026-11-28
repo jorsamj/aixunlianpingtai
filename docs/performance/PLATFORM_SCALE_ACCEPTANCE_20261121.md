@@ -521,4 +521,19 @@ L2 必须先声明**验收范围**，逐项列出"必需项"与"排除项"；不
 - 正式 API 三方差分目前只覆盖基础 `/page`；完整历史/角色/冻结选择/跨页选择仍需补齐。
 - 尚未记录 200k 的 API 层耗时、查询计划、扫描行数、内存峰值和并发读写数据。
 - `publish_ready` 发布时执行一次完整 target reconcile，属于发布成本；200k 成本待专项测量。
-- P4-B 不预设 PostgreSQL 必须更快；若主要收益是可扩展性/并发/维护性，将按实测说明。
+- P4-B 不预设 PostgreSQL 必须更快；若主要收益是可扩展性/并发/维护性，将按实测说明。\n\n
+### P4-A 收口修补（2026-11-28）
+
+- 外部 PostgreSQL DSN 分支统一返回带 `get_uri()` 的适配器；本地以外部 DSN 方式
+  **300 素材 / 100 GT** 烟测通过。
+- `publish_ready` 将最终 target 读取、reconcile、baseline/游标校验和 READY 写入合并到
+  同一项目 advisory lock + REPEATABLE READ 事务；公共 `read_target_snapshot` 保留原有
+  固定只读事务合同，内部拆分仅供受控发布事务复用。
+- `apply_incremental_batch` 在 Owner 只读连接上显式 `BEGIN`，HWM 与事件读取来自同一
+  SQLite 读事务，结束后 rollback。
+- P4 测量补充：角色场景、正式 `/page` 的 ID/total 硬断言、冻结选择 ID 集合差分、
+  活跃 Task Test 预留、环境/CPU/RSS/PG 版本、数据行数、Change Log/WAL 大小、增量同步
+  耗时；失败时仍通过 teardown 写出部分 `P4_RESULTS_PATH`。
+- P4 工作流增加 `[p4-scale]` push 触发门（无 marker 时跳过），仍保留
+  `workflow_dispatch`；工作流位于功能分支，避免修改默认分支。
+- 20 万级真实测量尚未执行，P4-A 仍为 NOT_VERIFIED，P4-B/C 未开始。
