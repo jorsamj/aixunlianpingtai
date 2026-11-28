@@ -1,5 +1,10 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P3-B0 借用原子性（9a9d85a8）**：`TrainingMaterialUsage` 增加 borrow 锁，
+> `_borrow_tasks/_release_tasks` 在锁内检查与赋值；PG 上下文仅在成功进入后退出。定向
+> **24 passed / 0 skipped**。**P3-B1–B4（Change Log、增量消费、基线衔接、恢复）本轮未实现**，
+> 未写任何同步代码；P3-A 设计保持已验收。未改 VERSION、未启 P3-B Worker。
+
 > **2026-11-28 / U3-P2 会话生命周期修补（f792fa75）**：Task 连接借用改为独占 token（重叠会话
 > 显式拒绝、正常/异常释放）；PG 快照身份取自 `inner.snapshot`；最终复核在同一新事务内读取
 > revision+活跃 Task 摘要；`read_session` 拒绝 `verify_owner=False`。定向 **23 passed / 0 skipped**；
