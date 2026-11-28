@@ -116,3 +116,16 @@ SQLite 历史 → 角色/用途 → 最终过滤 → 分页/统计。SQLite 权�
 - SQLite 回执增加同事务结构认证（`evidence_structure` 与表存在一致）。
 - `compare_candidate_sets` 必须同时证明：两端 owner 版本子集（revision/generation/
   structure）、usage revision、活跃 Task 摘要一致，且两端 `owner_equivalent=True`。
+
+## 9. 最终读取事务收口（2026-11-28）
+
+- `BusinessReadProvider.read_session()` 在中央 Task 库上开启**一个只读事务**（`BEGIN`），
+  所有批次的 `query_filter`（usage/tokens/coverage/status）复用该连接；初始 usage revision 与
+  活跃 Task 身份摘要也来自同一事务。`TrainingMaterialUsage` 仅新增 `_borrowed_connection`
+  借用机制（复用原 `query_filter` 与分类逻辑，无业务复制）。
+- 批次结束后关闭该事务，用**新连接**复核当前 usage revision 与活跃 Task 摘要，成功后才发布结果；
+  deferred 提前结束同样执行。
+- `BusinessSnapshot.read_identity` 与 owner 版本取自会话打开时捕获的 picker 上下文，不再重新
+  `snapshot_context()`。
+- 正式候选流与冻结比较禁止 `verify_owner=False`；诊断读取继续使用原 P1 Provider。
+

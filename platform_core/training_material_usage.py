@@ -19,6 +19,21 @@ from datetime import datetime, timezone
 from .training_splits import _relation_tokens
 
 
+class _BorrowedConnection:
+    """A connection owned by the caller's fixed read transaction."""
+
+    borrowed = True
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+    def close(self):
+        return None
+
+
 class TrainingMaterialUsage:
     # A frozen role is a temporary reservation only while its original Task
     # remains live. Terminal failures without execution do not become locks.
@@ -28,6 +43,9 @@ class TrainingMaterialUsage:
         self.path = Path(getattr(repository, 'path', repository))
 
     def _connect(self, write=False):
+        borrowed = getattr(self, '_borrowed_connection', None)
+        if borrowed is not None and not write:
+            return _BorrowedConnection(borrowed)
         if write:
             if not self.path.is_file():
                 raise FileNotFoundError('usage projection requires the existing task database')
@@ -214,7 +232,8 @@ class TrainingMaterialUsage:
         if not self.path.is_file():
             return result
         with closing(self._connect()) as db:
-            db.execute('BEGIN')
+            if not getattr(db, 'borrowed', False):
+                db.execute('BEGIN')
             exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='training_material_usage'").fetchone()
             if not exists:
                 if self._empty_project_history(db, project_id):
@@ -414,7 +433,8 @@ class TrainingMaterialUsage:
         tokens = sorted({token for image in images for token in
             [('image_id', str(image.get('id') or image.get('image_id') or '')), *_relation_tokens(image)]})
         with closing(self._connect()) as db:
-            db.execute('BEGIN')
+            if not getattr(db, 'borrowed', False):
+                db.execute('BEGIN')
             tables = {str(row[0]) for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'training_%'")}
             if 'training_usage_tokens' not in tables:
                 result['index_health'] = ('incompatible' if 'training_material_usage' in tables else 'uninitialized')

@@ -343,7 +343,7 @@ class BusinessReadProvider:
                 "the training history revision could not be read", detail=str(error),
             ) from error
 
-    def _task_evidence_digest(self) -> str:
+    def _task_evidence_digest(self, connection=None) -> str:
         """Identity digest of every Task that can hold an active reservation.
 
         Only non-terminal statuses affect eligibility (``query_filter`` treats
@@ -354,12 +354,16 @@ class BusinessReadProvider:
         query is issued.
         """
         try:
-            with closing(self._tasks_connection()) as database:
+            database = connection or self._tasks_connection()
+            try:
                 rows = database.execute(
                     "SELECT task_id, status FROM tasks WHERE status IN "
                     "('QUEUED','RUNNING','CANCEL_REQUESTED','AWAITING_CONFIRMATION') "
                     "ORDER BY task_id"
                 ).fetchall()
+            finally:
+                if connection is None:
+                    database.close()
         except sqlite3.Error as error:
             raise BusinessHistoryUnavailable(
                 "the Task eligibility evidence could not be read", detail=str(error),
@@ -567,40 +571,77 @@ class BusinessReadProvider:
     # -- read session ----------------------------------------------------
     @contextmanager
     def read_session(self, query: BusinessQuery) -> Iterator["_BusinessSession"]:
-        """One business read session: candidate stream + GT/receipts + final checks.
+        """One business read session.
 
-        For a PostgreSQL picker the same P1 ``read_session`` (one REPEATABLE READ
-        transaction) is used for candidates, GT and receipts. For SQLite each
-        owner read is fixed by the picker and re-verified against the captured
-        snapshot token at close.
+        The central Task store is opened in ONE read-only transaction: every
+        batch reuses it for usage/tokens/coverage/status, and the initial
+        history revision and active-Task digest come from that same snapshot.
+        After the batch phase the transaction is closed and a NEW connection
+        re-checks the current versions; only then may results be published.
+        A PostgreSQL picker additionally keeps one P1 transaction for
+        candidates/GT/receipts.
         """
         self._require_project(query.project_id)
         _validate_business_query(replace(query, page=None, count_mode="deferred"))
-        context = self._picker_context()
-        token = str(context.snapshot_id)
-        usage_revision = self._usage_revision()
-        task_evidence = self._task_evidence_digest()
-        if hasattr(self.picker, "read_session"):
-            with self.picker.read_session(
-                query.project_id, verify_owner=query.verify_owner,
-            ) as inner:
-                session = _PostgresSession(
-                    self, query, inner, token, usage_revision, task_evidence,
+        tasks = self._tasks_connection()
+        tasks.execute("BEGIN")
+        self.usage._borrowed_connection = tasks
+        closed = {"value": False}
+
+        def end_task_transaction() -> None:
+            if closed["value"]:
+                return
+            closed["value"] = True
+            self.usage._borrowed_connection = None
+            try:
+                tasks.execute("COMMIT")
+            except sqlite3.Error:
+                pass
+            finally:
+                tasks.close()
+        inner_context = (
+            self.picker.read_session(query.project_id, verify_owner=query.verify_owner)
+            if hasattr(self.picker, "read_session") else None
+        )
+        try:
+            context = self._picker_context()
+            token = str(context.snapshot_id)
+            usage_revision = self._usage_revision()
+            task_evidence = self._task_evidence_digest(tasks)
+            if inner_context is not None:
+                with inner_context as inner:
+                    session = _PostgresSession(
+                        self, query, inner, token, usage_revision, task_evidence,
+                    )
+                    session._context = context
+                    yield session
+                    end_task_transaction()
+                    session.verify()
+            else:
+                session = _SQLiteSession(
+                    self, query, token, usage_revision, task_evidence,
                 )
+                session._context = context
                 yield session
+                end_task_transaction()
                 session.verify()
-        else:
-            session = _SQLiteSession(
-                self, query, token, usage_revision, task_evidence,
-            )
-            yield session
-            session.verify()
+        finally:
+            if not closed["value"]:
+                end_task_transaction()
+
+    def _verify_current(self) -> tuple[str, str]:
+        """Fresh-connection recheck of the current history/Task versions."""
+        return self._usage_revision(), self._task_evidence_digest()
 
     def iter_candidates(
         self, query: BusinessQuery, *, batch_size: int = MAX_PAGE_SIZE,
     ) -> Iterator[tuple[BusinessMaterial, ...]]:
         if query.page is not None:
             raise PickerUnsupportedFilter("candidate streaming does not support page mode")
+        if not query.verify_owner:
+            raise PickerUnsupportedFilter(
+                "formal candidate streaming requires current-owner verification",
+            )
         fingerprint = _business_fingerprint(query)
         with self.read_session(query) as session:
             base_cursor = None
@@ -702,12 +743,13 @@ class _BusinessSession:
 
     # -- verification ----------------------------------------------------
     def verify(self) -> None:
-        """Bounded final proof: no candidate re-read, no full-history scan."""
-        if self.provider._usage_revision() != self.usage_revision:
+        """Bounded final proof on a NEW connection: no candidate re-read."""
+        current_revision, current_task_evidence = self.provider._verify_current()
+        if current_revision != self.usage_revision:
             raise BusinessHistoryChanged(
                 "the training history changed during the business read",
             )
-        if self.provider._task_evidence_digest() != self.task_evidence:
+        if current_task_evidence != self.task_evidence:
             raise BusinessHistoryChanged(
                 "the active Task eligibility evidence changed during the business read",
             )
@@ -717,7 +759,7 @@ class _BusinessSession:
             )
 
     def snapshot(self) -> BusinessSnapshot:
-        context = self.provider._picker_context()
+        context = self._context
         return BusinessSnapshot(
             project_id=self.provider.project_id,
             source=str(getattr(self.provider.picker, "name", "")),
@@ -842,12 +884,16 @@ def compare_candidate_sets(
 
 
 def _collect(provider: BusinessReadProvider, query: BusinessQuery, limit: int):
+    if not query.verify_owner:
+        raise PickerUnsupportedFilter(
+            "freeze comparison requires current-owner verification",
+        )
     ids: list[str] = []
     with provider.read_session(query) as session:
         meta = {
             "owner_equivalent": bool(session.owner_equivalent),
             "owner_vector": _canonical_vector(
-                provider._picker_context().revision_vector
+                getattr(session._context, "revision_vector", None)
             ),
             "usage_revision": session.usage_revision,
             "task_evidence": session.task_evidence,

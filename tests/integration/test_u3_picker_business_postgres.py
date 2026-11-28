@@ -823,3 +823,57 @@ def test_browse_mode_keeps_the_real_confirmation_role(tmp_path):
     ))
     matched = {item.material.id: item for item in browse.items}
     assert "m001" in matched and matched["m001"].confirmation_receipt
+
+
+def test_session_holds_one_fixed_task_snapshot_across_batches(tmp_path):
+    project, usage = _business_project(tmp_path)
+    tasks_path = project.parent.parent / "task_runtime" / "tasks.sqlite3"
+    _insert_task(tasks_path, "t-live", "RUNNING")
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    with provider.read_session(_query(filters=_filter())) as session:
+        borrow = provider.usage._borrowed_connection
+        assert borrow is not None
+        batches = list(session.batches(batch_size=4))
+        assert len(batches) == 3
+        assert provider.usage._borrowed_connection is borrow
+    assert provider.usage._borrowed_connection is None
+    with pytest.raises(sqlite3.ProgrammingError):
+        borrow.execute("SELECT 1")
+
+
+def test_status_change_and_restore_between_batches_is_not_mixed(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    tasks_path = project.parent.parent / "task_runtime" / "tasks.sqlite3"
+    _insert_task(tasks_path, "t-live", "RUNNING")
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    with provider.read_session(_query(filters=_filter())) as session:
+        first = [(item.material.id, item.history_state)
+                 for batch in session.batches() for item in batch]
+        with sqlite3.connect(tasks_path) as database:
+            database.execute("UPDATE tasks SET status='CANCELLED' WHERE task_id='t-live'")
+        with sqlite3.connect(tasks_path) as database:
+            database.execute("UPDATE tasks SET status='RUNNING' WHERE task_id='t-live'")
+        second = [(item.material.id, item.history_state)
+                  for batch in session.batches() for item in batch]
+    assert first == second
+
+
+def test_status_change_without_restore_between_batches_fails_closed(tmp_path):
+    project, _usage = _business_project(tmp_path)
+    tasks_path = project.parent.parent / "task_runtime" / "tasks.sqlite3"
+    _insert_task(tasks_path, "t-live", "RUNNING")
+    provider = BusinessReadProvider(
+        SQLitePickerReadProvider(project, project_id="p1"), project, project_id="p1",
+    )
+    with pytest.raises(BusinessHistoryChanged):
+        with provider.read_session(_query(filters=_filter())) as session:
+            for index, _batch in enumerate(session.batches(batch_size=4)):
+                if index == 0:
+                    with sqlite3.connect(tasks_path) as database:
+                        database.execute(
+                            "UPDATE tasks SET status='CANCELLED' WHERE task_id='t-live'"
+                        )
