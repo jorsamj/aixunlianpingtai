@@ -132,7 +132,7 @@ onMounted(()=>{void loadOverview();switchTab(tab.value)});
       </el-tab-pane>
       <el-tab-pane name="training" label="训练与评测">
         <div class="tools"><el-button :loading="reads.busy.training" @click="loadTraining">刷新近期训练</el-button><el-button :loading="reads.busy.trend" @click="loadTrend">读取近 7 天状态</el-button>
-          <router-link :to="{name:'training-tasks',params}">全部训练任务</router-link></div>
+          <router-link :to="{name:'training-tasks',params,query:{kind:'TRAINING'}}">全部训练任务</router-link></div>
         <el-alert v-if="reads.errors.training" :title="reads.errors.training" type="error" :closable="false"/><p v-if="trend" class="scope-note">近 7 天训练任务 {{ trend.total }} 条（另有准备任务 {{ trend.prepare_total??0 }} 条）<template v-if="trendParts.length">：<template v-for="part in trendParts" :key="part.status">{{ part.label }} {{ part.count }} · </template></template><template v-else>：窗口内没有任务</template></p><p v-if="reads.errors.trend" class="scope-note">近 7 天状态未读取：{{ reads.errors.trend }}</p>
         <el-table :data="tasks?.items||[]" v-loading="reads.busy.training" row-key="task_id" empty-text="暂无训练任务">
           <el-table-column label="算法" min-width="190"><template #default="{row}">{{row.algorithm_name||row.algorithm_id||row.task_id}}</template></el-table-column>
