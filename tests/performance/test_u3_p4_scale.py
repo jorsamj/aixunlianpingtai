@@ -595,6 +595,44 @@ def test_u3_p4_scale_measurement(tmp_path):
             )
         pool = world["negative_pool"]
         pool.category(name="p4-late-category")
+        ready_profile: dict[str, float] = {}
+        if os.environ.get("P4_PROFILE") == "1":
+            import platform_core.u3_incremental_sync as sync_module
+
+            original_export = sync_module.export_project_snapshot
+            original_target = sync_module._read_target_snapshot_in_transaction
+            original_reconcile = sync_module.reconcile
+
+            def timed_export(*args, **kwargs):
+                began = time.perf_counter()
+                try:
+                    return original_export(*args, **kwargs)
+                finally:
+                    ready_profile["owner_export_ms"] = (
+                        time.perf_counter() - began
+                    ) * 1000
+
+            def timed_target(*args, **kwargs):
+                began = time.perf_counter()
+                try:
+                    return original_target(*args, **kwargs)
+                finally:
+                    ready_profile["target_read_ms"] = (
+                        time.perf_counter() - began
+                    ) * 1000
+
+            def timed_reconcile(*args, **kwargs):
+                began = time.perf_counter()
+                try:
+                    return original_reconcile(*args, **kwargs)
+                finally:
+                    ready_profile["reconcile_ms"] = (
+                        time.perf_counter() - began
+                    ) * 1000
+
+            sync_module.export_project_snapshot = timed_export
+            sync_module._read_target_snapshot_in_transaction = timed_target
+            sync_module.reconcile = timed_reconcile
         incremental_started = time.perf_counter()
         synchronized = synchronize_project(
             connection, project_dir=project, project_id=project_id,
@@ -602,6 +640,9 @@ def test_u3_p4_scale_measurement(tmp_path):
             max_batches=int(os.environ.get("P4_SYNC_BATCHES", "40")),
         )
         incremental_seconds = round(time.perf_counter() - incremental_started, 3)
+        if ready_profile:
+            ready_profile["sync_total_ms"] = round(incremental_seconds * 1000, 3)
+            RESULT["layers"]["ready_profile"] = ready_profile
         assert synchronized["status"] == "READY", synchronized
         final_snapshot = export_project_snapshot(project, project_id)
         target = read_target_snapshot(connection, project_id)
