@@ -316,6 +316,7 @@ class BusinessReadProvider:
                     detail=f"usage={usage_path} tasks={self.tasks_path}",
                 )
         self.usage = usage or TrainingMaterialUsage(self.tasks_path)
+        self._usage_injected = usage is not None
 
     # -- helpers ---------------------------------------------------------
     def _require_project(self, project_id: str) -> str:
@@ -336,9 +337,9 @@ class BusinessReadProvider:
             "task_negative_confirmations": [],
         }
 
-    def _usage_revision(self) -> str:
+    def _usage_revision(self, usage=None) -> str:
         try:
-            return str(self.usage.read_revision())
+            return str((usage or self.usage).read_revision())
         except Exception as error:  # noqa: BLE001 - history boundary
             raise BusinessHistoryUnavailable(
                 "the training history revision could not be read", detail=str(error),
@@ -395,9 +396,9 @@ class BusinessReadProvider:
             include_annotations=False, verify_owner=query.verify_owner,
         )
 
-    def _history_facts(self, query: BusinessQuery, rows: Sequence[Mapping[str, Any]]) -> dict:
+    def _history_facts(self, query: BusinessQuery, rows: Sequence[Mapping[str, Any]], usage=None) -> dict:
         try:
-            facts = self.usage.query_filter(
+            facts = (usage or self.usage).query_filter(
                 self.project_id, str(query.filters.algorithm_asset_id or ""), list(rows),
                 exclude_used=False, role=query.filters.usage_role,
             )
@@ -501,7 +502,7 @@ class BusinessReadProvider:
                 query, contract, material_rows, annotation_rows, receipts,
             ),
         }
-        facts = self._history_facts(query, list(material_rows.values()))
+        facts = self._history_facts(query, list(material_rows.values()), session.usage)
         by_id = facts.get("by_image_id") or {}
         receipt_ids = {str(receipt.get("receipt_id") or "") for receipt in
                        contract["task_negative_confirmations"]}
@@ -603,14 +604,19 @@ class BusinessReadProvider:
         _validate_business_query(replace(query, page=None, count_mode="deferred"))
         tasks = self._tasks_connection()
         tasks.execute("BEGIN")
+        # The Task owner is shared, but its exclusive borrow is request-scoped:
+        # an injected usage keeps test/embedding semantics, while normal reads
+        # create an independent usage object so two requests do not reject each
+        # other. Each still holds its own fixed Task read transaction.
+        session_usage = self.usage if self._usage_injected else TrainingMaterialUsage(self.tasks_path)
         try:
-            token = self._borrow_tasks(tasks)
+            token = self._borrow_tasks(tasks, session_usage)
         except BusinessReadError:
             tasks.close()
             raise
 
         def end_task_transaction() -> None:
-            self._release_tasks(token)
+            self._release_tasks(token, session_usage)
             try:
                 tasks.execute("COMMIT")
             except sqlite3.Error:
@@ -637,13 +643,15 @@ class BusinessReadProvider:
                 picker_snapshot = inner.snapshot
                 session = _PostgresSession(
                     self, query, inner, picker_snapshot,
-                    self._usage_revision(), self._task_evidence_digest(tasks),
+                    self._usage_revision(session_usage),
+                    self._task_evidence_digest(tasks), session_usage,
                 )
             else:
                 picker_snapshot = self._picker_context()
                 session = _SQLiteSession(
                     self, query, picker_snapshot,
-                    self._usage_revision(), self._task_evidence_digest(tasks),
+                    self._usage_revision(session_usage),
+                    self._task_evidence_digest(tasks), session_usage,
                 )
             session._picker_snapshot = picker_snapshot
             yield session
@@ -654,29 +662,31 @@ class BusinessReadProvider:
             if entered and inner_context is not None:
                 inner_context.__exit__(*sys.exc_info())
 
-    def _borrow_tasks(self, connection):
+    def _borrow_tasks(self, connection, usage=None):
         """Atomic exclusive borrow: check, token and connection under one lock."""
-        lock = getattr(self.usage, "_borrow_lock", None)
+        owner = usage or self.usage
+        lock = getattr(owner, "_borrow_lock", None)
         if lock is None:
             raise BusinessReadError("the usage owner has no borrow lock")
         with lock:
-            if getattr(self.usage, "_borrowed_connection", None) is not None:
+            if getattr(owner, "_borrowed_connection", None) is not None:
                 raise BusinessReadError(
                     "another business read session is already using the Task store",
                 )
             token = object()
-            self.usage._borrowed_connection = connection
-            self.usage._borrowed_token = token
+            owner._borrowed_connection = connection
+            owner._borrowed_token = token
             return token
 
-    def _release_tasks(self, token) -> None:
-        lock = getattr(self.usage, "_borrow_lock", None)
+    def _release_tasks(self, token, usage=None) -> None:
+        owner = usage or self.usage
+        lock = getattr(owner, "_borrow_lock", None)
         if lock is None:
             return
         with lock:
-            if getattr(self.usage, "_borrowed_token", None) is token:
-                self.usage._borrowed_connection = None
-                self.usage._borrowed_token = None
+            if getattr(owner, "_borrowed_token", None) is token:
+                owner._borrowed_connection = None
+                owner._borrowed_token = None
 
     def _verify_current(self) -> tuple[str, str]:
         """One new Task read transaction: revision + active Task digest together."""
@@ -806,9 +816,10 @@ class _BusinessSession:
     """Shared candidate/evaluate/verify logic for both pickers."""
 
     def __init__(self, provider, query, token, usage_revision, task_evidence,
-                 owner_equivalent: bool = False):
+                 usage, owner_equivalent: bool = False):
         self.provider = provider
         self.query = query
+        self.usage = usage
         self.snapshot_id = token
         self.usage_revision = usage_revision
         self.task_evidence = task_evidence
@@ -857,10 +868,10 @@ class _BusinessSession:
 
 
 class _PostgresSession(_BusinessSession):
-    def __init__(self, provider, query, inner, picker_snapshot, usage_revision, task_evidence):
+    def __init__(self, provider, query, inner, picker_snapshot, usage_revision, task_evidence, usage):
         super().__init__(
             provider, query, picker_snapshot.snapshot_id, usage_revision, task_evidence,
-            owner_equivalent=bool(getattr(picker_snapshot, "owner_equivalent", False)),
+            usage, owner_equivalent=bool(getattr(picker_snapshot, "owner_equivalent", False)),
         )
         self.inner = inner
         self._picker_snapshot = picker_snapshot
@@ -885,9 +896,10 @@ class _PostgresSession(_BusinessSession):
 
 
 class _SQLiteSession(_BusinessSession):
-    def __init__(self, provider, query, picker_snapshot, usage_revision, task_evidence):
+    def __init__(self, provider, query, picker_snapshot, usage_revision, task_evidence, usage):
         super().__init__(
             provider, query, picker_snapshot.snapshot_id, usage_revision, task_evidence,
+            usage,
             # The SQLite picker re-reads the owner; the token comparison in
             # verify() is what proves current equivalence.
             owner_equivalent=bool(query.verify_owner),

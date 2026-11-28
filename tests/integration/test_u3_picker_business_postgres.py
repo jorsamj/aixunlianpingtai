@@ -517,6 +517,22 @@ class _UnavailableUsage:
 # ---------------------------------------------------------------------------
 # E. freeze-set equivalence (read-only, no production selection is created)
 # ---------------------------------------------------------------------------
+def test_same_postgres_provider_serves_concurrent_business_reads(pg, tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    project, _usage = _business_project(tmp_path)
+    _, postgres_business = _providers(pg, project)
+    query = _query(filters=_filter(history_policy="include_history"))
+
+    def read():
+        return postgres_business.read_page(query)
+
+    with ThreadPoolExecutor(max_workers=2) as pool_executor:
+        pages = list(pool_executor.map(lambda _: read(), range(2)))
+    assert all(len(page.items) >= 1 for page in pages)
+    assert pages[0].items == pages[1].items
+
+
 def test_candidate_sets_and_selection_digest_are_equivalent(pg, tmp_path):
     project, _usage = _business_project(tmp_path)
     sqlite_business, postgres_business = _providers(pg, project)
