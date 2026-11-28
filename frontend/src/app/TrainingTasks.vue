@@ -409,12 +409,15 @@ function elapsed(row:TrainingTask){
     return '终态 '+duration(end-start);
   }
   if(TERMINAL_STATUSES.includes(row.status))return '缺少结束时间';
-  return '自然 '+duration(Date.now()-start);
+  const elapsedMs=Date.now()-start;
+  if(elapsedMs<0)return '开始时间异常';
+  return '自然 '+duration(elapsedMs);
 }
 function elapsedHint(row:TrainingTask){
   if(!row.started_at)return '服务端尚未记录开始时间';
   if(row.finished_at)return '开始至结束的终态耗时';
   if(TERMINAL_STATUSES.includes(row.status))return '终态缺少结束时间，不做推算';
+  if(Date.now()-Date.parse(row.started_at)<0)return '服务端开始时间晚于当前时间，暂不推算';
   return '开始至本次读取的自然经过时间，含排队后等待与暂停，非已确认有效训练时长';
 }
 function canStop(row:TrainingTask) {
