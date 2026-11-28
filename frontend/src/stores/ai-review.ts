@@ -612,8 +612,9 @@ export const useAiReviewStore=defineStore('ai-review-native',()=>{
     bulkIntent.value=undefined;bulkRequestId.value='';bulkPendingUnknown.value=false;
     bulkCreatePending.value=false;
     clearBulkRecord(address);
+    if(bulkStatus.value==='SUCCEEDED')clearSelection();
+    else invalidateSelection();
     if(bulkStatus.value==='SUCCEEDED'){
-      clearSelection();
       await readPage(filter.value,[null]);
     }else if(!pageError.value){
       await readPage(filter.value,cursors.value,true);
