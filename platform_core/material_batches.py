@@ -305,18 +305,16 @@ def _general_delete_preview(project_id, materials, selection, options, repositor
         records = {}
         for offset in range(0, len(rows), BATCH_SIZE):
             records.update(annotations.get_many([row['id'] for row in rows[offset:offset+BATCH_SIZE]]))
-        filter_values = selection.filters.as_dict()
-        if (selection.scope is SelectionScope.FILTERED
-                and not any(value not in (None, "", [], ()) for value in filter_values.values())
-                and not selection.excluded_image_ids):
+        if selection.scope is SelectionScope.FILTERED:
             with closing(materials._connect()) as database:
-                project_total = int(database.execute(
-                    "SELECT COUNT(*) FROM materials"
+                active_total = int(database.execute(
+                    "SELECT COUNT(*) FROM materials m WHERE NOT EXISTS ("
+                    "SELECT 1 FROM material_retirements r WHERE r.image_id=m.id)"
                 ).fetchone()[0])
-            if project_total and len(rows) == project_total and not options.get('clear_project'):
+            if active_total and len(rows) == active_total and not options.get('clear_project'):
                 raise BatchRequestError(
                     'MATERIAL_CLEAR_CONFIRMATION_REQUIRED',
-                    '该筛选范围等于全部项目素材；必须走原清空项目授权与项目名称确认，不能按普通批量删除执行',
+                    '该筛选范围等于全部活动项目素材；必须走原清空项目授权与项目名称确认，不能按普通批量删除执行',
                     409,
                 )
         frozen_ids = sorted(str(row['id']) for row in rows)

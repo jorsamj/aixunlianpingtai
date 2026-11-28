@@ -25,8 +25,10 @@ def runtime(tmp_path,count=2):
 
 def test_general_delete_preview_freezes_1001_ids_and_is_idempotent(tmp_path):
     materials,repository,artifacts=runtime(tmp_path,1001)
-    payload={'operation':'DELETE_INDEX','selection_spec':{'scope':'FILTERED','filters':{}},'options':{}}
-    preview=estimate_batch('p',materials,payload,repository=repository,artifacts=artifacts,actor={'actor_id':'u'})
+    payload={'operation':'DELETE_INDEX','selection_spec':{'scope':'FILTERED','filters':{}},
+             'options':{'clear_project':True,'project_name_confirmation':'Project'}}
+    preview=estimate_batch('p',materials,payload,repository=repository,artifacts=artifacts,
+                           actor={'actor_id':'u'},project={'name':'Project'})
     plan=preview['deletion_preview']
     assert plan['selected_count']==1001 and plan['current_test_count']==1
     for field in ('manual_required_count', 'unverifiable_count', 'skipped_groups', 'skipped_item_count',
@@ -35,9 +37,12 @@ def test_general_delete_preview_freezes_1001_ids_and_is_idempotent(tmp_path):
     assert plan['skip_reasons'] == {}
     assert plan['physical_retained_count']==1001 and plan['reclaimed_bytes']==0
     payload['selection_spec']=preview['selection_spec']
-    payload['options']={'deletion_plan_id':plan['plan_id'],'confirmation_credential':plan['confirmation_credential']}
-    task=create_batch('p',materials,repository,artifacts,payload,actor={'actor_id':'u'})
-    assert create_batch('p',materials,repository,artifacts,payload,actor={'actor_id':'u'}).task_id==task.task_id
+    payload['options']={'deletion_plan_id':plan['plan_id'],'confirmation_credential':plan['confirmation_credential'],
+                        'project_name_confirmation':'Project'}
+    task=create_batch('p',materials,repository,artifacts,payload,actor={'actor_id':'u'},
+                      project={'name':'Project'})
+    assert create_batch('p',materials,repository,artifacts,payload,actor={'actor_id':'u'},
+                        project={'name':'Project'}).task_id==task.task_id
     with closing(BatchSelection(artifacts.artifact_path(task.task_id,'selection.sqlite3'))) as selection:
         assert selection.database.execute('SELECT COUNT(*) FROM selection').fetchone()[0]==1001
 

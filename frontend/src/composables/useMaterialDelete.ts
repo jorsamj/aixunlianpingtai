@@ -85,7 +85,8 @@ export function useMaterialDelete(options: {
       const mode: DeleteMode = rawMode;
       if (mode === 'single' && typeof value.image_id !== 'string') return null;
       if (mode === 'filtered'
-          && (typeof value.id_digest !== 'string' || !value.id_digest.startsWith('sha256:')))
+          && (typeof value.id_digest !== 'string' || !value.id_digest.startsWith('sha256:')
+              || !Number.isInteger(Number(value.image_count)) || Number(value.image_count) < 1))
         return null;
       return {
         project_id: value.project_id, plan_id: value.plan_id, operation: 'DELETE_INDEX',
@@ -330,6 +331,7 @@ export function useMaterialDelete(options: {
       state.dialog = true;
       return;
     }
+    state.estimate = null;
     state.busy = true; state.error = ''; state.notice = ''; state.task = null;
     state.unknown = false; state.mode = mode; state.summary = {...EMPTY_COUNTS};
     state.targetIds = unique; state.targetId = unique[0];
@@ -351,13 +353,20 @@ export function useMaterialDelete(options: {
 
   function canonicalSelection(value: MaterialBatchSelection) {
     const normalize = (item: unknown): unknown => {
-      if (Array.isArray(item)) return item.map(normalize).sort();
-      if (item && typeof item === 'object') return Object.fromEntries(
-        Object.entries(item as Record<string, unknown>)
+      if (typeof item === 'string') return item.trim();
+      if (Array.isArray(item)) {
+        const values = item.map(normalize)
+          .filter(entry => entry !== '' && entry !== null && entry !== undefined)
+          .sort();
+        return values.length ? values : undefined;
+      }
+      if (item && typeof item === 'object') {
+        const entries = Object.entries(item as Record<string, unknown>)
+          .map(([key, entry]) => [key, normalize(entry)] as const)
           .filter(([, entry]) => entry !== '' && entry !== null && entry !== undefined)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([key, entry]) => [key, normalize(entry)]),
-      );
+          .sort(([left], [right]) => left.localeCompare(right));
+        return entries.length ? Object.fromEntries(entries) : undefined;
+      }
       return item;
     };
     return JSON.stringify({
@@ -388,6 +397,7 @@ export function useMaterialDelete(options: {
       state.dialog = true;
       return;
     }
+    state.estimate = null;
     state.busy = true; state.error = ''; state.notice = ''; state.task = null;
     state.unknown = false; state.mode = 'filtered'; state.summary = {...EMPTY_COUNTS};
     state.targetIds = []; state.targetId = '';

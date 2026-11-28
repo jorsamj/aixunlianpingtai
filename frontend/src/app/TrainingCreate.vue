@@ -128,6 +128,7 @@ async function loadSource(epoch=loadEpoch){
  const ids=[...new Set([...positive.value.ids,...candidates])];
  const next={ids,count:ids.length};
  const value=await mergeSelections(next,negative.value);
+ if(epoch!==loadEpoch)return;
  positive.value=next;
  setTrain(value);
 }
