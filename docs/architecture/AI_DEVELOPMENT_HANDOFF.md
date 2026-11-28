@@ -1,5 +1,13 @@
 # AI 开发接续入口
 
+> **2026-11-28 / 批次 A/B/E/F/H 连续交付（本批）**：转换支持 trusted codes-only
+> 类别合同及字符串 class_id 规范化；count-only 在无稳定 created_at 时回退完整计数。
+> 新增 `u3_sync_runner.py`（默认 disabled、项目/批次/时间边界、有限重试、永久冲突
+> 停止）、`u3_change_log_governance.py`（只读容量清单 + safe_to_delete=false 的 dry-run）
+> 及 `u3_deployment_preflight.py`（PG/SQLite/盘容量只读预检，回退准备）。
+> C 分段诊断、D 非空角色/正式冻结三方差分、G 额外模块化尚未完成；P4 200k 复测仍
+> CI_PENDING。硬件 HARDWARE_PENDING。
+>
 > **2026-11-28 / 转换最后收口 + P4-B 第二轮（本批）**：转换侧补齐 mapping/schema 摘要
 > 真实重算、schema 按 class_id 规范化、验证请求使用 label_binding/output_contract，
 > 非 verified 绑定、不可比布局失败关闭。P4-B 基于第二次 200k artifact（exact 约
