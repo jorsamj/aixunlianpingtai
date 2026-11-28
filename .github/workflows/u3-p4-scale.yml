@@ -25,6 +25,8 @@ on:
       - ".github/workflows/u3-p4-scale.yml"
       - "tests/performance/test_u3_p4_scale.py"
       - "platform_core/u3_*.py"
+      - "platform_core/training_material_business_read.py"
+      - "platform_core/training_material_picker_read.py"
 
 jobs:
   u3-p4-scale:
