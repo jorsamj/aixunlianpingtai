@@ -602,6 +602,29 @@ def test_u3_p4_scale_measurement(tmp_path):
             original_export = sync_module.export_project_snapshot
             original_target = sync_module._read_target_snapshot_in_transaction
             original_reconcile = sync_module.reconcile
+            original_apply = sync_module.apply_incremental_batch
+            original_publish = sync_module.publish_ready
+
+            def timed_apply(*args, **kwargs):
+                began = time.perf_counter()
+                try:
+                    return original_apply(*args, **kwargs)
+                finally:
+                    ready_profile["apply_ms"] = ready_profile.get(
+                        "apply_ms", 0.0
+                    ) + (time.perf_counter() - began) * 1000
+                    ready_profile["apply_calls"] = ready_profile.get(
+                        "apply_calls", 0.0
+                    ) + 1
+
+            def timed_publish(*args, **kwargs):
+                began = time.perf_counter()
+                try:
+                    return original_publish(*args, **kwargs)
+                finally:
+                    ready_profile["publish_ms"] = (
+                        time.perf_counter() - began
+                    ) * 1000
 
             def timed_export(*args, **kwargs):
                 began = time.perf_counter()
@@ -633,6 +656,8 @@ def test_u3_p4_scale_measurement(tmp_path):
             sync_module.export_project_snapshot = timed_export
             sync_module._read_target_snapshot_in_transaction = timed_target
             sync_module.reconcile = timed_reconcile
+            sync_module.apply_incremental_batch = timed_apply
+            sync_module.publish_ready = timed_publish
         incremental_started = time.perf_counter()
         synchronized = synchronize_project(
             connection, project_dir=project, project_id=project_id,

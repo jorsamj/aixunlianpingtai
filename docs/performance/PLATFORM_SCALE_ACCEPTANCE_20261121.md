@@ -668,4 +668,20 @@ P4_PROFILE=1 新增 owner GT、PG GT、确认回执、usage 包装计时，按�
 | AnnotationRepository.upsert_many | 100 | 130.0 ms |
 | Owner Change Log 增长 | 200 行 | — |
 
-绝对成本仅代表当前小夹具；没有历史可比基线，不报告相对变化。负样本池批量成本尚未测。
+绝对成本仅代表当前小夹具；没有历史可比基线，不报告相对变化。负样本池批量成本尚未测。\n\n
+### G10 增量应用/发布拆分（2026-11-29）
+
+31 事件、300 素材小夹具：
+
+| 阶段 | 耗时 | 调用 |
+|---|---:|---:|
+| apply_incremental_batch | 61.6 ms | 3 |
+| publish_ready 总 | 72.7 ms | 1 |
+| 其中 Owner 导出 | 27.6 ms | 1 |
+| 其中 PG target 读取 | 20.8 ms | 1 |
+| 其中 reconcile | 0.18 ms | 1 |
+| 发布残余（游标/状态/提交） | 约 24.1 ms | — |
+| 同步总 | 134.0 ms | — |
+
+- apply 与 publish 大致各占一半；publish 的残余仍大于 reconcile。
+- 仍缺逐事件读取、逐流应用、游标提交独立计时及 20 万级复验。
