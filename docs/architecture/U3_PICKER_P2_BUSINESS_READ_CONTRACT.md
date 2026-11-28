@@ -137,4 +137,3 @@ SQLite 历史 → 角色/用途 → 最终过滤 → 分页/统计。SQLite 权�
   `inner.snapshot`（P1 会话），不再使用会话外提前获取的 context。
 - `_verify_current()` 在**同一个**新的中央 Task 只读事务内读取 usage revision 与活跃 Task 摘要。
 - `read_session()` 自身拒绝 `verify_owner=False`，无法绕过正式读取保护；诊断继续使用 P1 Provider。
-

@@ -1,5 +1,10 @@
 # AI 开发接续入口
 
+> **2026-11-28 / U3-P2 会话生命周期修补（f792fa75）**：Task 连接借用改为独占 token（重叠会话
+> 显式拒绝、正常/异常释放）；PG 快照身份取自 `inner.snapshot`；最终复核在同一新事务内读取
+> revision+活跃 Task 摘要；`read_session` 拒绝 `verify_owner=False`。定向 **23 passed / 0 skipped**；
+> P3-A 设计已验收不变。未切换生产、未改 VERSION、未启动 P3-B/P4/P5。
+
 > **2026-11-28 / U3-P2 固定读取事务收口（fbf44541）**：`read_session` 在中央 Task 库持有
 > 单个只读事务，所有批次复用（`TrainingMaterialUsage` 仅新增借用连接），初始 revision/活跃 Task
 > 摘要同事务获取；批次结束关闭事务并用新连接复核当前版本后才发布；snapshot 身份取自会话捕获
