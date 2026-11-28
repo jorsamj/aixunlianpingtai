@@ -593,4 +593,20 @@ pending_review、test_role 夹具仍为空命中。\n\n
 - `_history_facts` 占 evaluate 的约 20–26%；
 - 单次 `read_page` 与累计 evaluate 不可直接相加，前者是页面路径，后者跨全部场景。
 
-仍缺：SQLite/PG GT 独立耗时、回执独立耗时、SQL 次数/查询计划、READY 发布分段。
+仍缺：SQLite/PG GT 独立耗时、回执独立耗时、SQL 次数/查询计划、READY 发布分段。\n\n
+### L1 第二轮：按场景分段（2026-11-28）
+
+`P4_PROFILE=1` 现在按场景记录 evaluate/history 增量，不再将跨场景累计与单次请求混比。
+
+实际运行（300 素材/100 GT/2 样本/每场景 2 次取数）：
+
+| 场景 | SQLite evaluate ms | SQLite history ms | PG evaluate ms | PG history ms |
+|---|---:|---:|---:|---:|
+| base_label | 63.0 | 9.4 | 53.5 | 9.6 |
+| combo_source | 52.4 | 11.4 | 56.6 | 10.1 |
+| deep_page | 53.3 | 10.1 | 55.3 | 9.9 |
+| deferred | 56.8 | 9.8 | 90.2 | 10.2 |
+
+- 每场景 3 次 evaluate/history 调用（2 个采样加 1 次 profile 单次读取）。
+- history 占 evaluate 约 15–27%。
+- 仍是小规模；未拆分 SQLite GT、PG GT、回执、角色、SQL 次数/计划及 READY 发布。

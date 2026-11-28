@@ -301,6 +301,9 @@ def test_u3_p4_scale_measurement(tmp_path):
             "pending_review": business_query(role="pending_review"),
         }
         for name, query in scenarios.items():
+            before = {
+                label: dict(values) for label, values in profile.items()
+            } if profile else {}
             sqlite_metrics, sqlite_page = _measure(
                 lambda q=query: sqlite_business.read_page(q), samples=int(
                     os.environ.get("P4_SAMPLES", "7")
@@ -311,6 +314,15 @@ def test_u3_p4_scale_measurement(tmp_path):
                     os.environ.get("P4_SAMPLES", "7")
                 )
             )
+            if profile:
+                RESULT["layers"].setdefault("profile_scenarios", {})[name] = {
+                    label: {
+                        key: round(values[key] - before[label][key], 3)
+                        for key in ("evaluate_ms", "evaluate_calls",
+                                    "history_ms", "history_calls")
+                    }
+                    for label, values in profile.items()
+                }
             same = (
                 _ids(sqlite_page), _roles(sqlite_page), sqlite_page.total
             ) == (
