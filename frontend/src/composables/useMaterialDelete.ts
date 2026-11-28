@@ -64,7 +64,7 @@ export function useMaterialDelete(options: {
   const state = reactive({
     dialog: false, busy: false, estimate: null as MaterialBatchEstimate | null,
     task: null as MaterialBatchTask | null, targetId: '', targetIds: [] as string[],
-    mode: 'single' as DeleteMode, error: '', notice: '', unknown: false,
+    mode: 'single' as DeleteMode, error: '', notice: '', unknown: false, corruptRecord: false,
     pendingPlanId: '', pendingImageId: '', pendingCount: 0,
     summary: {...EMPTY_COUNTS},
   });
@@ -84,10 +84,13 @@ export function useMaterialDelete(options: {
         return null;
       const mode: DeleteMode = rawMode;
       if (mode === 'single' && typeof value.image_id !== 'string') return null;
-      if (mode === 'filtered'
-          && (typeof value.id_digest !== 'string' || !value.id_digest.startsWith('sha256:')
-              || !Number.isInteger(Number(value.image_count)) || Number(value.image_count) < 1))
-        return null;
+      if (mode === 'filtered') {
+        const digest = String(value.id_digest || '');
+        const match = /^sha256:([0-9a-f]{64}):(\d+)$/.exec(digest);
+        const count = Number(value.image_count);
+        if (!match || !Number.isInteger(count) || count < 1
+            || Number(match[2]) !== count) return null;
+      }
       return {
         project_id: value.project_id, plan_id: value.plan_id, operation: 'DELETE_INDEX',
         mode, image_id: typeof value.image_id === 'string' ? value.image_id : undefined,
@@ -97,10 +100,14 @@ export function useMaterialDelete(options: {
     } catch { return null; }
   }
   function syncPending() {
+    let raw: string | null = null;
+    try { raw = localStorage.getItem(storageKey()); }
+    catch { state.corruptRecord = false; state.pendingPlanId = ''; return; }
     const record = readRecord();
     state.pendingPlanId = record?.plan_id || '';
     state.pendingImageId = record?.image_id || '';
     state.pendingCount = record?.image_count || 0;
+    state.corruptRecord = !!raw && !record;
   }
   function writeRecord(
     planId: string, mode: DeleteMode, count: number, imageId?: string, idDigest?: string,
@@ -319,6 +326,11 @@ export function useMaterialDelete(options: {
     const unique = [...new Set(ids.filter(Boolean))];
     if (!unique.length) return;
     syncPending();
+    if (state.corruptRecord) {
+      state.dialog = true; state.unknown = true;
+      state.notice = '本地删除恢复记录损坏，不能视为无任务；请核验原删除任务后再提交。';
+      return;
+    }
     if (state.pendingPlanId) {
       state.targetId = state.pendingImageId || (mode === 'single' ? unique[0] : '');
       state.notice = '存在未完成的删除任务，正在核验原任务；请先处理该任务。';
@@ -387,6 +399,11 @@ export function useMaterialDelete(options: {
       return;
     }
     syncPending();
+    if (state.corruptRecord) {
+      state.dialog = true; state.unknown = true;
+      state.notice = '本地删除恢复记录损坏，不能视为无任务；请核验原删除任务后再提交。';
+      return;
+    }
     if (state.pendingPlanId) {
       state.notice = '存在未完成的删除任务，正在核验原任务；请先处理该任务。';
       state.dialog = true; state.unknown = true;

@@ -25,6 +25,7 @@ const deletion=useMaterialDelete({
     selectionPage.value=Math.min(selectionPage.value,Math.max(1,Math.ceil(selected.value.length/50)));
     if(detailId.value&&deleted.has(detailId.value))resetDetail();
    }
+   if(result.terminal&&!result.unknown){filteredAll.value=false;excluded.value=[]}
    await load(true);
   },
 });
