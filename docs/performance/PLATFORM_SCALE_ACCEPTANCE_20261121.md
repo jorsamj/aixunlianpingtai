@@ -574,4 +574,23 @@ READY 全量 reconcile 成本仍待分段测量。P4-C 未开始。\n\n
 - 20 万级复测待集中 CI。
 
 未解决：exact 仍必须遍历除页面外的全部匹配候选；增量全量对账未改；confirmed_negative、
-pending_review、test_role 夹具仍为空命中。
+pending_review、test_role 夹具仍为空命中。\n\n
+### L1 小规模分段诊断（2026-11-28）
+
+新增 `P4_PROFILE=1` 开关，对既有 BusinessReadProvider 的 `_evaluate_batch` 与
+`_history_facts` 做测试侧计时，不改变正式业务日志。
+
+实际运行（300 素材/100 GT/2 样本，12 场景聚合）：
+
+| Provider | read_page 单次 | evaluate 累计 | history 累计 | evaluate 次数 | history 次数 |
+|---|---:|---:|---:|---:|---:|
+| SQLite | 53.8 ms | 760.5 ms | 200.6 ms | 37 | 37 |
+| PostgreSQL | 167.2 ms | 607.5 ms | 125.2 ms | 33 | 33 |
+
+结论（仅小规模，不外推 200k）：
+
+- `_evaluate_batch` 是主要分段成本，包含 GT、回执、usage/Task、角色和对象构造；
+- `_history_facts` 占 evaluate 的约 20–26%；
+- 单次 `read_page` 与累计 evaluate 不可直接相加，前者是页面路径，后者跨全部场景。
+
+仍缺：SQLite/PG GT 独立耗时、回执独立耗时、SQL 次数/查询计划、READY 发布分段。

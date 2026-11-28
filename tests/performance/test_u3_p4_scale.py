@@ -224,6 +224,41 @@ def test_u3_p4_scale_measurement(tmp_path):
         postgres_business = BusinessReadProvider(
             postgres_picker, project, project_id=project_id
         )
+        profile: dict[str, dict[str, float]] = {}
+        if os.environ.get("P4_PROFILE") == "1":
+            for label, provider in (
+                ("sqlite", sqlite_business), ("postgres", postgres_business),
+            ):
+                profile[label] = {
+                    "read_page_ms": 0.0, "evaluate_ms": 0.0,
+                    "history_ms": 0.0, "evaluate_calls": 0.0,
+                    "history_calls": 0.0,
+                }
+                original_evaluate = provider._evaluate_batch
+                original_history = provider._history_facts
+
+                def timed_evaluate(*args, _label=label, _fn=original_evaluate, **kwargs):
+                    began = time.perf_counter()
+                    try:
+                        return _fn(*args, **kwargs)
+                    finally:
+                        profile[_label]["evaluate_ms"] += (
+                            time.perf_counter() - began
+                        ) * 1000
+                        profile[_label]["evaluate_calls"] += 1
+
+                def timed_history(*args, _label=label, _fn=original_history, **kwargs):
+                    began = time.perf_counter()
+                    try:
+                        return _fn(*args, **kwargs)
+                    finally:
+                        profile[_label]["history_ms"] += (
+                            time.perf_counter() - began
+                        ) * 1000
+                        profile[_label]["history_calls"] += 1
+
+                provider._evaluate_batch = timed_evaluate
+                provider._history_facts = timed_history
 
         def business_query(
             *, labels=("fire",), sources=(), pool_only=False,
@@ -290,6 +325,16 @@ def test_u3_p4_scale_measurement(tmp_path):
             }
             RESULT["matches"].append({"case": name, "same": same})
             assert same, (name, _ids(sqlite_page)[:10], _ids(postgres_page)[:10])
+        if profile:
+            for label, provider in (
+                ("sqlite", sqlite_business), ("postgres", postgres_business),
+            ):
+                began = time.perf_counter()
+                provider.read_page(business_query(count_mode="exact"))
+                profile[label]["read_page_ms"] = (
+                    time.perf_counter() - began
+                ) * 1000
+            RESULT["layers"]["profile"] = profile
         rss_samples.append(_rss_mb())
 
         # Cursor continuation is compared separately from offset paging.
