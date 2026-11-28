@@ -536,4 +536,23 @@ L2 必须先声明**验收范围**，逐项列出"必需项"与"排除项"；不
   耗时；失败时仍通过 teardown 写出部分 `P4_RESULTS_PATH`。
 - P4 工作流增加 `[p4-scale]` push 触发门（无 marker 时跳过），仍保留
   `workflow_dispatch`；工作流位于功能分支，避免修改默认分支。
-- 20 万级真实测量尚未执行，P4-A 仍为 NOT_VERIFIED，P4-B/C 未开始。
+- 20 万级真实测量尚未执行，P4-A 仍为 NOT_VERIFIED，P4-B/C 未开始。\n\n
+### P4-B 首批热点与优化（2026-11-28）
+
+真实 200k artifact（SHA `ad830ef9`）确认：
+
+- exact 基础/历史/角色场景 SQLite P50 约 5.6–6.1s，PG 约 6.8–7.2s；deferred 仅约 69/116ms。
+- 主要成本不是候选不足，而是 exact 需要遍历全部业务候选并逐批做 GT、回执、usage、Task 角色判定。
+- 冻结选择 19,900 ID，与当前候选一致；31 事件增量同步+READY 发布 44.008s。
+- 测量末尾 RSS 3,175.5MiB；`owner_change_log` 241,040 行；WAL 0。
+
+首批最小优化：
+
+- `BusinessReadProvider._base_query` 请求候选 payload；
+- `_evaluate_batch` 直接复用候选页 `PickerMaterial.payload`，仅对缺失项回退
+  `materials.get_many`，避免 exact 每 120 行重复水合完整素材。
+- 不改变候选集合、GT/回执/history/Task 判定、exact 统计或 deferred 语义。
+- P2 定向 24 项通过。优化后 200k 复测待 `[p4-scale]` CI。
+
+未解决：exact 仍需全候选业务判定；PG 连接/事务固定开销、role/history 查询次数、增量
+READY 全量 reconcile 成本仍待分段测量。P4-C 未开始。

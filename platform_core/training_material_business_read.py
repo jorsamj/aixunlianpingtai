@@ -391,7 +391,7 @@ class BusinessReadProvider:
         return PickerQuery(
             project_id=query.project_id, filters=query.filters.base,
             sort_order=query.sort_order, count_mode="deferred", page=None,
-            page_size=MAX_PAGE_SIZE, cursor=cursor, include_payload=False,
+            page_size=MAX_PAGE_SIZE, cursor=cursor, include_payload=True,
             include_annotations=False, verify_owner=query.verify_owner,
         )
 
@@ -478,7 +478,19 @@ class BusinessReadProvider:
     def _evaluate_batch(self, query: BusinessQuery, session, batch: Sequence[PickerMaterial]):
         filters = query.filters
         ids = [item.id for item in batch]
-        material_rows = {str(row.get("id")): row for row in self.materials.get_many(ids)}
+        # The candidate page already carries the owner payload when available.
+        # Reuse it instead of a second per-batch material hydration; fall back to
+        # the repository for any item that did not expose a payload.
+        material_rows = {
+            item.id: dict(item.payload)
+            for item in batch
+            if isinstance(item.payload, Mapping) and item.payload
+        }
+        missing_ids = [item.id for item in batch if item.id not in material_rows]
+        if missing_ids:
+            material_rows.update({
+                str(row.get("id")): row for row in self.materials.get_many(missing_ids)
+            })
         annotation_rows = self.annotations.get_many(ids)
         pg_annotations = session.annotations(ids)
         contract = self._contract(filters)

@@ -1,5 +1,13 @@
 # AI 开发接续入口
 
+> **2026-11-28 / 转换合同执行链 + P4-B 首批优化（本批）**：A 批次把
+> preprocessing_contract/output_contract 接入真实 Worker manifest，verified label_binding
+> 校验 class_ids/source SHA/算法/版本，未验证历史 label_codes 在 manifest 边界丢弃，
+> 新合同仅在存在时进入验证身份摘要。B 批次基于真实 200k artifact：exact 约 6–7s、
+> deferred 约 69/116ms；候选 payload 复用避免 exact 每批重复水合，GT/回执/history/
+> Task 判定不变。P2 24 项通过；优化后 200k 复测待 `[p4-scale]` CI。硬件
+> HARDWARE_PENDING，未改 U3 同步/性能核心。
+>
 > **2026-11-28 / 模型转换 Q1–Q3 质量整改（本批）**：Q1 将源模型冻结类别
 > `label_binding` 从仅 Sophon 扩展到所有可取得类别信息的转换目标，并冻结
 > class_id/order/code/schema/source SHA；manifest 保留 label/preprocessing/output 合同。
