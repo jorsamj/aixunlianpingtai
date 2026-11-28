@@ -583,7 +583,7 @@ def _empty_result(*, precision: str, input_color_space: str, runtime: dict, inpu
     }
 
 
-def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, precision: str, expected_source_sha: str = "", expected_onnx_sha: str = "", input_color_order: str = "rgb", preprocessing: dict | None = None, label_codes: list[str] | None = None, label_schema: list[dict] | None = None, confidence: float = 0.25, nms_iou: float = 0.7, bmodel_path: Path | None = None, bmodel_sha256: str = "", bmodel_expected: bool = False, sophon_python: str = "", input_shapes: list | None = None, frozen_imgsz: list | None = None, frozen_batch: int | None = None, progress=None) -> dict:
+def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, precision: str, expected_source_sha: str = "", expected_onnx_sha: str = "", input_color_order: str = "rgb", preprocessing: dict | None = None, label_codes: list[str] | None = None, label_schema: list[dict] | None = None, label_binding: dict | None = None, output_contract: dict | None = None, confidence: float = 0.25, nms_iou: float = 0.7, bmodel_path: Path | None = None, bmodel_sha256: str = "", bmodel_expected: bool = False, sophon_python: str = "", input_shapes: list | None = None, frozen_imgsz: list | None = None, frozen_batch: int | None = None, progress=None) -> dict:
     validate_paths(source_path, onnx_path, images, expected_source_sha=expected_source_sha, expected_onnx_sha=expected_onnx_sha)
     color = str(input_color_order or "rgb").strip().lower()
     if color != "rgb":
@@ -613,6 +613,16 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
     inputs = session.get_inputs()
     if len(inputs) != 1 or len(session.get_outputs()) != 1:
         raise ValueError("ONNX 输入／输出不是单张量；暂不能进行可靠的原始输出对齐")
+    declared_layout = str((output_contract or {}).get("layout") or "").strip().lower()
+    if declared_layout and declared_layout not in {
+        "yolo", "yolo_v8", "yolo11", "ultralytics_yolo",
+    }:
+        return _empty_result(
+            precision=precision, input_color_space=color, runtime=runtime_versions(),
+            input_contract={"status": "not_comparable", "code": "OUTPUT_CONTRACT_UNSUPPORTED"},
+            code="OUTPUT_CONTRACT_UNSUPPORTED",
+            reason="转换 manifest 声明的输出布局不受当前解码器支持，不能以形状相似冒充一致",
+        )
     input_meta = inputs[0]
     input_contract = _resolve_input_contract(input_meta, input_shapes=input_shapes, frozen_imgsz=frozen_imgsz,
                                              frozen_batch=frozen_batch)
@@ -642,6 +652,46 @@ def verify_images(source_path: Path, onnx_path: Path, images: list[Path], *, pre
         class_count = 0
     label_identity = verify_label_identity(names, label_codes=label_codes, label_schema=label_schema)
     label_count_matched = None if label_identity["status"] == "unknown" else label_identity["status"] == "verified"
+    if isinstance(label_binding, Mapping) and label_binding:
+        binding_status = _clean(label_binding.get("status"))
+        if binding_status != "verified":
+            label_identity = {
+                "status": "conflict" if binding_status == "conflict" else "unknown",
+                "codes": [], "mapping_sha256": "",
+                "reason": "冻结 label_binding 不是 verified，不能由历史 label_schema 重新解释",
+            }
+            label_count_matched = False
+        else:
+            normalized = []
+            try:
+                normalized = sorted(
+                    [dict(row) for row in (label_schema or [])],
+                    key=lambda row: int(row.get("class_id")),
+                )
+            except (TypeError, ValueError):
+                normalized = []
+            codes = [str(code) for code in (label_codes or [])]
+            schema_ok = (
+                bool(codes)
+                and len(normalized) == len(codes)
+                and [int(row.get("class_id")) for row in normalized] == list(range(len(codes)))
+                and [str(row.get("code") or "") for row in normalized] == codes
+            )
+            mapping_sha = hashlib.sha256(
+                json.dumps(codes, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            schema_sha = hashlib.sha256(
+                json.dumps(normalized, ensure_ascii=False, sort_keys=True,
+                           separators=(",", ":")).encode("utf-8")
+            ).hexdigest() if normalized else ""
+            if (not schema_ok
+                    or str(label_binding.get("mapping_sha256") or "") != mapping_sha
+                    or str(label_binding.get("schema_sha256") or "") != schema_sha):
+                label_identity = {
+                    "status": "conflict", "codes": [], "mapping_sha256": "",
+                    "reason": "label_binding 的类别顺序/摘要与验证请求不一致",
+                }
+                label_count_matched = False
     if label_identity["status"] in {"mismatch", "conflict"}:
         class_count = 0
     # Legacy jobs without a frozen preprocessing contract remain unknown, not
@@ -1582,6 +1632,8 @@ def run_verification_directory(directory: Path) -> dict:
             preprocessing=request.get("preprocessing"),
             label_codes=request.get("label_codes"),
             label_schema=request.get("label_schema"),
+            label_binding=request.get("label_binding"),
+            output_contract=request.get("output_contract"),
             confidence=float(request.get("confidence", 0.25)),
             nms_iou=float(request.get("nms_iou", 0.7)),
             input_shapes=request.get("input_shapes"),

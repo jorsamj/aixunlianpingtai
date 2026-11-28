@@ -815,6 +815,10 @@ class ConversionManagementService:
             codes = list(frozen_labels.get("tags") or []) if status == "verified" else []
             schema = source_trace.get("label_schema")
             schema_rows = schema if isinstance(schema, list) else []
+            try:
+                schema_rows = sorted(schema_rows, key=lambda row: int(row.get("class_id")))
+            except (TypeError, ValueError):
+                schema_rows = []
             if status == "verified":
                 source_trace["label_codes"] = codes
             source_trace["label_binding"] = {

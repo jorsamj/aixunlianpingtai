@@ -302,14 +302,27 @@ def test_worker_manifest_preserves_contracts(tmp_path):
     onnx.write_bytes(b"worker-onnx")
     source_digest = sha256_file(source)
     digest = sha256_file(onnx)
+    import hashlib
+    import json as _json
+    label_codes = ["fire"]
+    label_schema = [{"class_id": 0, "code": "fire"}]
+    binding = {
+        "status": "verified", "class_count": 1, "class_ids": [0],
+        "source_sha256": source_digest,
+        "algorithm_id": "a1", "version_id": "v1",
+        "mapping_sha256": hashlib.sha256(_json.dumps(
+            label_codes, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")).hexdigest(),
+        "schema_sha256": hashlib.sha256(_json.dumps(
+            label_schema, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).hexdigest(),
+    }
     manifest = build_conversion_source_manifest(
         source=source,
         source_trace={
             "algorithm_id": "a1", "version_id": "v1",
-            "label_codes": ["fire"], "label_schema": [{"class_id": 0, "code": "fire"}],
-            "label_binding": {"status": "verified", "class_count": 1, "class_ids": [0],
-                              "source_sha256": source_digest,
-                              "algorithm_id": "a1", "version_id": "v1"},
+            "label_codes": label_codes, "label_schema": label_schema,
+            "label_binding": binding,
             "preprocessing_contract": {"status": "declared", "pixel_format": "rgb"},
             "output_contract": {"status": "declared", "layout": "yolo_v8"},
         },

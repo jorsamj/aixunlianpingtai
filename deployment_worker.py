@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -827,6 +828,23 @@ def build_conversion_source_manifest(*, source: Path, source_trace: Dict[str, An
                 'LABEL_BINDING_MISMATCH',
                 '冻结类别绑定与源模型 SHA/算法/版本/class_id 顺序不一致',
                 solution='请重新冻结源模型类别合同，不能把未核验的 label_binding 写入 manifest。',
+            )
+        try:
+            normalized_schema = sorted(schema, key=lambda row: int(row.get('class_id')))
+        except (TypeError, ValueError):
+            normalized_schema = []
+        mapping_sha256 = hashlib.sha256(json.dumps(
+            codes, ensure_ascii=False, separators=(',', ':')
+        ).encode('utf-8')).hexdigest()
+        schema_sha256 = hashlib.sha256(json.dumps(
+            normalized_schema, ensure_ascii=False, sort_keys=True, separators=(',', ':')
+        ).encode('utf-8')).hexdigest() if normalized_schema else ''
+        if (str(binding.get('mapping_sha256') or '') != mapping_sha256
+                or str(binding.get('schema_sha256') or '') != schema_sha256):
+            raise ConversionError(
+                'LABEL_BINDING_MISMATCH',
+                '冻结类别 mapping/schema 摘要与真实规范化类别不一致',
+                solution='请重新计算并冻结类别摘要，不能只保存字段而不核验内容。',
             )
     elif binding:
         # A historical declaration is not a verified contract. Keep it for audit
