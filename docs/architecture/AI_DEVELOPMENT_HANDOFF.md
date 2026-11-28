@@ -1,5 +1,10 @@
 # AI 开发接续入口
 
+> **2026-11-28 / D/E 继续（本批）**：真实 TRAINING_PREPARE 引用夹具通过；新增冻结
+> 正样本引用 + ≤2000 补充正样本的服务端 union 能力并在 Vue 合并请求传
+> `positive_extra_ids`；训练耗时增加未来开始时间保护。D2 前端来源补数仍未接入，
+> E2/F 未完成。
+>
 > **2026-11-28 / D/E 定向推进（本批）**：复跑 training selection-reference 8 项通过；
 > 现有前端 ref/merge/verify 与后端 TRAINING_PREPARE 读取链保留，未发现需改的引用
 > 丢失。训练任务耗时增加未来开始时间保护，不显示负数。D2/E2/F1/F2/F3 未完成。
