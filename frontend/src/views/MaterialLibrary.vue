@@ -14,19 +14,24 @@ const deletion=useMaterialDelete({
  projectId:()=>props.context.projectId,
  actorKey:()=>props.context.actorKey||'',
  async onSettled(result){
-  if(result.deletedIds.length){
-   const deleted=new Set(result.deletedIds);
-   selected.value=selected.value.filter(id=>!deleted.has(id));
-   selectionPage.value=Math.min(selectionPage.value,Math.max(1,Math.ceil(selected.value.length/50)));
-   if(detailId.value&&deleted.has(detailId.value))resetDetail();
-  }
-  await load(true);
- },
+   if(result.deletedIds.length){
+    const deleted=new Set(result.deletedIds);
+    if(page.value){
+     const items=page.value.items.filter(row=>!deleted.has(row.id));
+     page.value={...page.value,items,total:Math.max(0,page.value.total-deleted.size),
+      has_next:items.length>0&&page.value.has_next};
+    }
+    selected.value=selected.value.filter(id=>!deleted.has(id));
+    selectionPage.value=Math.min(selectionPage.value,Math.max(1,Math.ceil(selected.value.length/50)));
+    if(detailId.value&&deleted.has(detailId.value))resetDetail();
+   }
+   await load(true);
+  },
 });
 const deletePending=computed(()=>deletion.pending.value);
 const deleteTerminal=computed(()=>deletion.terminal.value);
 const filters=reactive<MaterialFilters>({query:'',label:'',annotation_state:'',quality_status:'',storage_source_id:'',source_batch_id:'',created_from:'',created_to:'',...saved?.filters});
-const number=ref(saved?.page||1),layout=ref<'grid'|'list'>(saved?.layout||'grid'),selected=ref<string[]>(saved?.selectedItems||[]),page=ref<MaterialPage|null>(null),detail=ref<MaterialDetail|null>(null),drawer=ref(false),showBoxes=ref(true),history=ref<MaterialHistory|null>(null),selectionNote=ref('');
+const number=ref(saved?.page||1),layout=ref<'grid'|'list'>(saved?.layout||'grid'),selected=ref<string[]>(saved?.selectedItems||[]),page=ref<MaterialPage|null>(null),loadedContext=ref(''),detail=ref<MaterialDetail|null>(null),drawer=ref(false),showBoxes=ref(true),history=ref<MaterialHistory|null>(null),selectionNote=ref('');
 const applied={...filters},detailId=ref(saved?.detailId||''),selectionPage=ref(1);
 const renameTarget=ref<MaterialRow|null>(null);
 function renamed(id:string,filename:string){
@@ -42,12 +47,16 @@ const status:Record<string,string>={unannotated:'未标注',annotated:'已标注
 function remember(){props.context.memory.materials={filters:{...applied},page:number.value,layout:layout.value,selectedItems:selected.value,detailId:props.standalone?detailId.value:undefined}}
 function resetDetail(){detailId.value='';reads.cancel('detail');reads.cancel('history');drawer.value=false;detail.value=null;history.value=null}
 function close(){resetDetail();remember()}
+function contextKey(){return JSON.stringify([applied,number.value])}
 function load(clamp=false){
  remember();
+ const key=contextKey();
+ if(loadedContext.value!==key)page.value=null;
  const read=clamp?api.listAtOrBefore:api.list;
  return reads.run('materials',signal=>read(applied,number.value,signal),value=>{
-  page.value=value;
-  if(number.value!==value.page){number.value=value.page;remember()}
+  if(contextKey()!==key)return;
+  page.value=value;loadedContext.value=key;
+  if(number.value!==value.page){number.value=value.page;loadedContext.value=contextKey();remember()}
  });
 }
 function search(){Object.assign(applied,filters);number.value=1;resetDetail();void load()}
