@@ -10,6 +10,7 @@ export interface MaterialDeletionPreview {
   confirmation_credential: string;
   selected_count?: number;
   delete_count?: number;
+  selection_digest?: string;
   gt_count: number | null;
   current_test_count: number | null;
   historical_reference_count: number | null;
@@ -125,13 +126,16 @@ export function markMaterialsReady(projectId:string,selection:MaterialBatchSelec
 }
 
 export function estimateMaterialDeletion(
-  projectId: string, imageIds: string[], signal: AbortSignal,
+  projectId: string, selection: string[] | MaterialBatchSelection, signal: AbortSignal,
 ) {
+  const selectionSpec: MaterialBatchSelection = Array.isArray(selection)
+    ? {scope: 'SELECTED', image_ids: selection}
+    : selection;
   return request<MaterialBatchEstimate>(`${batchBase(projectId)}/estimate`, {
     method: 'POST', signal,
     body: JSON.stringify({
       operation: 'DELETE_INDEX',
-      selection_spec: {scope: 'SELECTED', image_ids: imageIds},
+      selection_spec: selectionSpec,
       options: {},
     }),
   });

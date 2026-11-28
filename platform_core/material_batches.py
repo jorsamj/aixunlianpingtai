@@ -191,7 +191,7 @@ def parse_request(payload):
             422,
         )
     selection = MaterialSelectionSpec.from_mapping(
-        payload.get("selection_spec"), allow_filtered_exclusions=operation in ASSIGNMENT_OPERATIONS | {BatchOperation.CLEAN},
+        payload.get("selection_spec"), allow_filtered_exclusions=operation in ASSIGNMENT_OPERATIONS | {BatchOperation.CLEAN, BatchOperation.DELETE_INDEX},
     )
     explicit_limit = (
         MAX_LARGE_EXPLICIT_SELECTION
@@ -305,6 +305,8 @@ def _general_delete_preview(project_id, materials, selection, options, repositor
         records = {}
         for offset in range(0, len(rows), BATCH_SIZE):
             records.update(annotations.get_many([row['id'] for row in rows[offset:offset+BATCH_SIZE]]))
+        frozen_ids = sorted(str(row['id']) for row in rows)
+        frozen_digest = hashlib.sha256("\n".join(frozen_ids).encode("utf-8")).hexdigest()
         plan_id, credential = uuid.uuid4().hex, secrets.token_urlsafe(32)
         owner_task_id = str(owner_task_id or plan_id)
         summary = {'plan_id':plan_id,'audit_task_id':owner_task_id,'project_id':str(project_id),
@@ -314,6 +316,7 @@ def _general_delete_preview(project_id, materials, selection, options, repositor
             'material_revision':materials.current_revision(),'annotation_revision':annotations.current_revision(),
             'label_schema_digest':_file_digest(materials.project_path/'meta.json'),
             'selected_count':len(rows),'delete_count':len(rows),'included_groups':0,'kept_count':0,
+            'selection_digest':f"sha256:{frozen_digest}:{len(frozen_ids)}",
             'retained_count':0,'manual_required_count':0,'unverifiable_count':0,
             'skipped_groups':0,'skipped_item_count':0,'protected_item_count':0,'protected_groups':0,
             'manual_required_groups':0,'anomaly_groups':0,'anomaly_item_count':0,

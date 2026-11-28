@@ -145,6 +145,33 @@ def test_legacy_source_worker_and_repeat_never_call_provider_or_remove_identity(
     assert app_module.material_store(project_id).get(row['id']) is not None
 
 
+def test_filtered_delete_estimate_keeps_exclusions_in_frozen_range(client, tmp_path):
+    project_id, _source_id, _root, first = create_external_material(client, tmp_path)
+    project = app_module.project_dir(project_id)
+    second = client.post(
+        f"/api/projects/{project_id}/images",
+        files=[("files", ("b.jpg", jpg(), "image/jpeg"))],
+        data={"storage_source_id": _source_id},
+    ).json()["uploaded"][0]
+    base = f"/api/v62/projects/{project_id}/material-batches"
+    estimated = client.post(base + "/estimate", json={
+        "operation": "DELETE_INDEX",
+        "selection_spec": {
+            "scope": "FILTERED", "filters": {},
+            "excluded_image_ids": [first["id"]],
+        },
+    })
+    estimated.raise_for_status()
+    body = estimated.json()
+    assert body["count"] == 1
+    assert body["selection_spec"]["scope"] == "FILTERED"
+    assert body["selection_spec"]["excluded_image_ids"] == [first["id"]]
+    assert body["deletion_preview"]["selection_digest"].startswith("sha256:")
+    assert body["deletion_preview"]["delete_count"] == 1
+    assert second["id"] != first["id"]
+    assert project.is_dir()
+
+
 def governed_delete(client, pid, image_ids):
     import app as app_module
     from platform_core.task_runtime import Scheduler, TaskStatus

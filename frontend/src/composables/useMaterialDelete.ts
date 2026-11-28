@@ -3,7 +3,7 @@ import {
   createMaterialDeletion,estimateMaterialDeletion,getMaterialBatch,
   getMaterialBatchResults,
 } from '../api/material-batches';
-import type {MaterialBatchEstimate,MaterialBatchTask} from '../api/material-batches';
+import type {MaterialBatchEstimate,MaterialBatchSelection,MaterialBatchTask} from '../api/material-batches';
 
 const TERMINAL = new Set([
   'SUCCEEDED', 'PARTIAL_SUCCESS', 'FAILED', 'CANCELLED',
@@ -17,7 +17,7 @@ const STATUS_LABEL: Record<string, string> = {
   FAILED: '失败', CANCELLED: '已取消', BLOCKED_BY_ENVIRONMENT: '环境阻断',
   BLOCKED_BY_HARDWARE: '硬件阻断',
 };
-type DeleteMode = 'single' | 'selected';
+type DeleteMode = 'single' | 'selected' | 'filtered';
 interface RecoveryRecord {
   project_id: string; plan_id: string; operation: 'DELETE_INDEX';
   mode: DeleteMode; image_id?: string; image_count: number; id_digest?: string;
@@ -343,28 +343,75 @@ export function useMaterialDelete(options: {
   }
   function prepare(imageId: string) { return prepareMany([imageId], 'single'); }
 
+  async function prepareFiltered(selection: MaterialBatchSelection) {
+    if (!options.enabled() || state.busy) return;
+    if (selection.scope !== 'FILTERED') {
+      state.error = '全选删除必须使用服务端筛选范围';
+      return;
+    }
+    syncPending();
+    if (state.pendingPlanId) {
+      state.notice = '存在未完成的删除任务，正在核验原任务；请先处理该任务。';
+      state.dialog = true; state.unknown = true;
+      await refresh();
+      return;
+    }
+    if (state.unknown || (state.task && ACTIVE.has(state.task.status))) {
+      state.dialog = true;
+      return;
+    }
+    state.busy = true; state.error = ''; state.notice = ''; state.task = null;
+    state.unknown = false; state.mode = 'filtered'; state.summary = {...EMPTY_COUNTS};
+    state.targetIds = []; state.targetId = '';
+    try {
+      const estimate = await estimateMaterialDeletion(
+        options.projectId(), selection, new AbortController().signal,
+      );
+      if (!estimate.supported || !estimate.deletion_preview || estimate.count < 1)
+        throw new Error(estimate.message || '当前筛选范围暂不支持删除');
+      if (estimate.selection_spec?.scope !== 'FILTERED'
+          || !estimate.deletion_preview.selection_digest)
+        throw new Error('全选删除预检身份不完整，请重新预检');
+      state.estimate = estimate;
+      state.dialog = true;
+    } catch (cause) {
+      state.error = message(cause);
+    } finally { state.busy = false; }
+  }
+
   async function confirm() {
     const estimate = state.estimate;
     if (!estimate?.deletion_preview || state.busy || state.task || state.unknown
         || state.pendingPlanId) return;
     const preview = estimate.deletion_preview;
+    const filtered = estimate.selection_spec?.scope === 'FILTERED';
     const scopeIds = estimate.selection_spec?.scope === 'SELECTED'
       ? [...new Set(estimate.selection_spec.image_ids || [])] : [];
     const targets = [...new Set(state.targetIds)];
-    const frozen = new Set(scopeIds);
-    if (!scopeIds.length || estimate.count !== targets.length
-        || frozen.size !== targets.length || targets.some(id => !frozen.has(id))) {
-      state.error = '预检返回的选择范围与当前选择不一致，已停止提交；请重新预检。';
-      return;
+    let idDigest = '';
+    if (filtered) {
+      if (state.mode !== 'filtered' || estimate.count < 1
+          || !preview.selection_digest
+          || !preview.selection_digest.startsWith('sha256:')) {
+        state.error = '全选删除的冻结范围身份不完整，已停止提交；请重新预检。';
+        return;
+      }
+      idDigest = preview.selection_digest;
+    } else {
+      const frozen = new Set(scopeIds);
+      if (!scopeIds.length || estimate.count !== targets.length
+          || frozen.size !== targets.length || targets.some(id => !frozen.has(id))) {
+        state.error = '预检返回的选择范围与当前选择不一致，已停止提交；请重新预检。';
+        return;
+      }
+      try { idDigest = await digestIds(scopeIds); }
+      catch (cause) {
+        state.busy = false;
+        state.error = message(cause);
+        return;
+      }
     }
     state.busy = true; state.error = ''; state.notice = '';
-    let idDigest: string;
-    try { idDigest = await digestIds(scopeIds); }
-    catch (cause) {
-      state.busy = false;
-      state.error = message(cause);
-      return;
-    }
     if (!writeRecord(preview.plan_id, state.mode, estimate.count,
       state.mode === 'single' ? state.targetId : undefined, idDigest)) {
       state.busy = false;
@@ -422,7 +469,7 @@ export function useMaterialDelete(options: {
   function close() { if (!state.busy) state.dialog = false; }
   onBeforeUnmount(stopPoll);
   return {
-    state, statusLabel, terminal, pending, prepare, prepareMany, confirm, recover,
+    state, statusLabel, terminal, pending, prepare, prepareMany, prepareFiltered, confirm, recover,
     verifyResults, openTask, close, refresh,
   };
 }
