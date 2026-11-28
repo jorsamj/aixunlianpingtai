@@ -183,6 +183,13 @@ def test_genuine_schema5_backup_preserves_all_historical_business_evidence(tmp_p
             ]))),
         ]
     )
+    # P3-B1 adds an append-only change log additively; no historical business
+    # row is rewritten and both streams start at sequence 0.
+    expected["databases"][material_path]["owner_change_log"] = []
+    expected["databases"][material_path]["owner_change_meta"] = sorted([
+        json.dumps(("materials", 0)),
+        json.dumps(("negative_pool", 0)),
+    ])
     assert business_state(target) == expected
     with closing(repository._connect()) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 8

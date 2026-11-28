@@ -15,6 +15,16 @@ from filelock import FileLock
 
 from .annotations import annotation_summary
 from .labels import active_project_label_ids, label_governance_fence
+from .u3_owner_change_log import (
+    ANNOTATION_STREAM,
+    append_annotation_deletes,
+    append_annotation_events,
+    append_confirmation_event,
+    append_evidence_event,
+    append_evidence_events,
+    ensure_change_log,
+    project_id_for_database,
+)
 
 
 STATES = {"unannotated", "annotated", "confirmed_empty"}
@@ -241,6 +251,11 @@ class AnnotationRepository:
                 ).fetchone()
                 if trigger is None:
                     return False
+                if db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='owner_change_log'"
+                ).fetchone() is None:
+                    return False
                 recorded = db.execute(
                     "SELECT value FROM annotation_meta WHERE key=?",
                     (EVIDENCE_STRUCTURE_KEY,),
@@ -351,7 +366,9 @@ class AnnotationRepository:
         for table in _EVIDENCE_GENERATION_TABLES:
             if table in present:
                 self._ensure_table_generation(db, table)
-        return self._sync_evidence_structure(db)
+        result = self._sync_evidence_structure(db)
+        ensure_change_log(db, (ANNOTATION_STREAM,), self.project_path.name)
+        return result
 
     def reconcile_evidence_structure(self) -> dict[str, Any]:
         """Owner-certified structure reconciliation (explicit operator entry).
@@ -1469,6 +1486,19 @@ class AnnotationRepository:
         db.execute("INSERT INTO annotation_candidate_commits VALUES (?,?,?,?)",
                    (intent['task_id'], intent['operation_id'], image_id,
                     json.dumps(evidence, ensure_ascii=False, sort_keys=True)))
+        append_evidence_event(
+            db, "annotations", "annotation_candidate_commits",
+            f"{intent['task_id']}:{image_id}",
+            {
+                "task_id": str(intent['task_id']),
+                "operation_id": str(intent['operation_id']),
+                "image_id": str(image_id),
+                "receipt_json": json.dumps(
+                    evidence, ensure_ascii=False, sort_keys=True
+                ),
+            },
+            project_id=project_id_for_database(db),
+        )
 
     def _validate_protected_candidate_write(self, row, image_id):
         intent = row.get("candidate_commit")
@@ -1497,6 +1527,7 @@ class AnnotationRepository:
         written = []
         persisted_rows = []
         projections = {}
+        changed_annotation_ids = []
         with label_governance_fence(self.project_path):
             prepared_rows = []
             material_expectations = {}
@@ -1640,6 +1671,8 @@ class AnnotationRepository:
                                 raise RuntimeError(f"protected formal GT write verification failed for {image_id}")
                             decoded = self._decode_persisted_row(persisted)
                             persisted_rows.append(decoded)
+                            if current is None or int(persisted["version"]) != int(current["version"]):
+                                changed_annotation_ids.append(image_id)
                             self._record_candidate_commit(db, row, image_id, decoded, expected_version)
                             evidence = row.get('review_evidence')
                             if evidence:
@@ -1655,14 +1688,37 @@ class AnnotationRepository:
                                     PRIMARY KEY(image_id,source_version,actor_id,reviewed_scope_json,source_content_sha256))""")
                                 self._ensure_generation_objects(db)
                                 has_review_audit = True
-                                db.execute('INSERT OR IGNORE INTO annotation_negative_reviews VALUES(?,?,?,?,?,?,?,?)',
+                                review_cursor = db.execute('INSERT OR IGNORE INTO annotation_negative_reviews VALUES(?,?,?,?,?,?,?,?)',
                                     (image_id, expected_version, actor, json.dumps(labels),
                                      str(evidence.get('source_content_sha256') or ''), decoded['version'],
                                      decoded['content_digest'], now))
+                                if review_cursor.rowcount:
+                                    append_evidence_event(
+                                        db, "annotations", "annotation_negative_reviews",
+                                        f"{image_id}:{expected_version}:{actor}",
+                                        {
+                                            "image_id": str(image_id),
+                                            "source_version": int(expected_version),
+                                            "actor_id": str(actor),
+                                            "reviewed_scope_json": json.dumps(labels),
+                                            "source_content_sha256": str(
+                                                evidence.get('source_content_sha256') or ''
+                                            ),
+                                            "annotation_version": int(decoded['version']),
+                                            "annotation_digest": str(decoded['content_digest']),
+                                            "reviewed_at": now,
+                                        },
+                                        project_id=self.project_path.name,
+                                    )
                             material = admitted.get(image_id) or {}
                             projection = self._material_projection(decoded, material, row.get('annotation_origin'), now)
                             projections[image_id] = projection
                             written.append(image_id)
+                        if changed_annotation_ids:
+                            append_annotation_events(
+                                db, changed_annotation_ids,
+                                project_id=self.project_path.name,
+                            )
                         db.execute('COMMIT')
                     except Exception:
                         db.execute('ROLLBACK')
@@ -1782,8 +1838,26 @@ class AnnotationRepository:
                                 str(record.get('content_digest') or '') != evidence['annotation_hash']):
                             raise ValueError('标注已变化，请重新检查并确认')
                         value = dict(evidence, actor=actor, confirmed_at=datetime.now(timezone.utc).isoformat())
-                        db.execute('INSERT OR IGNORE INTO task_negative_confirmations VALUES(?,?,?)',
+                        marker = db.execute('INSERT OR IGNORE INTO task_negative_confirmations VALUES(?,?,?)',
                                    (evidence['receipt_id'], context_key, json.dumps(value, ensure_ascii=False, sort_keys=True)))
+                        if marker.rowcount:
+                            append_confirmation_event(
+                                db, str(evidence['receipt_id']), str(context_key),
+                                value,
+                                project_id=self.project_path.name,
+                            )
+                            append_evidence_event(
+                                db, "annotations", "task_negative_confirmations",
+                                str(evidence['receipt_id']),
+                                {
+                                    "receipt_id": str(evidence['receipt_id']),
+                                    "context_key": str(context_key),
+                                    "evidence_json": json.dumps(
+                                        value, ensure_ascii=False, sort_keys=True
+                                    ),
+                                },
+                                project_id=self.project_path.name,
+                            )
         return [e['receipt_id'] for e in evidences]
 
     def negative_review_evidence(self, image_id, source_version, actor_id, labels, source_hash):
@@ -1844,6 +1918,17 @@ class AnnotationRepository:
                     "SELECT COUNT(*) FROM annotation_delete_backup WHERE token=?",
                     (token,),
                 ).fetchone()[0])
+                append_evidence_events(
+                    db, "annotations",
+                    (
+                        ("annotation_delete_backup", f"{row['token']}:{row['image_id']}", dict(row))
+                        for row in db.execute(
+                            "SELECT * FROM annotation_delete_backup WHERE token=?",
+                            (token,),
+                        )
+                    ),
+                    project_id=self.project_path.name,
+                )
                 db.execute("COMMIT")
                 return count
             except Exception:
@@ -1876,6 +1961,15 @@ class AnnotationRepository:
                     raise RuntimeError(
                         "annotation changed during dataset deletion; refusing stale delete"
                     )
+                doomed = db.execute(
+                    """SELECT annotations.*
+                       FROM annotations
+                       JOIN annotation_delete_backup backup
+                         ON backup.image_id=annotations.image_id
+                        WHERE backup.token=?
+                          AND backup.content_digest=annotations.content_digest""",
+                    (token,),
+                ).fetchall()
                 cursor = db.execute(
                     """DELETE FROM annotations
                        WHERE EXISTS (
@@ -1887,6 +1981,11 @@ class AnnotationRepository:
                     (token,),
                 )
                 deleted = max(0, int(cursor.rowcount))
+                if doomed:
+                    append_annotation_deletes(
+                        db, doomed, reason="delete",
+                        project_id=self.project_path.name,
+                    )
                 db.execute("COMMIT")
                 return deleted
             except Exception:
@@ -1940,10 +2039,19 @@ class AnnotationRepository:
                             for row in rows
                         ),
                     )
+                    restored_ids = [
+                        str(row["image_id"]) for row in rows
+                        if row["existing_image_id"] is None
+                    ]
                     db.execute(
                         "DELETE FROM annotation_delete_backup WHERE token=?",
                         (token,),
                     )
+                    if restored_ids:
+                        append_annotation_events(
+                            db, restored_ids,
+                            project_id=self.project_path.name,
+                        )
                     db.execute("COMMIT")
                     return len(rows)
                 except Exception:
@@ -1953,14 +2061,47 @@ class AnnotationRepository:
     def complete_delete(self, token) -> int:
         token = self._delete_token(token)
         with closing(self._connect()) as db, db:
-            cursor = db.execute(
-                "DELETE FROM annotation_delete_backup WHERE token=?", (token,)
-            )
-            return max(0, int(cursor.rowcount))
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                removed = db.execute(
+                    "SELECT * FROM annotation_delete_backup WHERE token=?", (token,)
+                ).fetchall()
+                cursor = db.execute(
+                    "DELETE FROM annotation_delete_backup WHERE token=?", (token,)
+                )
+                if removed:
+                    append_evidence_events(
+                        db, "annotations",
+                        (
+                            ("annotation_delete_backup",
+                             f"{row['token']}:{row['image_id']}", dict(row))
+                            for row in removed
+                        ),
+                        event_kind="delete",
+                        project_id=self.project_path.name,
+                    )
+                db.execute("COMMIT")
+                return max(0, int(cursor.rowcount))
+            except Exception:
+                db.execute("ROLLBACK")
+                raise
 
     def remove(self, image_ids):
+        ids = list(dict.fromkeys(self._id(value) for value in image_ids))
+        if not ids:
+            return
         with closing(self._connect()) as db, db:
+            placeholders = ",".join("?" for _ in ids)
+            removed = db.execute(
+                f"SELECT * FROM annotations WHERE image_id IN ({placeholders})",
+                ids,
+            ).fetchall()
             db.executemany(
                 'DELETE FROM annotations WHERE image_id=?',
-                ((self._id(i),) for i in image_ids),
+                ((image_id,) for image_id in ids),
             )
+            if removed:
+                append_annotation_deletes(
+                    db, removed, reason="remove",
+                    project_id=self.project_path.name,
+                )

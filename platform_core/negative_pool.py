@@ -10,6 +10,14 @@ import json
 import re
 
 from .material_repository import material_annotation_lifecycle_fence
+from .u3_owner_change_log import (
+    MATERIAL_STREAM,
+    NEGATIVE_POOL_STREAM,
+    append_evidence_event,
+    append_negative_pool_category,
+    append_negative_pool_member,
+    ensure_change_log,
+)
 
 
 class MemberOperationConflict(ValueError):
@@ -52,10 +60,27 @@ class NegativePool:
             raise ValueError('invalid identity')
         return result
 
+    def _emit_members(self, db, image_ids):
+        for image_id in dict.fromkeys(str(value) for value in image_ids):
+            append_negative_pool_member(
+                db, image_id,
+                project_id=self.materials.project_path.name,
+            )
+
+    def _emit_category(self, db, category_id, *, last_row=None):
+        append_negative_pool_category(
+            db, category_id, last_row=last_row,
+            project_id=self.materials.project_path.name,
+        )
+
     def _mutate(self, operation, *, initialize_pool=True, member_receipt=None):
         with material_annotation_lifecycle_fence(self.materials.project_path), closing(self.materials._connect()) as db:
             db.execute('BEGIN IMMEDIATE')
             try:
+                ensure_change_log(
+                    db, (MATERIAL_STREAM, NEGATIVE_POOL_STREAM),
+                    self.materials.project_path.name,
+                )
                 if member_receipt:
                     exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='negative_pool_operations'").fetchone()
                     prior = db.execute('SELECT identity,result_json FROM negative_pool_operations WHERE operation_id=?', (member_receipt['operation_id'],)).fetchone() if exists else None
@@ -82,6 +107,16 @@ class NegativePool:
                     # evidence-table lifecycle version in the same pool transaction.
                     self.materials._ensure_evidence_generation(db)
                     db.execute('INSERT INTO negative_pool_operations VALUES (?,?,?)', (member_receipt['operation_id'], member_receipt['identity'], json.dumps(result)))
+                    append_evidence_event(
+                        db, "materials", "negative_pool_operations",
+                        str(member_receipt['operation_id']),
+                        {
+                            "operation_id": str(member_receipt['operation_id']),
+                            "identity": str(member_receipt['identity']),
+                            "result_json": json.dumps(result),
+                        },
+                        project_id=self.materials.project_path.name,
+                    )
                 db.commit()
                 return result
             except Exception:
@@ -133,6 +168,16 @@ class NegativePool:
                 db.execute('CREATE TABLE IF NOT EXISTS negative_pool_operations(operation_id TEXT PRIMARY KEY,identity TEXT NOT NULL,result_json TEXT NOT NULL)')
                 self.materials._ensure_evidence_generation(db)
                 db.execute('INSERT INTO negative_pool_operations VALUES (?,?,?)',(str(operation_id),identity,json.dumps(result)))
+                append_evidence_event(
+                    db, "materials", "negative_pool_operations", str(operation_id),
+                    {
+                        "operation_id": str(operation_id),
+                        "identity": identity,
+                        "result_json": json.dumps(result),
+                    },
+                    project_id=self.materials.project_path.name,
+                )
+                self._emit_members(db, snapshots.keys())
                 return result
             return self._mutate(write)
 
@@ -191,7 +236,12 @@ class NegativePool:
                 if not db.execute('SELECT 1 FROM negative_pool_categories WHERE id=?', (identity,)).fetchone():
                     raise ValueError('category not found')
                 if delete:
+                    previous = dict(db.execute(
+                        'SELECT id,name,enabled FROM negative_pool_categories WHERE id=?',
+                        (identity,),
+                    ).fetchone())
                     db.execute('DELETE FROM negative_pool_categories WHERE id=?', (identity,))
+                    self._emit_category(db, identity, last_row=previous)
                     return {'id': identity, 'deleted': True}
                 if name is not None:
                     db.execute('UPDATE negative_pool_categories SET name=? WHERE id=?', (name,identity))
@@ -201,6 +251,7 @@ class NegativePool:
                 if name is None:
                     raise ValueError('name is required')
                 db.execute('INSERT INTO negative_pool_categories VALUES (?,?,1)', (identity,name))
+            self._emit_category(db, identity)
             return dict(db.execute('SELECT * FROM negative_pool_categories WHERE id=?', (identity,)).fetchone())
         return self._mutate(write)
 
@@ -268,11 +319,13 @@ class NegativePool:
             if not categories_only:
                 if action == 'remove' and algorithm_id:
                     removed = db.execute('DELETE FROM negative_pool_algorithm_members WHERE algorithm_id=? AND material_id IN (SELECT id FROM pool_requested)', (str(algorithm_id),)).rowcount
+                    self._emit_members(db, ids)
                     return {'affected':removed, 'already_absent':len(ids)-removed, 'algorithm_id':str(algorithm_id), **({'removed':removed} if report_counts else {})}
                 if action == 'remove':
                     if db.execute('SELECT 1 FROM negative_pool_algorithm_members am JOIN pool_requested r ON r.id=am.material_id LIMIT 1').fetchone():
                         raise ValueError('历史算法关联仍存在，无法移出公共池。可调整分类，历史记录已保留。')
                     removed = db.execute('DELETE FROM negative_pool_members WHERE material_id IN (SELECT id FROM pool_requested)').rowcount
+                    self._emit_members(db, ids)
                     return {'affected':len(ids), **({'removed':removed, 'already_absent':len(ids)-removed} if report_counts else {})}
                 if report_counts:
                     if algorithm_id:
@@ -298,6 +351,7 @@ class NegativePool:
                     material['zip_folder_source'] = dict(source, classification_status='applied')
                     self.materials._write_row(db, material)
                 self.materials._bump_revision(db)
+            self._emit_members(db, ids)
             return {'affected':len(ids), **({'added':len(ids)-existing, 'already_present':existing} if report_counts and not categories_only else {})}
         if require_empty_gt:
             from .annotation_repository import AnnotationRepository

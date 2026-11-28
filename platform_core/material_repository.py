@@ -21,9 +21,22 @@ from filelock import FileLock
 
 from .material_selection import MaterialFilters
 from .material_store import MaterialSnapshot
+from .u3_owner_change_log import (
+    MATERIAL_STREAM,
+    NEGATIVE_POOL_STREAM,
+    append_evidence_event,
+    append_evidence_events,
+    append_material_deletes,
+    append_material_event,
+    append_material_events,
+    change_log_ready,
+    ensure_change_log,
+    project_id_for_database,
+)
 
 
 _Result = TypeVar("_Result")
+_UNSET = object()
 _SCHEMA_VERSION = 8
 # Schema 7 adds the dataset expression index; schema 8 adds the stored-name
 # expression index. Old read-only lifecycle evidence remains readable without
@@ -475,7 +488,7 @@ class MaterialRepository:
     _REQUIRED_OBJECTS = (
         'ix_materials_import_batch', 'ix_materials_source_status',
         'material_assignment_receipts', 'ix_materials_stored_name',
-        _EVIDENCE_GENERATION_SENTINEL,
+        _EVIDENCE_GENERATION_SENTINEL, 'owner_change_log', 'owner_change_meta',
     )
 
     def _required_objects_present(self, database: sqlite3.Connection) -> bool:
@@ -655,6 +668,11 @@ class MaterialRepository:
                     # Narrow reconcile only: never re-run the DDL here, so a table
                     # dropped on purpose stays dropped and is recorded as absent.
                     self._ensure_evidence_generation(database)
+                    ensure_change_log(
+                        database,
+                        (MATERIAL_STREAM, NEGATIVE_POOL_STREAM),
+                        self.project_path.name,
+                    )
                     database.commit()
                     return
                 if version > _SCHEMA_VERSION:
@@ -739,6 +757,11 @@ class MaterialRepository:
                 # the same transaction as any other in-place upgrade, without a
                 # schema-version bump.
                 self._ensure_evidence_generation(database)
+                ensure_change_log(
+                    database,
+                    (MATERIAL_STREAM, NEGATIVE_POOL_STREAM),
+                    self.project_path.name,
+                )
                 database.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
 
     def journal_mode(self) -> str:
@@ -776,8 +799,23 @@ class MaterialRepository:
         database.execute("UPDATE material_meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'revision'")
 
     @staticmethod
-    def _write_row(database: sqlite3.Connection, value: Mapping[str, Any]) -> dict[str, Any]:
+    def _write_row(
+        database: sqlite3.Connection,
+        value: Mapping[str, Any],
+        *,
+        _previous_payload: str | None | object = _UNSET,
+    ) -> dict[str, Any]:
         row = normalize_material(value)
+        payload_json = json.dumps(
+            row, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if _previous_payload is _UNSET:
+            previous = database.execute(
+                "SELECT payload_json FROM materials WHERE id=?", (row["id"],)
+            ).fetchone()
+            previous_payload = str(previous[0]) if previous is not None else None
+        else:
+            previous_payload = _previous_payload
         if os.environ.get("MC_CONTROLLED_LOCAL_MATERIAL_GC") == "1" and row["storage_source_id"] == "default_local":
             existing = database.execute("SELECT storage_source_id,object_key FROM materials WHERE id=?", (row["id"],)).fetchone()
             if existing is None or tuple(existing) != (row["storage_source_id"], row["object_key"]):
@@ -810,8 +848,7 @@ class MaterialRepository:
                 row["id"], row["filename"], row["storage_source_id"], row["storage_type"],
                 row["object_key"], row["content_sha256"], row["size_bytes"], row["etag"],
                 row["processing_status"], row["box_count"], int(row["annotated"]),
-                row["created_at"], row["updated_at"],
-                json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                row["created_at"], row["updated_at"], payload_json,
             ),
         )
         database.execute("DELETE FROM material_labels WHERE material_id = ?", (row["id"],))
@@ -845,6 +882,12 @@ class MaterialRepository:
             "INSERT INTO material_annotation_scopes(material_id, label_code) VALUES (?, ?)",
             ((row["id"], label) for label in scopes),
         )
+        if previous_payload != payload_json and change_log_ready(database):
+            append_material_event(
+                database,
+                row,
+                project_id=project_id_for_database(database),
+            )
         return row
 
     @controlled_material_write_fence
@@ -887,12 +930,20 @@ class MaterialRepository:
                     database.execute("ROLLBACK")
                     return
                 for source in rows:
-                    self._write_row(database, source)
+                    self._write_row(database, source, _previous_payload=None)
                 if rows:
                     self._bump_revision(database)
                 database.execute(
                     "INSERT INTO material_migrations(source, signature, imported_count, imported_at) VALUES (?, ?, ?, ?)",
                     ("images.json", signature, len(rows), _now()),
+                )
+                append_evidence_event(
+                    database, "materials", "material_migrations", "images.json",
+                    {
+                        "source": "images.json", "signature": signature,
+                        "imported_count": len(rows), "imported_at": _now(),
+                    },
+                    project_id=self.project_path.name,
                 )
                 database.execute("COMMIT")
             except Exception:
@@ -1775,7 +1826,10 @@ class MaterialRepository:
                 existing = database.execute("SELECT payload_json FROM materials WHERE id = ?", (image_id,)).fetchone()
                 merged = self._row_payload(existing) if existing else {}
                 merged.update(dict(record))
-                persisted = self._write_row(database, merged)
+                persisted = self._write_row(
+                    database, merged,
+                    _previous_payload=str(existing[0]) if existing else None,
+                )
                 self._bump_revision(database)
                 database.execute("COMMIT")
             except Exception:
@@ -1797,7 +1851,10 @@ class MaterialRepository:
                     existing = database.execute("SELECT payload_json FROM materials WHERE id = ?", (image_id,)).fetchone()
                     merged = self._row_payload(existing) if existing else {}
                     merged.update(record)
-                    persisted.append(self._write_row(database, merged))
+                    persisted.append(self._write_row(
+                        database, merged,
+                        _previous_payload=str(existing[0]) if existing else None,
+                    ))
                 self._bump_revision(database)
                 database.execute("COMMIT")
             except Exception:
@@ -1817,7 +1874,10 @@ class MaterialRepository:
                         continue
                     merged = self._row_payload(existing)
                     merged.update(dict(patch))
-                    changed.append(self._write_row(database, merged))
+                    changed.append(self._write_row(
+                        database, merged,
+                        _previous_payload=str(existing[0]),
+                    ))
                 if changed:
                     self._bump_revision(database)
                 database.execute("COMMIT")
@@ -1884,7 +1944,10 @@ class MaterialRepository:
                         if not drifted:
                             continue
                     current.update(projection)
-                    changed.append(self._write_row(database, current))
+                    changed.append(self._write_row(
+                        database, current,
+                        _previous_payload=str(existing["payload_json"]),
+                    ))
                 if changed:
                     self._bump_revision(database)
                 database.execute("COMMIT")
@@ -1899,21 +1962,55 @@ class MaterialRepository:
         payload=json.dumps(dict(record),ensure_ascii=False,sort_keys=True)
         identity=hashlib.sha256((str(owner)+':'+payload).encode()).hexdigest()
         with closing(self._connect()) as database:
-            database.execute('INSERT INTO material_cleanup_deferred(cleanup_id,image_id,owner,payload_json,last_error,recorded_at) VALUES (?,?,?,?,?,?) ON CONFLICT(cleanup_id) DO UPDATE SET last_error=excluded.last_error',
-                (identity,str(record.get('id') or ''),str(owner),payload,str(error),_now()))
-            database.commit()
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                database.execute('INSERT INTO material_cleanup_deferred(cleanup_id,image_id,owner,payload_json,last_error,recorded_at) VALUES (?,?,?,?,?,?) ON CONFLICT(cleanup_id) DO UPDATE SET last_error=excluded.last_error',
+                    (identity,str(record.get('id') or ''),str(owner),payload,str(error),_now()))
+                append_evidence_event(
+                    database, "materials", "material_cleanup_deferred", identity,
+                    {
+                        "cleanup_id": identity, "image_id": str(record.get("id") or ""),
+                        "owner": str(owner), "payload_json": payload,
+                        "last_error": str(error),
+                    },
+                    project_id=self.project_path.name,
+                )
+                database.execute("COMMIT")
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
         return identity
 
     @controlled_material_write_fence
     def record_physical_reclamation_audit(self, operation_id, image_id, content_sha256, *, absent=False):
         with closing(self._connect()) as database:
-            existing = database.execute("SELECT action,old_sha256,new_sha256 FROM material_storage_audit WHERE task_id=? AND image_id=?",
-                ("physical_" + operation_id, image_id)).fetchone()
-            if existing and (existing["action"] not in {"PHYSICAL_RECLAIMED", "PHYSICAL_ABSENT_AFTER_DETACH"}
-                             or existing["old_sha256"] != content_sha256 or existing["new_sha256"] != ""):
-                raise RuntimeError("RECLAMATION_AUDIT_CONFLICT")
-            database.execute("INSERT OR IGNORE INTO material_storage_audit VALUES(?,?,?,?,?,?)",
-                ("physical_" + operation_id, image_id, "PHYSICAL_ABSENT_AFTER_DETACH" if absent else "PHYSICAL_RECLAIMED", content_sha256, "", _now()))
+            database.execute("BEGIN IMMEDIATE")
+            try:
+                existing = database.execute("SELECT action,old_sha256,new_sha256 FROM material_storage_audit WHERE task_id=? AND image_id=?",
+                    ("physical_" + operation_id, image_id)).fetchone()
+                if existing and (existing["action"] not in {"PHYSICAL_RECLAIMED", "PHYSICAL_ABSENT_AFTER_DETACH"}
+                                 or existing["old_sha256"] != content_sha256 or existing["new_sha256"] != ""):
+                    raise RuntimeError("RECLAMATION_AUDIT_CONFLICT")
+                action = "PHYSICAL_ABSENT_AFTER_DETACH" if absent else "PHYSICAL_RECLAIMED"
+                recorded_at = _now()
+                cursor = database.execute("INSERT OR IGNORE INTO material_storage_audit VALUES(?,?,?,?,?,?)",
+                    ("physical_" + operation_id, image_id, action, content_sha256, "", recorded_at))
+                if cursor.rowcount:
+                    append_evidence_event(
+                        database, "materials", "material_storage_audit",
+                        f"physical_{operation_id}:{image_id}",
+                        {
+                            "task_id": "physical_" + operation_id,
+                            "image_id": str(image_id), "action": action,
+                            "old_sha256": str(content_sha256), "new_sha256": "",
+                            "recorded_at": recorded_at,
+                        },
+                        project_id=self.project_path.name,
+                    )
+                database.execute("COMMIT")
+            except Exception:
+                database.execute("ROLLBACK")
+                raise
 
     def retirement(self, task_id, image_id):
         with closing(self._connect()) as database:
@@ -1930,6 +2027,8 @@ class MaterialRepository:
         ids = list(dict.fromkeys(str(value) for value in image_ids))
         annotations = annotations or {}
         removed = 0
+        deleted_rows = []
+        retirement_rows = []
         with closing(self._connect()) as database:
             database.execute("BEGIN IMMEDIATE")
             try:
@@ -1938,13 +2037,42 @@ class MaterialRepository:
                     placeholders = ','.join('?' for _ in chunk)
                     rows = database.execute(f'SELECT * FROM materials WHERE id IN ({placeholders})', chunk).fetchall()
                     for row in rows:
+                        retired = {
+                            "task_id": str(task_id), "image_id": str(row["id"]),
+                            "actor_id": str(actor_id),
+                            "storage_source_id": row["storage_source_id"],
+                            "object_key": row["object_key"],
+                            "content_sha256": row["content_sha256"],
+                            "payload_json": row["payload_json"],
+                            "annotation_json": json.dumps(
+                                annotations.get(str(row["id"]), {}),
+                                ensure_ascii=False, sort_keys=True,
+                            ),
+                            "retired_at": _now(),
+                        }
                         database.execute(
                             'INSERT INTO material_retirements(task_id,image_id,actor_id,storage_source_id,object_key,content_sha256,payload_json,annotation_json,retired_at) VALUES (?,?,?,?,?,?,?,?,?)',
                             (str(task_id), str(row['id']), str(actor_id), row['storage_source_id'], row['object_key'], row['content_sha256'], row['payload_json'],
-                             json.dumps(annotations.get(str(row['id']), {}), ensure_ascii=False, sort_keys=True), _now()),
+                             retired["annotation_json"], retired["retired_at"]),
                         )
+                        retirement_rows.append(retired)
+                        deleted_rows.append(self._row_payload(row))
                     database.execute(f'DELETE FROM materials WHERE id IN ({placeholders})', chunk)
                     removed += len(rows)
+                if deleted_rows:
+                    append_material_deletes(
+                        database, deleted_rows, reason="retire",
+                        project_id=self.project_path.name,
+                    )
+                if retirement_rows:
+                    append_evidence_events(
+                        database, "materials",
+                        (
+                            ("material_retirements", f"{row['task_id']}:{row['image_id']}", row)
+                            for row in retirement_rows
+                        ),
+                        project_id=self.project_path.name,
+                    )
                 if removed:
                     self._bump_revision(database)
                 database.execute('COMMIT')
@@ -1966,6 +2094,12 @@ class MaterialRepository:
                 by_id = {str(row["id"]): self._row_payload(row) for row in rows}
                 database.execute(f"DELETE FROM materials WHERE id IN ({placeholders})", ids)
                 if rows:
+                    append_material_deletes(
+                        database,
+                        [by_id[str(row["id"])] for row in rows],
+                        reason="remove",
+                        project_id=self.project_path.name,
+                    )
                     self._bump_revision(database)
                 database.execute("COMMIT")
             except Exception:
@@ -2062,6 +2196,23 @@ class MaterialRepository:
                                        current.get('content_sha256', ''), now))
                     db.executemany('UPDATE materials SET content_sha256=?,size_bytes=?,etag=?,updated_at=?,payload_json=? WHERE id=?', updates)
                     db.executemany('INSERT INTO material_storage_audit VALUES(?,?,?,?,?,?)', audits)
+                    append_material_events(
+                        db,
+                        (json.loads(update[4]) for update in updates),
+                        project_id=self.project_path.name,
+                    )
+                    append_evidence_events(
+                        db, "materials",
+                        (
+                            ("material_storage_audit", f"{audit[0]}:{audit[1]}", {
+                                "task_id": audit[0], "image_id": audit[1],
+                                "action": audit[2], "old_sha256": audit[3],
+                                "new_sha256": audit[4], "recorded_at": audit[5],
+                            })
+                            for audit in audits
+                        ),
+                        project_id=self.project_path.name,
+                    )
                     count += len(updates)
                 if count:
                     self._bump_revision(db)
@@ -2123,6 +2274,7 @@ class MaterialRepository:
             default = "default" if field == "dataset_id" else "unassigned"
             now = datetime.now(timezone.utc).isoformat()
             changed = False
+            receipt_rows = []
             for evidence in frozen:
                 image_id = evidence["image_id"]
                 if image_id in receipts:
@@ -2147,14 +2299,32 @@ class MaterialRepository:
                         outcome = ("conflict", "MATERIAL_ASSIGNMENT_CHANGED")
                     else:
                         row.update({field: target, "updated_at": now})
-                        self._write_row(database, row)
+                        self._write_row(
+                            database, row,
+                            _previous_payload=str(record["payload_json"]),
+                        )
                         changed = True
                         outcome = ("updated", None)
                 database.execute(
                     "INSERT INTO material_assignment_receipts VALUES (?,?,?,?)",
                     (task_id, image_id, *outcome),
                 )
+                receipt_rows.append({
+                    "task_id": str(task_id), "image_id": str(image_id),
+                    "outcome": str(outcome[0]),
+                    "error": outcome[1],
+                })
                 receipts[image_id] = outcome
+            if receipt_rows:
+                append_evidence_events(
+                    database, "materials",
+                    (
+                        ("material_assignment_receipts",
+                         f"{row['task_id']}:{row['image_id']}", row)
+                        for row in receipt_rows
+                    ),
+                    project_id=self.project_path.name,
+                )
             if changed:
                 self._bump_revision(database)
             commit_guard()
@@ -2204,7 +2374,10 @@ class MaterialRepository:
                         continue
                     payload = json.dumps(after[image_id], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
                     if before[image_id] != payload:
-                        self._write_row(database, after[image_id])
+                        self._write_row(
+                            database, after[image_id],
+                            _previous_payload=before[image_id],
+                        )
                         changed = True
                 if changed:
                     self._bump_revision(database)
@@ -2271,7 +2444,10 @@ class MaterialRepository:
                         separators=(",", ":"),
                     )
                     if before[image_id] != payload:
-                        self._write_row(database, normalized)
+                        self._write_row(
+                            database, normalized,
+                            _previous_payload=before[image_id],
+                        )
                         changed = True
                 if changed:
                     self._bump_revision(database)
@@ -2328,7 +2504,10 @@ class MaterialRepository:
                         deleted_ids,
                     )
                 for image_id in changed_ids:
-                    self._write_row(database, after[image_id])
+                    self._write_row(
+                        database, after[image_id],
+                        _previous_payload=before_payload.get(image_id),
+                    )
                 if deleted_ids or changed_ids:
                     self._bump_revision(database)
                 database.execute("COMMIT")
