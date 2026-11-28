@@ -1,5 +1,10 @@
 # AI 开发接续入口
 
+> **2026-11-28 / 素材库统计收口（本批）**：删除成功后只移除当前可见行，total/has_next
+> 保持服务端值并标记“统计待刷新”，不再用跨筛选删除集合伪造总数。既有
+> `MaterialBatchGovernance`/`MaterialDatasets` 的 SELECTED/FILTERED 服务端选择未被重写；
+> AI 审核、训练创建/任务、M1/M2/M4、完整 L1/L2 仍未完成。
+>
 > **2026-11-28 / L1 按场景分段 + 素材上下文 + 并发隔离（本批）**：P4_PROFILE 现在
 > 按 base_label/combo_source/deep_page/deferred 独立记录 evaluate/history；素材列表
 > 绑定查询上下文，筛选/页码变化失效旧页，删除后先移除已确认 ID；BusinessReadProvider
