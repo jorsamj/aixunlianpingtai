@@ -2315,13 +2315,20 @@ def training_material_picker_router(
                 if not isinstance(expected, dict) or [str(expected.get(key)) for key in revision_keys] != before['revisions']:
                     raise HTTPException(409, '素材证据已变化，请重新选择')
             positive = _normalize_selection_ids(payload.get('positive_ids') or [])
+            positive_extra = _normalize_selection_ids(payload.get('positive_extra_ids') or [])
             negatives = _normalize_selection_ids(payload.get('negative_ids') or [])
             reference = str(payload.get('positive_ref') or '')
             negative_ref = str(payload.get('negative_ref') or '')
-            if (reference and positive) or (negative_ref and negatives) or max(len(positive), len(negatives)) > 2000:
+            if (reference and positive) or (negative_ref and negatives) or len(positive_extra) > 2000 or max(len(positive), len(negatives), len(positive_extra)) > 2000:
                 raise ValueError('显式选择超出限额，或与同组冻结引用混用')
             if reference:
                 positive = read_selection(data_dir(), reference, before, required_scope={"sample_role": ""})
+                if positive_extra:
+                    if len(repository.get_many(positive_extra)) != len(positive_extra):
+                        raise ValueError('补充正样本已变化，请重新选择')
+                    positive = list(dict.fromkeys([*positive, *positive_extra]))
+            elif positive_extra:
+                raise ValueError('补充正样本必须与已有冻结正样本引用一起使用')
             if negative_ref:
                 negatives = read_selection(data_dir(), negative_ref, before, required_scope={
                     'negative_pool_only':True, 'sample_role':'confirmed_negative',
@@ -2360,6 +2367,7 @@ def training_material_picker_router(
             scope = json.dumps({'kind':'train_union','positive_ref':reference,
                                 'sample_role':'confirmed_negative_union' if negative_ref else '',
                                 'positive_ids':[] if reference else sorted(positive),
+                                'positive_extra_ids':sorted(positive_extra) if reference else [],
                                 'negative_ref':negative_ref,'negative_ids':[] if negative_ref else sorted(negatives),'test_image_ids':sorted(test_ids)}, sort_keys=True)
             receipt = freeze_selection(data_dir(), before, dict.fromkeys(chain(positive, negatives)),
                                        request_id=payload.get('request_id'), request_scope=scope)

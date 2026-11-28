@@ -57,7 +57,8 @@ async function mergeSelections(nextPositive:PickerSelection,nextNegative:PickerS
  let references:Awaited<ReturnType<typeof trainingApi.combineTrainingSelections>>|undefined;
  if(nextPositive.reference||nextNegative.reference){
   const scope={...identity.value,train_labels:[...identity.value.train_labels].sort(),
-    positive_ref:nextPositive.reference,positive_ids:[...nextPositive.ids].sort(),
+    positive_ref:nextPositive.reference,positive_ids:nextPositive.reference?[]:[...nextPositive.ids].sort(),
+    positive_extra_ids:nextPositive.reference?[...nextPositive.ids].sort():[],
     negative_ref:nextNegative.reference,negative_ids:[...nextNegative.ids].sort(),
     test_image_ids:[...draft.testMaterialIds].sort(),expected_revisions:revision};
   const key=JSON.stringify(scope);
