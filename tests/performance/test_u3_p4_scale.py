@@ -16,6 +16,7 @@ import platform
 import sqlite3
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
@@ -95,6 +96,10 @@ def _percentile(values, quantile):
         return None
     index = min(len(ordered) - 1, max(0, int(round((len(ordered) - 1) * quantile))))
     return ordered[index]
+
+
+def _rss_mb():
+    return round(psutil.Process().memory_info().rss / 1024 / 1024, 1) if psutil else None
 
 
 def _measure(fn, *, samples=7, warmup=1):
@@ -202,6 +207,7 @@ def test_u3_p4_scale_measurement(tmp_path):
     world = baseline._build_world(pathlib.Path(tmp_path) / "scale")
     enriched = _enrich(world, project_id, baseline.ALGO_ACTIVE)
     project = world["project_path"]
+    rss_samples = [_rss_mb()]
 
     snapshot = export_project_snapshot(project, project_id)
     with psycopg.connect(server.get_uri()) as connection:
@@ -284,6 +290,7 @@ def test_u3_p4_scale_measurement(tmp_path):
             }
             RESULT["matches"].append({"case": name, "same": same})
             assert same, (name, _ids(sqlite_page)[:10], _ids(postgres_page)[:10])
+        rss_samples.append(_rss_mb())
 
         # Cursor continuation is compared separately from offset paging.
         first_query = business_query(page=None, page_size=25, count_mode="deferred")
@@ -427,10 +434,16 @@ def test_u3_p4_scale_measurement(tmp_path):
         # Incremental changes followed by READY publication, then compare with a
         # fresh full import of the same final Owner state.
         repo = MaterialRepository(project)
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            log_before = int(database.execute(
+                "SELECT COUNT(*) FROM owner_change_log"
+            ).fetchone()[0])
+        write_started = time.perf_counter()
         for index in range(20):
             row = repo.get(f"img-{index:06d}")
             row.update(filename=f"p4-incremental-{index:02d}.jpg")
             repo.upsert(row)
+        write_seconds = round(time.perf_counter() - write_started, 3)
         annotations = AnnotationRepository(project)
         for index in range(20, 30):
             image_id = f"img-{index:06d}"
@@ -456,12 +469,37 @@ def test_u3_p4_scale_measurement(tmp_path):
         comparison = dict(target)
         comparison["revisions"] = dict(final_snapshot["revisions"])
         report = reconcile(final_snapshot, comparison)
+        with sqlite3.connect(project / "materials.sqlite3") as database:
+            log_after = int(database.execute(
+                "SELECT COUNT(*) FROM owner_change_log"
+            ).fetchone()[0])
+        rss_samples.append(_rss_mb())
         RESULT["layers"]["incremental"] = {
             "status": synchronized["status"], "applied": synchronized["applied"],
             "same": report["same"], "blocking": report["blocking_findings"],
             "seconds": incremental_seconds,
+            "write_seconds": write_seconds,
+            "change_log_growth": log_after - log_before,
         }
         assert report["same"] is True, report["blocking_findings"]
+
+        def concurrent_page(provider):
+            return _ids(provider.read_page(
+                business_query(page=None, page_size=50, count_mode="deferred")
+            ))
+
+        started = time.perf_counter()
+        with ThreadPoolExecutor(max_workers=2) as pool_executor:
+            concurrent = list(pool_executor.map(
+                concurrent_page, (sqlite_business, postgres_business)
+            ))
+        RESULT["layers"]["concurrency"] = {
+            "seconds": round(time.perf_counter() - started, 3),
+            "same": concurrent[0] == concurrent[1],
+            "ids": len(concurrent[0]),
+        }
+        assert concurrent[0] == concurrent[1]
+
         with connection.cursor() as cursor:
             cursor.execute("SELECT version()")
             postgres_version = str(cursor.fetchone()[0])
@@ -498,6 +536,9 @@ def test_u3_p4_scale_measurement(tmp_path):
         "materials": baseline.TOTAL_MATERIALS, "gt": baseline.TOTAL_GT,
         "samples": int(os.environ.get("P4_SAMPLES", "7")),
         "rss_mb": round(process.memory_info().rss / 1024 / 1024, 1) if process else None,
+        "rss_peak_mb": max(value for value in rss_samples if value is not None)
+        if any(value is not None for value in rss_samples) else None,
+        "rss_samples_mb": rss_samples,
         "counts": counts, "wal_bytes": wal_bytes,
         "db_sizes_bytes": world.get("sizes") or {},
         "enriched": enriched,
